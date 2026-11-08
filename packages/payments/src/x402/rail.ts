@@ -26,6 +26,11 @@ export const minPaymentWindowMs = 15_000;
 // How long a Solana payment can settle: its transaction's blockhash expires after about 150 blocks
 const solanaWindowMs = 60_000;
 
+// The SDK counts a NEAR payment's window of N seconds as N blocks, and a block takes about 0.6 s. We
+// count half a second a block, to stay on the early side: our deadline is never later than the chain's.
+// The window is measured from when we verify, not from when the buyer signed.
+const nearMsPerBlock = 500;
+
 // The transfer method each namespace's `exact` scheme uses when a quote names none
 const defaultTransferMethods: Readonly<Record<string, string>> = { eip155: 'eip3009' };
 
@@ -60,7 +65,7 @@ const secondsOf = (value: unknown): bigint | undefined => {
  * What makes a signed payment single-use, and how long to hold it. On EVM: the EIP-3009 (or Permit2)
  * nonce, in lowercase, held until the signature's own deadline, since it verifies until then. On
  * Solana: a SHA-256 of the signed transaction's bytes, so another spelling of the same base64 is the
- * same payment. Held at least for the option's timeout, plus a minute each, and at most a week.
+ * same payment. On NEAR: the same over the signed delegate action's bytes. Held at least for the option's timeout, plus a minute each, and at most a week.
  * Undefined when the payload has no nonce, deadline, or transaction.
  */
 const claimOf = (requirements: PaymentRequirements, payload: PaymentPayload, nowMs: number): { readonly key: string; readonly expiresAtMs: number } | undefined => {
@@ -78,13 +83,14 @@ const claimOf = (requirements: PaymentRequirements, payload: PaymentPayload, now
 
     return { key: `x402:${requirements.network}:${nonce.toLowerCase()}`, expiresAtMs: until(validBefore * 1_000n + BigInt(claimGraceMs)) };
   }
-  if (requirements.network.startsWith('solana:')) {
-    const transaction = payload.payload['transaction'];
-    const text = typeof transaction === 'string' ? transaction.trim() : '';
+  if (requirements.network.startsWith('solana:') || requirements.network.startsWith('near:')) {
+    const signed = payload.payload[requirements.network.startsWith('near:') ? 'signedDelegateAction' : 'transaction'];
+    const text = typeof signed === 'string' ? signed.trim() : '';
     const bytes = base64Pattern.test(text) ? Buffer.from(text, 'base64') : Buffer.alloc(0);
     if (bytes.length === 0)
       return undefined;
 
+    // This claim only makes one signed payment single-use. Limiting a payer to one payment in flight is not done here.
     return { key: `x402:${requirements.network}:${createHash('sha256').update(bytes).digest('hex')}`, expiresAtMs: until(shortest) };
   }
 
@@ -94,11 +100,13 @@ const claimOf = (requirements: PaymentRequirements, payload: PaymentPayload, now
 /**
  * The moment after which a payment can no longer settle, in milliseconds since the epoch. On EVM: its
  * authorization's validBefore, or Permit2's deadline. On Solana: a minute from now, a blockhash's
- * lifetime. Undefined when the payload has no deadline.
+ * lifetime. On NEAR: the option's timeout counted in blocks of about 0.6 s, counted as 0.5 s. Undefined when the payload has no deadline.
  */
 const deadlineOf = (requirements: PaymentRequirements, payload: PaymentPayload, nowMs: number): number | undefined => {
   if (requirements.network.startsWith('solana:'))
     return nowMs + solanaWindowMs;
+  if (requirements.network.startsWith('near:'))
+    return nowMs + requirements.maxTimeoutSeconds * nearMsPerBlock;
   const permit2 = requirements.extra['assetTransferMethod'] === 'permit2';
   const signed = payload.payload[permit2 ? 'permit2Authorization' : 'authorization'];
   const seconds = isRecord(signed) ? secondsOf(signed[permit2 ? 'deadline' : 'validBefore']) : undefined;

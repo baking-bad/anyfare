@@ -4,6 +4,7 @@ import { x402ResourceServer } from '@x402/core/server';
 import type { Network, SchemeNetworkServer } from '@x402/core/types';
 import { findDefaultAsset } from '@x402/evm';
 import { ExactEvmScheme } from '@x402/evm/exact/server';
+import { ExactNearScheme } from '@x402/near/exact/server';
 import { ExactSvmScheme } from '@x402/svm/exact/server';
 
 import { createCdpRequestSigner, type CdpApiKey } from './cdp.js';
@@ -146,6 +147,7 @@ export const checkFacilitators = async ({ config, facilitators, timeoutMs }: Che
 const schemes: Readonly<Record<string, () => SchemeNetworkServer>> = {
   eip155: () => new ExactEvmScheme(),
   solana: () => new ExactSvmScheme(),
+  near: () => new ExactNearScheme(),
 };
 
 /** The scheme's `extra` an asset's quotes carry: the EIP-712 domain on EVM, and the transfer method when the SDK names one. */
@@ -164,7 +166,7 @@ const extraFor = (asset: PlatformConfig['assets'][number]): Record<string, unkno
 /**
  * Prepares the x402 rail. Every enabled facilitator must answer `/supported` within the timeout, or
  * this throws: the proxy fails fast. Then the resource server loads what each supports, such as the
- * Solana fee payer and transaction versions. Offered: the assets on Base and Solana networks whose
+ * Solana fee payer and transaction versions. Offered: the assets on Base, Solana and NEAR networks whose
  * facilitator is enabled, with a `payTo`. An EVM asset needs its EIP-712 domain from the SDK's
  * defaults.
  */

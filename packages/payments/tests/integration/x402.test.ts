@@ -1,5 +1,5 @@
-import { generateKeyPairSync, verify, type KeyObject } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createHash, generateKeyPairSync, verify, type KeyObject } from 'node:crypto';
+import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import { generateKeyPairSigner } from '@solana/kit';
@@ -7,6 +7,8 @@ import { x402Client } from '@x402/core/client';
 import { decodePaymentRequiredHeader, decodePaymentResponseHeader, decodePaymentSignatureHeader, encodePaymentSignatureHeader } from '@x402/core/http';
 import type { PaymentRequired, PaymentRequirements } from '@x402/core/types';
 import { ExactEvmScheme } from '@x402/evm/exact/client';
+import { createClientNearSigner, decodeSignedDelegateB64 } from '@x402/near';
+import { ExactNearScheme } from '@x402/near/exact/client';
 import { ExactSvmScheme } from '@x402/svm/exact/client';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -17,7 +19,7 @@ import {
   type SettleInput,
 } from '@anyfare/core';
 import {
-  associatedTokenAddress, createMemoryClaimStore, decodeSolanaPayment, encodeBase58, facilitatorAnswers, startFakeFacilitator, startFakeSolanaRpc,
+  associatedTokenAddress, createMemoryClaimStore, decodeSolanaPayment, encodeBase58, facilitatorAnswers, nearFacilitatorOff, startFakeFacilitator, startFakeSolanaRpc,
   type FacilitatorScript, type FakeFacilitator, type FakeSolanaRpc,
 } from '@anyfare/testing';
 
@@ -31,6 +33,8 @@ const solana = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 const near = 'near:testnet';
 const baseUsdc = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
 const solanaUsdc = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+const nearUsdc = '3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af';
+const nearPayTo = 'pay.anyfare.testnet';
 const basePayTo = '0x2222222222222222222222222222222222222222';
 const solanaPayTo = encodeBase58(Uint8Array.from({ length: 32 }, (_, index) => index + 1));
 const feePayer = encodeBase58(Uint8Array.from({ length: 32 }, () => 7));
@@ -44,6 +48,9 @@ const noCdpKey = () => {
 
 let facilitator: FakeFacilitator;
 let rpc: FakeSolanaRpc;
+let nearRpc: Server;
+let nearNonce = 7;
+let nearSigner: ReturnType<typeof createClientNearSigner>;
 let config: PlatformConfig;
 let setup: X402Setup;
 
@@ -55,7 +62,7 @@ const configWith = (url: string, { facilitators, ...overrides }: Record<string, 
       // Every NEAR asset needs a facilitator: a test that names its own leaves ours disabled
       facilitators: [
         ...(facilitators as readonly unknown[] | undefined) ?? [{ name: 'cdp', url, networks: [base, solana] }],
-        ...JSON.stringify(facilitators ?? []).includes(near) ? [] : [{ name: 'near', url, networks: [near], auth: { type: 'api-key', apiKey: 'FACILITATOR_SECRET' }, ...facilitators ? { enabled: false } : {} }],
+        ...JSON.stringify(facilitators ?? []).includes(near) ? [] : [facilitators ? nearFacilitatorOff : { ...nearFacilitatorOff, url, enabled: true }],
       ],
       timeouts: { settleMs: 1_000 },
       ...overrides,
@@ -80,12 +87,33 @@ beforeAll(async () => {
     startFakeFacilitator({ networks: [base, solana, near], feePayer }),
     startFakeSolanaRpc(),
   ]);
+  // A fake NEAR node, just enough for the client signer: the block height and the access key's nonce
+  nearRpc = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      const call = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { id: unknown; method: string; params: Record<string, unknown> };
+      nearNonce += call.method === 'query' ? 1 : 0;
+      const result = call.method === 'block'
+        ? { header: { height: 1_000, hash: '11111111111111111111111111111111' }, chunks: [], author: 'node.testnet' }
+        : { nonce: nearNonce, permission: 'FullAccess', block_height: 1_000, block_hash: '11111111111111111111111111111111' };
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, result }));
+    });
+  });
+  await new Promise<void>(resolve => nearRpc.listen(0, '127.0.0.1', resolve));
+  const nearKey = generateKeyPairSync('ed25519');
+  nearSigner = createClientNearSigner({
+    accountId: 'buyer.testnet',
+    secretKey: `ed25519:${encodeBase58(Buffer.concat([Buffer.from(nearKey.privateKey.export({ format: 'jwk' }).d!, 'base64url'), Buffer.from(nearKey.publicKey.export({ format: 'jwk' }).x!, 'base64url')]))}`,
+    rpcUrls: { [near]: `http://127.0.0.1:${(nearRpc.address() as AddressInfo).port}` },
+  });
   config = withTestPayTo(await configWith(facilitator.url));
   setup = await initializeX402({ config, facilitators: createFacilitators({ config, cdpApiKey: noCdpKey, facilitatorApiKey: facilitatorKey, clock }), timeoutMs: 5_000 });
 });
 
 afterAll(async () => {
-  await Promise.all([facilitator?.close(), rpc?.close()]);
+  await Promise.all([facilitator?.close(), rpc?.close(), new Promise<void>(resolve => nearRpc ? nearRpc.close(() => resolve()) : resolve())]);
 });
 
 beforeEach(() => {
@@ -175,7 +203,8 @@ const buyer = privateKeyToAccount(generatePrivateKey());
 const pay = async (required: PaymentRequired, network: string): Promise<string> => {
   const client = new x402Client()
     .register(base, new ExactEvmScheme(buyer))
-    .register(solana, new ExactSvmScheme(await generateKeyPairSigner(), { rpcUrl: rpc.url }));
+    .register(solana, new ExactSvmScheme(await generateKeyPairSigner(), { rpcUrl: rpc.url }))
+    .register(near, new ExactNearScheme(nearSigner));
 
   return encodePaymentSignatureHeader(await client.createPaymentPayload({ ...required, accepts: required.accepts.filter(option => option.network === network) }));
 };
@@ -220,7 +249,7 @@ const ed25519Secret = (pair: { readonly privateKey: KeyObject; readonly publicKe
 ]).toString('base64');
 
 describe('the x402 challenge', () => {
-  it('offers one exact option per asset on Base and Solana with the price in atomic units, and none on Tempo, which MPP serves', async () => {
+  it('offers one exact option per asset on Base, Solana and NEAR with the price in atomic units, and none on Tempo, which MPP serves', async () => {
     const { rail } = createPorts();
 
     const required = await requiredOf(rail, quoteOf(1_234n));
@@ -232,6 +261,8 @@ describe('the x402 challenge', () => {
       expect.objectContaining({
         scheme: 'exact', network: solana, asset: solanaUsdc, amount: '1234', payTo: solanaPayTo, extra: expect.objectContaining({ feePayer, transactionVersions: [0, 1] }),
       }),
+      // No extra: NEAR's scheme needs none
+      expect.objectContaining({ scheme: 'exact', network: near, asset: nearUsdc, amount: '1234', payTo: nearPayTo, extra: {} }),
     ]);
   });
 
@@ -240,8 +271,8 @@ describe('the x402 challenge', () => {
     const narrowed = await initializeX402({ config: minimum, facilitators: createFacilitators({ config: minimum, cdpApiKey: noCdpKey, facilitatorApiKey: facilitatorKey, clock }), timeoutMs: 5_000 });
     const { rail } = createPorts(narrowed);
 
-    expect((await requiredOf(rail, quoteOf(1_000n))).accepts.map(option => option.network)).toEqual([base]);
-    expect((await requiredOf(rail, quoteOf(50_000n))).accepts.map(option => option.network)).toEqual([base, solana]);
+    expect((await requiredOf(rail, quoteOf(1_000n))).accepts.map(option => option.network)).toEqual([base, near]);
+    expect((await requiredOf(rail, quoteOf(50_000n))).accepts.map(option => option.network)).toEqual([base, solana, near]);
   });
 });
 
@@ -249,6 +280,7 @@ describe('x402 payments through the facilitator', () => {
   it.each([
     ['Base', base, 'base-usdc'],
     ['Solana', solana, 'solana-usdc'],
+    ['NEAR', near, 'near-usdc'],
   ])('verifies a payment signed on %s by the official client, records it, then settles and books it', async (_case, network, asset) => {
     const { rail, created, settled } = createPorts();
     const quote = quoteOf();
@@ -474,6 +506,7 @@ describe('one signed payment, one call', () => {
   it.each([
     ['Base', base],
     ['Solana', solana],
+    ['NEAR', near],
   ])('verifies one of two concurrent calls paid with the same %s payment, and refuses the other as replayed', async (_case, network) => {
     const { rail, created } = createPorts();
     const [first, second] = [quoteOf(), quoteOf()];
@@ -627,6 +660,75 @@ describe('one signed payment, one call', () => {
     facilitator.reset();
 
     await expect(rail.authorize(paidCredential(rail, header), quoteOf())).resolves.toMatchObject({ rail: 'x402' });
+  });
+});
+
+describe('NEAR payments', () => {
+  it('names the delegate action\'s sender as the buyer and the payer, and sends the facilitator the signed action', async () => {
+    const { rail, created } = createPorts();
+    const quote = quoteOf();
+    const header = await pay(await requiredOf(rail, quote), near);
+    const signed = String(decodePaymentSignatureHeader(header).payload['signedDelegateAction']);
+    const before = facilitator.requests.length;
+
+    const authorization = await rail.authorize(paidCredential(rail, header), quote);
+    const receipt = await rail.finalize(authorization);
+
+    expect(decodeSignedDelegateB64(signed).delegate).toMatchObject({ senderId: 'buyer.testnet', receiverId: nearUsdc });
+    expect(decodeSignedDelegateB64(signed).delegate.nonce).toBeGreaterThan(7n);
+    expect(authorization).toMatchObject({ buyer: 'address:near:testnet:buyer.testnet', network: near, asset: 'near-usdc' });
+    expect(created[0]).toMatchObject({ network: near, asset: 'near-usdc', atomicAmount: 1_000n, status: 'verified' });
+    expect(decodePaymentResponseHeader(receipt.headers['payment-response']!)).toMatchObject({ success: true, network: near, payer: 'buyer.testnet' });
+    const sent = facilitator.requests.slice(before).filter(request => request.path !== '/supported');
+    expect(sent.map(request => request.path)).toEqual(['/verify', '/settle']);
+    expect(sent[0]!.body).toMatchObject({ paymentPayload: { payload: { signedDelegateAction: signed } }, paymentRequirements: { network: near, asset: nearUsdc, amount: '1000', payTo: nearPayTo } });
+  });
+
+  it('claims one key per signed action: a SHA-256 of its bytes, however its base64 is padded', async () => {
+    const { rail, claims } = createPorts();
+    const payload = decodePaymentSignatureHeader(await pay(await requiredOf(rail, quoteOf()), near));
+    const signed = String(payload.payload['signedDelegateAction']);
+    const stripped = signed.replace(/=+$/, '');
+    const spellings = [...new Set([signed, stripped, `${stripped}=`, `${stripped}==`])];
+    const headerOf = (spelling: string) => encodePaymentSignatureHeader({ ...payload, payload: { ...payload.payload, signedDelegateAction: spelling } });
+
+    const results = await Promise.allSettled(spellings.map(spelling => rail.authorize(paidCredential(rail, headerOf(spelling)), quoteOf())));
+
+    expect(spellings.length).toBeGreaterThanOrEqual(3);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect([...claims.claims.keys()]).toEqual([`x402:${near}:${createHash('sha256').update(Buffer.from(signed, 'base64')).digest('hex')}`]);
+
+    const other = decodePaymentSignatureHeader(await pay(await requiredOf(rail, quoteOf()), near));
+    expect(other.payload['signedDelegateAction']).not.toBe(signed);
+    await expect(rail.authorize(paidCredential(rail, encodePaymentSignatureHeader(other)), quoteOf())).resolves.toMatchObject({ network: near });
+    expect(claims.claims.size).toBe(2);
+  });
+
+  it('gives a payment the option\'s timeout at half a second a block: the SDK counts the window in blocks, which take about 0.6 s', async () => {
+    const { rail } = createPorts();
+    const quote = quoteOf();
+    const required = await requiredOf(rail, quote);
+    const timeout = required.accepts.find(option => option.network === near)!.maxTimeoutSeconds;
+    const header = await pay(required, near);
+
+    const before = Date.now();
+    const authorization = await rail.authorize(paidCredential(rail, header), quote);
+
+    expect(timeout).toBeGreaterThan(30);
+    expect(authorization.deadlineMs).toBeGreaterThanOrEqual(before + timeout * 500);
+    expect(authorization.deadlineMs).toBeLessThanOrEqual(Date.now() + timeout * 500);
+    expect(authorization.deadlineMs! - Date.now()).toBeGreaterThan(minPaymentWindowMs);
+  });
+
+  it('refuses a NEAR payment with no signed action as invalid_payload, before asking the facilitator', async () => {
+    const { rail } = createPorts();
+    const quote = quoteOf();
+    const payload = decodePaymentSignatureHeader(await pay(await requiredOf(rail, quote), near));
+    const header = encodePaymentSignatureHeader({ ...payload, payload: { ...payload.payload, signedDelegateAction: '' } });
+    const before = facilitator.requests.length;
+
+    await expect(rail.authorize(paidCredential(rail, header), quote)).rejects.toMatchObject({ code: 'payment_invalid', reason: 'invalid_payload' });
+    expect(facilitator.requests.length).toBe(before);
   });
 });
 
@@ -835,6 +937,7 @@ describe('the payment in logs and errors', () => {
   it.each([
     ['Base', base],
     ['Solana', solana],
+    ['NEAR', near],
   ])('never writes a %s payment\'s header or signature to the log, or into an error\'s message', async (_case, network) => {
     const lines: string[] = [];
     const captured = createLogger({ level: 'trace' }, { write: (line: string) => lines.push(line) });
@@ -845,7 +948,7 @@ describe('the payment in logs and errors', () => {
       const quote = { ...quoteOf(), log: captured };
       const header = await pay(await requiredOf(ports.rail, quote), network);
       const payload = decodePaymentSignatureHeader(header).payload;
-      secrets.push(header, String(payload['signature'] ?? payload['transaction']));
+      secrets.push(header, String(payload['signature'] ?? payload['transaction'] ?? payload['signedDelegateAction']));
       try {
         await run(() => ports.rail.authorize(paidCredential(ports.rail, header), quote));
       }

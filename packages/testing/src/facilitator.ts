@@ -2,6 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+import { decodeSignedDelegateB64 } from '@x402/near';
+
 export type FacilitatorPath = '/supported' | '/verify' | '/settle';
 
 export interface FacilitatorRequest {
@@ -57,13 +59,25 @@ const field = (value: unknown, ...path: readonly string[]): unknown =>
   path.reduce<unknown>((current, key) => isRecord(current) ? current[key] : undefined, value);
 
 /**
- * The payer a request's payment names: the EIP-3009 `from` on EVM, and `solana-payer` for a Solana
- * transaction. Script `/verify` to answer a real address.
+ * The payer a request's payment names: the EIP-3009 `from` on EVM, the delegate action's sender on NEAR,
+ * and `solana-payer` for a Solana transaction. Script `/verify` to answer a real address.
  */
 export const payerOf = (body: unknown): string => {
   const from = field(body, 'paymentPayload', 'payload', 'authorization', 'from');
 
-  return typeof from === 'string' ? from : 'solana-payer';
+  if (typeof from === 'string')
+    return from;
+  const delegate = field(body, 'paymentPayload', 'payload', 'signedDelegateAction');
+  if (typeof delegate === 'string') {
+    try {
+      return decodeSignedDelegateB64(delegate).delegate.senderId;
+    }
+    catch {
+      return 'near-payer';
+    }
+  }
+
+  return 'solana-payer';
 };
 
 /** A fake transaction hash for a network: 32 hex bytes on EVM, 64 hex characters elsewhere. */
