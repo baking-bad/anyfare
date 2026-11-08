@@ -6,7 +6,8 @@ import type { Asset, PlatformConfig } from '../platform/config.js';
 export interface TreasuryWallet {
   // Such as `payTo:base-usdc` or `signer:tempo`
   readonly name: string;
-  // `signer`: a hot wallet that pays routed targets. The balance monitor watches it; reconciliation doesn't count it.
+  // `signer`: a hot wallet that pays routed targets. The balance monitor alerts when it runs low, and
+  // reconciliation counts it: the ledger books its funding as treasury transfers, and its payments to targets.
   readonly role: 'pay_to' | 'signer';
   readonly addresses: readonly string[];
   readonly assets: readonly Asset[];
