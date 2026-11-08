@@ -121,7 +121,7 @@ describe('config/production.yaml', () => {
       maxPerCall: 100_000n,
       maxPerNetworkPerHour: 5_000_000n,
       maxPerNetworkPerDay: 20_000_000n,
-      wallets: { base: undefined, tempo: undefined, solana: undefined },
+      wallets: { base: undefined, tempo: undefined, solana: undefined, near: undefined },
     });
   });
 
@@ -146,7 +146,8 @@ describe('config/production.yaml', () => {
     // Made-up: our NEAR account, and the hot wallets the deployment adds
     const nearOnly = withPayTo(text, asset => asset === 'near-usdc' ? 'pay.anyfare.test.near' : undefined);
     // The signer section is the file's last
-    const wallets = '  wallets:\n    base: "0x3333333333333333333333333333333333333333"\n    tempo: "0x3333333333333333333333333333333333333333"\n    solana: "11111111111111111111111111111111"\n';
+    const wallets = '  wallets:\n    base: "0x3333333333333333333333333333333333333333"\n    tempo: "0x3333333333333333333333333333333333333333"\n    solana: "11111111111111111111111111111111"\n'
+      + '    near: pay.anyfare.test.near\n';
     expect(text.trimEnd().split('\n').at(-1)).toMatch(/^ {2}maxPerNetworkPerDay: /);
     const config = await loadText(`${nearOnly.trimEnd()}\n${wallets}`);
 
@@ -159,13 +160,15 @@ describe('config/production.yaml', () => {
     expect(paymentMethodsFor(1_000n, config)).toEqual(['credits', 'x402']);
     expect(config.signer.wallets).toEqual({
       base: '0x3333333333333333333333333333333333333333', tempo: '0x3333333333333333333333333333333333333333', solana: '11111111111111111111111111111111',
+      near: 'pay.anyfare.test.near',
     });
-    // The treasury watches the NEAR payTo. The relayer's account isn't in the platform config: the facilitator reports its NEAR.
-    expect(treasuryWallets(config).map(wallet => [wallet.name, wallet.role, wallet.addresses])).toEqual([
-      ['payTo:near-usdc', 'pay_to', ['pay.anyfare.test.near']],
-      ['signer:base', 'signer', ['0x3333333333333333333333333333333333333333']],
-      ['signer:tempo', 'signer', ['0x3333333333333333333333333333333333333333']],
-      ['signer:solana', 'signer', ['11111111111111111111111111111111']],
+    // The treasury watches the NEAR payTo, which is the NEAR hot wallet too: one row, so its balance is
+    // counted once. The relayer's account isn't in the platform config: the facilitator reports its NEAR.
+    expect(treasuryWallets(config).map(wallet => [wallet.name, wallet.role, wallet.signer, wallet.addresses])).toEqual([
+      ['payTo:near-usdc', 'pay_to', 'signer:near', ['pay.anyfare.test.near']],
+      ['signer:base', 'signer', undefined, ['0x3333333333333333333333333333333333333333']],
+      ['signer:tempo', 'signer', undefined, ['0x3333333333333333333333333333333333333333']],
+      ['signer:solana', 'signer', undefined, ['11111111111111111111111111111111']],
     ]);
   });
 });

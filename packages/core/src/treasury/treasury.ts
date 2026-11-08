@@ -9,6 +9,9 @@ export interface TreasuryWallet {
   // `signer`: a hot wallet that pays routed targets. The balance monitor alerts when it runs low, and
   // reconciliation counts it: the ledger books its funding as treasury transfers, and its payments to targets.
   readonly role: 'pay_to' | 'signer';
+  // A `payTo` that is the Signer's hot wallet too, such as `signer:near`: its balance is in this row
+  // only, so it's counted once. Absent on every other row.
+  readonly signer?: string;
   readonly addresses: readonly string[];
   readonly assets: readonly Asset[];
 }
@@ -26,24 +29,31 @@ export interface BalanceReader {
 /**
  * Every platform wallet, from platform config: each asset's `payTo` (which is the MPP recipient for
  * Tempo assets), and the Signer's hot wallets from `signer.wallets`, each with the registry's assets
- * on its chain: Base's, `mpp.network`'s for Tempo, and Solana's. An asset without a `payTo` has no
- * receiving wallet. Keys stay offline for receiving addresses.
+ * on its chain: Base's, `mpp.network`'s for Tempo, Solana's, and NEAR's. An asset without a `payTo` has
+ * no receiving wallet. Keys stay offline for receiving addresses.
+ *
+ * On NEAR the hot wallet is the account buyers pay: a NEAR asset whose `payTo` is `signer.wallets.near`
+ * stays in its `payTo` row, noted as `signer:near`, and the `signer:near` row keeps only the NEAR
+ * assets paid to another account, or none, so no balance is listed twice.
  */
 export const treasuryWallets = (config: PlatformConfig): readonly TreasuryWallet[] => {
-  const payTo = new Map<string, { addresses: string[]; assets: Asset[] }>();
+  const { base, tempo, solana, near } = config.signer.wallets;
+  // A NEAR asset received by the Signer's own NEAR account
+  const nearSigner = (asset: Asset): boolean => near !== undefined && asset.network.chain === 'near' && asset.payTo === near;
+  const payTo = new Map<string, { addresses: string[]; assets: Asset[]; signer?: string }>();
   for (const asset of config.assets) {
     if (asset.payTo === undefined)
       continue;
     const key = `${asset.network.id}:${asset.payTo}`;
-    const wallet = payTo.get(key) ?? { addresses: [asset.payTo], assets: [] };
+    const wallet = payTo.get(key) ?? { addresses: [asset.payTo], assets: [], ...nearSigner(asset) ? { signer: 'signer:near' } : {} };
     wallet.assets.push(asset);
     payTo.set(key, wallet);
   }
-  const { base, tempo, solana } = config.signer.wallets;
   const signerWallets = [
     { chain: 'base', address: base, assets: config.assets.filter(asset => asset.network.chain === 'base') },
     { chain: 'tempo', address: tempo, assets: config.assets.filter(asset => asset.network.id === config.mpp.network.id) },
     { chain: 'solana', address: solana, assets: config.assets.filter(asset => asset.network.chain === 'solana') },
+    { chain: 'near', address: near, assets: config.assets.filter(asset => asset.network.chain === 'near' && !nearSigner(asset)) },
   ].filter(wallet => wallet.address !== undefined && wallet.assets.length > 0);
 
   return [

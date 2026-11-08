@@ -97,7 +97,13 @@ export interface PlatformConfig {
     readonly maxPerCall: MicroUsd;
     readonly maxPerNetworkPerHour: MicroUsd | undefined;
     readonly maxPerNetworkPerDay: MicroUsd;
-    // The hot wallets' public addresses, by chain, for the balance monitor. Undefined: not watched.
-    readonly wallets: { readonly base: string | undefined; readonly tempo: string | undefined; readonly solana: string | undefined };
+    // The hot wallets' public addresses, by chain, for the balance monitor. Undefined: not watched. NEAR's
+    // is an account ID, and the Signer won't start with another account in SIGNER_NEAR_ACCOUNT.
+    readonly wallets: {
+      readonly base: string | undefined;
+      readonly tempo: string | undefined;
+      readonly solana: string | undefined;
+      readonly near: string | undefined;
+    };
   };
 }

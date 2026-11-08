@@ -77,7 +77,7 @@ export const platformConfigSchema: SchemaObject = {
       maxPerCall: usdAmount,
       maxPerNetworkPerHour: usdAmount,
       maxPerNetworkPerDay: usdAmount,
-      wallets: object({ base: addressText, tempo: addressText, solana: addressText }),
+      wallets: object({ base: addressText, tempo: addressText, solana: addressText, near: addressText }),
     }),
   }, ['version', 'environment', 'urls', 'keyPrefixes', 'routingFeeBps', 'assets', 'facilitators', 'mpp', 'rateLimits']),
 };

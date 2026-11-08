@@ -89,8 +89,8 @@ export interface SignerLimitsDocument {
   readonly maxPerCall?: string;
   readonly maxPerNetworkPerHour?: string;
   readonly maxPerNetworkPerDay?: string;
-  // The hot wallets' public addresses, for the balance monitor. Never their keys.
-  readonly wallets?: { readonly base?: string; readonly tempo?: string; readonly solana?: string };
+  // The hot wallets' public addresses, for the balance monitor. Never their keys. NEAR's is an account ID.
+  readonly wallets?: { readonly base?: string; readonly tempo?: string; readonly solana?: string; readonly near?: string };
 }
 
 export interface PlatformConfigDocument {

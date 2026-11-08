@@ -106,3 +106,4 @@ signer:                         # Optional. What one routed call and one network
   #   base: "0x…"
   #   tempo: "0x…"
   #   solana: "…"               # In base58
+  #   near: pay.anyfare.testnet # An account ID: near-usdc's payTo, which also pays NEAR targets. SIGNER_NEAR_ACCOUNT must match

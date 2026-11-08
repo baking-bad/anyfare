@@ -56,20 +56,29 @@ export const findOptionAsset = (config: Pick<PlatformConfig, 'assets'>, network:
  *   domain in `extra.name` and `extra.version`;
  * - Solana: a fee payer that isn't our wallet, since the target's facilitator pays the transaction's
  *   fee, transaction versions 0 or 1, and a memo of at most 256 bytes;
+ * - NEAR: a payTo that isn't our own account, since a token never transfers to its sender, and no
+ *   `extra`, or an empty one: the client signs one `ft_transfer` of the amount to the payTo on the
+ *   asset's contract, and an option that asks for more is another payment than the one signed;
  * - an amount: a decimal string of up to 30 digits, above 0.
  * The proxy checks it to choose an option, and the Signer again before it signs.
  */
 export const checkX402Option = (
   requirement: unknown,
-  { asset, network, ourSolanaWallet }: { readonly asset: Asset; readonly network: NetworkInfo; readonly ourSolanaWallet?: string | undefined },
+  { asset, network, ourSolanaWallet, ourNearAccount }: {
+    readonly asset: Asset;
+    readonly network: NetworkInfo;
+    readonly ourSolanaWallet?: string | undefined;
+    // The Signer's NEAR hot wallet, which pays the option
+    readonly ourNearAccount?: string | undefined;
+  },
 ): ({ readonly ok: true; readonly refusal?: undefined } & X402OptionPrice) | { readonly ok?: undefined; readonly refusal: X402OptionRefusal } => {
   const option = asExactX402Option(requirement);
   if (!option)
     return { refusal: 'not_exact' };
   const extra = isRecord(option['extra']) ? option['extra'] : {};
   const payTo = option['payTo'];
-  // Lexical, as the EVM client takes it: its checksum isn't checked
-  if (typeof payTo !== 'string' || !isValidAddress(network, payTo))
+  // Lexical, as the EVM client takes it: its checksum isn't checked. NEAR account IDs are exact.
+  if (typeof payTo !== 'string' || !isValidAddress(network, payTo) || (network.namespace === 'near' && payTo === ourNearAccount))
     return { refusal: 'invalid_pay_to' };
   const timeout = option['maxTimeoutSeconds'];
   if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout < 1 || timeout > maxX402TimeoutSeconds)
@@ -82,6 +91,10 @@ export const checkX402Option = (
     if ((extra['assetTransferMethod'] !== undefined && extra['assetTransferMethod'] !== 'eip3009') || extra['name'] === 'GatewayWalletBatched')
       return { refusal: 'transfer_method' };
     if (typeof extra['name'] !== 'string' || extra['name'] === '' || typeof extra['version'] !== 'string' || extra['version'] === '')
+      return { refusal: 'invalid_option' };
+  }
+  else if (network.namespace === 'near') {
+    if (option['extra'] !== undefined && (!isRecord(option['extra']) || Object.keys(option['extra']).length > 0))
       return { refusal: 'invalid_option' };
   }
   else {

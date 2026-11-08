@@ -3,11 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { asExactX402Option, checkX402Option, findAsset, findNetwork, findOptionAsset, maxX402TimeoutSeconds } from '../../src/index.js';
 import { examplePlatform } from '../fixtures.js';
 
-// config/example.yaml: USDC on Base Sepolia and on Solana Devnet
+// config/example.yaml: USDC on Base Sepolia, on Solana Devnet, and on NEAR testnet
 const baseUsdc = findAsset(examplePlatform, 'base-usdc')!;
 const solanaUsdc = findAsset(examplePlatform, 'solana-usdc')!;
+const nearUsdc = findAsset(examplePlatform, 'near-usdc')!;
 const base = findNetwork('eip155:84532')!;
 const solana = findNetwork('solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1')!;
+const near = findNetwork('near:testnet')!;
+// Made-up NEAR accounts: the target's, and our hot wallet
+const nearPayTo = 'api.target.testnet';
+const ourNearAccount = 'pay.anyfare.testnet';
 // Made-up Solana accounts: the target's, its facilitator's fee payer, and our wallet
 const base58Of = (byte: number): string => {
   const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -29,8 +34,13 @@ const onBase = (overrides: Record<string, unknown> = {}, extra: Record<string, u
 const onSolana = (overrides: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => ({
   scheme: 'exact', network: solana.id, amount: '1500', asset: solanaUsdc.address, payTo: solanaPayTo, maxTimeoutSeconds: 60, extra: { feePayer, ...extra }, ...overrides,
 });
+// As the x402 SDK's NEAR server writes an option: no scheme-specific extra
+const onNear = (overrides: Record<string, unknown> = {}) => ({
+  scheme: 'exact', network: near.id, amount: '1500', asset: nearUsdc.address, payTo: nearPayTo, maxTimeoutSeconds: 60, extra: {}, ...overrides,
+});
 const checkBase = (option: unknown) => checkX402Option(option, { asset: baseUsdc, network: base });
 const checkSolana = (option: unknown) => checkX402Option(option, { asset: solanaUsdc, network: solana, ourSolanaWallet: ourWallet });
+const checkNear = (option: unknown) => checkX402Option(option, { asset: nearUsdc, network: near, ourNearAccount });
 
 describe('a routed target\'s x402 option', () => {
   it('pays an EIP-3009 authorization on Base, at its price rounded up to the micro-USD', () => {
@@ -46,6 +56,15 @@ describe('a routed target\'s x402 option', () => {
     expect(checkSolana(onSolana({}, { transactionVersions: [0, 1] }))).toMatchObject({ ok: true });
     // Without our wallet, no fee payer is ours
     expect(checkX402Option(onSolana({}, { feePayer: ourWallet }), { asset: solanaUsdc, network: solana })).toMatchObject({ ok: true });
+  });
+
+  it('pays an ft_transfer on NEAR, with an empty extra or none', () => {
+    expect(checkNear(onNear())).toEqual({ ok: true, atomicAmount: 1_500n, price: 1_500n });
+    expect(checkNear(onNear({ extra: undefined, maxTimeoutSeconds: maxX402TimeoutSeconds }))).toMatchObject({ ok: true });
+    // An implicit account: 64 hex characters
+    expect(checkNear(onNear({ payTo: 'a'.repeat(64) }))).toMatchObject({ ok: true });
+    // Without our account, no payTo is ours
+    expect(checkX402Option(onNear({ payTo: ourNearAccount }), { asset: nearUsdc, network: near })).toMatchObject({ ok: true });
   });
 
   it.each([
@@ -91,6 +110,24 @@ describe('a routed target\'s x402 option', () => {
   ])('refuses on Solana %s', (_name, option, refusal) => {
     expect(checkSolana(option)).toEqual({ refusal });
   });
+
+  it.each([
+    ['our own account as the payTo', onNear({ payTo: ourNearAccount }), 'invalid_pay_to'],
+    ['a payTo that isn\'t a NEAR account ID', onNear({ payTo: 'Api.Target.testnet' }), 'invalid_pay_to'],
+    ['a payTo of 65 characters', onNear({ payTo: 'a'.repeat(65) }), 'invalid_pay_to'],
+    ['no payTo', onNear({ payTo: undefined }), 'invalid_pay_to'],
+    ['maxTimeoutSeconds of 301', onNear({ maxTimeoutSeconds: 301 }), 'invalid_timeout'],
+    ['maxTimeoutSeconds of 0', onNear({ maxTimeoutSeconds: 0 }), 'invalid_timeout'],
+    ['a non-empty extra', onNear({ extra: { memo: 'm' } }), 'invalid_option'],
+    ['an extra naming the authorization payment flow', onNear({ extra: { paymentFlow: 'authorization' } }), 'invalid_option'],
+    ['an escrow payment flow', onNear({ extra: { paymentFlow: 'escrow' } }), 'invalid_option'],
+    ['extra that isn\'t a record', onNear({ extra: 'USDC' }), 'invalid_option'],
+    ['extra of null', onNear({ extra: null }), 'invalid_option'],
+    ['an amount that isn\'t atomic', onNear({ amount: '0.001' }), 'invalid_amount'],
+    ['a zero amount', onNear({ amount: '0' }), 'invalid_amount'],
+  ])('refuses on NEAR %s', (_name, option, refusal) => {
+    expect(checkNear(option)).toEqual({ refusal });
+  });
 });
 
 describe('an x402 option\'s network and asset', () => {
@@ -100,10 +137,15 @@ describe('an x402 option\'s network and asset', () => {
     expect(asExactX402Option(null)).toBeUndefined();
   });
 
-  it('finds the registry\'s asset, matching EVM addresses in any case and base58 ones exactly', () => {
+  it('finds the registry\'s asset, matching EVM addresses in any case, and base58 ones and NEAR contracts exactly', () => {
     expect(findOptionAsset(examplePlatform, base, baseUsdc.address.toLowerCase())).toBe(baseUsdc);
     expect(findOptionAsset(examplePlatform, solana, solanaUsdc.address)).toBe(solanaUsdc);
     expect(findOptionAsset(examplePlatform, solana, solanaUsdc.address.toLowerCase())).toBeUndefined();
     expect(findOptionAsset(examplePlatform, solana, baseUsdc.address)).toBeUndefined();
+    expect(findOptionAsset(examplePlatform, near, nearUsdc.address)).toBe(nearUsdc);
+    expect(findOptionAsset(examplePlatform, near, nearUsdc.address.toUpperCase())).toBeUndefined();
+    expect(findOptionAsset(examplePlatform, near, `${nearUsdc.address}.testnet`)).toBeUndefined();
+    // The mainnet contract isn't the registry's on testnet
+    expect(findOptionAsset(examplePlatform, near, '17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1')).toBeUndefined();
   });
 });

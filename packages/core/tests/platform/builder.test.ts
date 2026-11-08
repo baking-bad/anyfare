@@ -81,7 +81,7 @@ describe('buildPlatformConfig', () => {
     expect(config.rateLimits.probeIp).toEqual({ requests: 600, windowSeconds: 60 });
     expect(config.signer).toEqual({
       maxPerCall: 1_000_000n, maxPerNetworkPerHour: undefined, maxPerNetworkPerDay: 100_000_000n,
-      wallets: { base: undefined, tempo: undefined, solana: undefined },
+      wallets: { base: undefined, tempo: undefined, solana: undefined, near: undefined },
     });
   });
 
@@ -140,6 +140,7 @@ describe('buildPlatformConfig', () => {
     ['an invalid MPP recipient', { mpp: { recipient: '0x12' } }, '/mpp/recipient'],
     ['a Signer wallet that isn\'t an address', { signer: { wallets: { tempo: '0x12' } } }, '/signer/wallets/tempo'],
     ['a Solana Signer wallet that isn\'t a base58 address', { signer: { wallets: { solana: '0x4444444444444444444444444444444444444444' } } }, '/signer/wallets/solana'],
+    ['a NEAR Signer wallet that isn\'t an account ID', { signer: { wallets: { near: 'Pay.Anyfare.testnet' } } }, '/signer/wallets/near'],
     ['a Signer limit that overflows', { signer: { maxPerCall: '99999999999999' } }, '/signer/maxPerCall'],
     ['an amount that overflows', { paymentKeyDefaults: { dailyBudget: '99999999999999' } }, '/paymentKeyDefaults/dailyBudget'],
     ['an amount that overflows in an asset', { assets: [{ name: 'x', network: 'eip155:84532', address: '0x1111111111111111111111111111111111111111', decimals: 6, peg: 'usd', minPrice: '99999999999999' }] }, '/assets/0/minPrice'],
@@ -273,11 +274,23 @@ describe('facilitators', () => {
 });
 
 describe('the Signer', () => {
-  it('takes the hot wallets by their public addresses, each optional, Solana\'s in base58', () => {
-    const wallets = { base: '0x3333333333333333333333333333333333333333', tempo: '0x4444444444444444444444444444444444444444', solana: '11111111111111111111111111111111' };
+  it('takes the hot wallets by their public addresses, each optional, Solana\'s in base58 and NEAR\'s as an account ID', () => {
+    const wallets = {
+      base: '0x3333333333333333333333333333333333333333', tempo: '0x4444444444444444444444444444444444444444', solana: '11111111111111111111111111111111',
+      near: 'pay.anyfare.testnet',
+    };
 
     expect(buildPlatformConfig(document({ signer: { wallets } })).signer.wallets).toEqual(wallets);
-    expect(buildPlatformConfig(document({ signer: { wallets: { tempo: wallets.tempo } } })).signer.wallets).toEqual({ base: undefined, tempo: wallets.tempo, solana: undefined });
+    expect(buildPlatformConfig(document({ signer: { wallets: { tempo: wallets.tempo } } })).signer.wallets).toEqual({
+      base: undefined, tempo: wallets.tempo, solana: undefined, near: undefined,
+    });
+    expect(buildPlatformConfig(document({ signer: { wallets: { near: wallets.near } } })).signer.wallets).toMatchObject({ base: undefined, near: wallets.near });
+  });
+
+  it('says a NEAR wallet must be an account ID', () => {
+    expect(issues(() => buildPlatformConfig(document({ signer: { wallets: { near: 'pay anyfare' } } })))).toContainEqual({
+      path: '/signer/wallets/near', message: 'is not a NEAR account ID',
+    });
   });
 });
 

@@ -130,11 +130,12 @@ export const checkPlatformConfig = (document: PlatformConfigDocument): readonly 
   checkAmount(['signer', 'maxPerCall'], document.signer?.maxPerCall);
   checkAmount(['signer', 'maxPerNetworkPerHour'], document.signer?.maxPerNetworkPerHour);
   checkAmount(['signer', 'maxPerNetworkPerDay'], document.signer?.maxPerNetworkPerDay);
-  // The Signer's hot wallets, by their public addresses: EVM on Base and Tempo, base58 on Solana
+  // The Signer's hot wallets, by their public addresses: EVM on Base and Tempo, base58 on Solana, an
+  // account ID on NEAR
   for (const [chain, address] of Object.entries(document.signer?.wallets ?? {})) {
     const network = supportedNetworks.find(item => item.chain === chain);
     if (network && typeof address === 'string' && !isValidAddress(network, address))
-      add(['signer', 'wallets', chain], `is not a valid address on ${network.title}`);
+      add(['signer', 'wallets', chain], network.namespace === 'near' ? 'is not a NEAR account ID' : `is not a valid address on ${network.title}`);
   }
 
   return drafts;
@@ -206,7 +207,9 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
       maxPerCall: usd(document.signer?.maxPerCall, signer.maxPerCall),
       maxPerNetworkPerHour: document.signer?.maxPerNetworkPerHour === undefined ? undefined : parseUsd(document.signer.maxPerNetworkPerHour),
       maxPerNetworkPerDay: usd(document.signer?.maxPerNetworkPerDay, signer.maxPerNetworkPerDay),
-      wallets: { base: document.signer?.wallets?.base, tempo: document.signer?.wallets?.tempo, solana: document.signer?.wallets?.solana },
+      wallets: {
+        base: document.signer?.wallets?.base, tempo: document.signer?.wallets?.tempo, solana: document.signer?.wallets?.solana, near: document.signer?.wallets?.near,
+      },
     },
   });
 };
