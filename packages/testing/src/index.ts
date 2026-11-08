@@ -27,3 +27,8 @@ export {
 export type {
   FakeTempoRpc, FakeTempoRpcOptions, TempoBroadcast, TempoRpcCall, TempoSimulation, TempoTransactionChange, TestTempoPayer, TestTempoPayerOptions,
 } from './tempoRpc.js';
+export { createTestNearPayer, generateNearKey, nearEmptyCodeHash, startFakeNearRpc } from './nearRpc.js';
+export type {
+  FakeNearAccount, FakeNearRpc, FakeNearRpcOptions, FakeNearToken, NearAccessKeyPermission, NearBroadcast, NearBroadcastOptions, NearDelegate, NearNetwork, NearRpcCall,
+  NearTestKey, NearTransaction, TestNearPayer, TestNearPayerOptions,
+} from './nearRpc.js';
