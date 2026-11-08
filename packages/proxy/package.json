@@ -30,9 +30,11 @@
   "devDependencies": {
     "@anyfare/signer": "0.1.0",
     "@anyfare/testing": "0.1.0",
+    "@solana/kit": "8.6.0",
     "@x402/core": "2.30.0",
     "@x402/evm": "2.30.0",
     "drizzle-orm": "^0.45.3",
+    "mppx": "0.13.1",
     "viem": "2.57.3"
   }
 }
