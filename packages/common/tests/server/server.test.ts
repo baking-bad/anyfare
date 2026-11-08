@@ -297,6 +297,50 @@ describe('errors', () => {
   });
 });
 
+describe('validation', () => {
+  it('refuses a number for a string field in a body with 400 invalid_request', async () => {
+    const { app } = buildServer();
+    app.post('/items', { schema: { body: { type: 'object', required: ['name'], properties: { name: { type: 'string' } } } } }, async () => ({ ok: true }));
+
+    const response = await app.inject({ method: 'POST', url: '/items', payload: { name: 10 } });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: 'invalid_request' } });
+  });
+
+  it('refuses an unknown field in a body whose schema forbids them', async () => {
+    const { app } = buildServer();
+    app.post('/items', {
+      schema: { body: { type: 'object', properties: { name: { type: 'string' } }, additionalProperties: false } },
+    }, async () => ({ ok: true }));
+
+    const response = await app.inject({ method: 'POST', url: '/items', payload: { name: 'a', extra: 1 } });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: 'invalid_request' } });
+  });
+
+  it('still checks formats in a body', async () => {
+    const { app } = buildServer();
+    app.post('/items', { schema: { body: { type: 'object', properties: { at: { type: 'string', format: 'date-time' } } } } }, async () => ({ ok: true }));
+
+    const response = await app.inject({ method: 'POST', url: '/items', payload: { at: 'tomorrow' } });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('still turns a query string value into the schema\'s type', async () => {
+    const { app } = buildServer();
+    app.get<{ Querystring: { limit?: number } }>('/items', {
+      schema: { querystring: { type: 'object', properties: { limit: { type: 'integer' } } } },
+    }, async request => ({ limit: request.query.limit }));
+
+    const response = await app.inject({ method: 'GET', url: '/items?limit=5' });
+
+    expect(response.json()).toEqual({ limit: 5 });
+  });
+});
+
 describe('HEAD', () => {
   it('has no automatic HEAD route, so HEAD on a GET route is 404', async () => {
     const { app } = buildServer();

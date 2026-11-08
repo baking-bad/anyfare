@@ -19,6 +19,7 @@
     "test": "vitest run --root ../.. --project common"
   },
   "dependencies": {
+    "@fastify/ajv-compiler": "^4.0.7",
     "@prometheus-io/client": "^0.16.1",
     "fastify": "^5.12.8",
     "pino": "^10.4.0",

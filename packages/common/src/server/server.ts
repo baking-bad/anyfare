@@ -1,5 +1,6 @@
 import type { AddressInfo } from 'node:net';
 
+import AjvCompiler from '@fastify/ajv-compiler';
 import type { Registry } from '@prometheus-io/client';
 import fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 
@@ -12,6 +13,19 @@ import { createRequestIdGenerator, requestIdHeader } from './requestId.js';
 import { recordErrorCode, RequestLogController } from './requestLog.js';
 
 const defaultBodyLimit = 1_048_576;
+
+// Fastify's own Ajv options, which suit a query string: `?limit=5` becomes the number 5
+const lenientAjvOptions = { coerceTypes: 'array', removeAdditional: true, useDefaults: true, allErrors: false } as const;
+// A JSON body is taken as sent: a number is not a string, and an unknown field is not dropped
+const strictAjvOptions = { ...lenientAjvOptions, coerceTypes: false, removeAdditional: false } as const;
+
+/** Validates bodies strictly, and the query string, path parameters, and headers leniently. */
+const setValidators = (app: FastifyInstance): void => {
+  const factory = AjvCompiler();
+  const lenient = factory({}, { customOptions: lenientAjvOptions });
+  const strict = factory({}, { customOptions: strictAjvOptions });
+  app.setValidatorCompiler(route => (route.httpPart === 'body' ? strict : lenient)(route));
+};
 
 interface BaseOptions {
   readonly logger: Logger;
@@ -93,6 +107,7 @@ const createFastify = ({
     requestIdHeader: false,
     genReqId: createRequestIdGenerator(requestIds),
   });
+  setValidators(app);
   app.setErrorHandler(createErrorHandler(errorStatuses));
   app.setNotFoundHandler(async (request, reply) => {
     recordErrorCode(request, notFoundResponse.body.error.code);

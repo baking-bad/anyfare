@@ -116,6 +116,8 @@ describe('POST /v1/keys', () => {
     ['an expiry that isn\'t a date', () => ({ expiresAt: 'tomorrow' })],
     ['an expiry that passes the format but is no time', () => ({ expiresAt: '2030-12-31T23:59:60Z' })],
     ['a label over 60 characters', () => ({ label: 'x'.repeat(61) })],
+    ['an amount that is a number', () => ({ dailyBudget: 3 })],
+    ['an unknown field', () => ({ accountId: 'acc_other' })],
   ])('refuses %s with 400 invalid_request', async (_case, makeBody) => {
     const owner = await signup();
 
@@ -189,6 +191,19 @@ describe('PATCH /v1/keys/{id}', () => {
     expect(patched.status).toBe(400);
     expect(patched.body).toMatchObject({ error: { code: 'invalid_request' } });
     expect((await call(owner.masterKey, 'GET', '/v1/keys')).body).toMatchObject({ keys: [{ label: 'mine', expiresAt: null }] });
+  });
+
+  it.each([
+    ['an unknown field', { label: 'x', accountId: 'acc_other' }],
+    ['an amount that is a number', { dailyBudget: 3 }],
+  ])('refuses %s with 400 invalid_request', async (_case, body) => {
+    const owner = await signup();
+    const created = await call(owner.masterKey, 'POST', '/v1/keys', { label: 'mine' });
+
+    const patched = await call(owner.masterKey, 'PATCH', `/v1/keys/${created.body['id'] as string}`, body);
+
+    expect(patched.status).toBe(400);
+    expect(patched.body).toMatchObject({ error: { code: 'invalid_request' } });
   });
 
   it('answers another account\'s key, or an unknown one, with 404, changing nothing', async () => {
