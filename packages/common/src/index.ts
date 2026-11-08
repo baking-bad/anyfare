@@ -10,3 +10,5 @@ export * from './money.js';
 export * from './ports.js';
 export * from './types.js';
 export * from './object.js';
+export * from './safeValue.js';
+export * from './strictYaml.js';
