@@ -6,3 +6,4 @@ export * from './platform/index.js';
 export * from './audit.js';
 export * from './rateLimit.js';
 export * from './invalidation.js';
+export * from './accounts/index.js';
