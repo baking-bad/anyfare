@@ -1,0 +1,24 @@
+{
+  "name": "@anyfare/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Networks, addresses, the platform config and the asset registry",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "vitest run --root ../.. --project core"
+  },
+  "dependencies": {
+    "@anyfare/common": "0.1.0"
+  }
+}
