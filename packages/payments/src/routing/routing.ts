@@ -3,7 +3,10 @@ import type { PaymentRequirements } from '@x402/core/types';
 import { Challenge, Receipt } from 'mppx';
 
 import { AnyfareError, isRecord, type MicroUsd } from '@anyfare/common';
-import { checkTempoCharge, findNetwork, type Asset, type PlatformConfig, type TempoChargeRefusal } from '@anyfare/core';
+import {
+  asExactX402Option, checkTempoCharge, checkX402Option, findNetwork, findOptionAsset, type Asset, type PlatformConfig, type TempoChargeRefusal,
+  type X402OptionRefusal,
+} from '@anyfare/core';
 
 /** The link isn't `/<host>/<path>` with a DNS host. */
 export class InvalidTargetError extends AnyfareError {
@@ -249,13 +252,14 @@ export const solanaRefusals = (challenge: TargetChallenge, config: PlatformConfi
 /** Why the platform won't pay an MPP challenge: the Tempo charge's check, or its expiry. */
 export type MppRefusal = TempoChargeRefusal | 'expired';
 
+// An expiry that passed, or that isn't a date, is expired: the Signer refuses both
 const checkMpp = (challenge: Challenge.Challenge, config: PlatformConfig, now: Date): ReturnType<typeof checkTempoCharge> | { readonly charge?: undefined; readonly refusal: 'expired' } => {
   const checked = checkTempoCharge(challenge, config);
-  if (checked.refusal !== undefined)
+  if (checked.refusal !== undefined || challenge.expires === undefined)
     return checked;
-  const expires = challenge.expires === undefined ? Number.NaN : Date.parse(challenge.expires);
+  const expires = Date.parse(challenge.expires);
 
-  return expires <= now.getTime() ? { refusal: 'expired' } : checked;
+  return Number.isNaN(expires) || expires <= now.getTime() ? { refusal: 'expired' } : checked;
 };
 
 /** Why the platform pays each MPP challenge it doesn't, one reason each, for the log. */
@@ -266,53 +270,56 @@ export const mppRefusals = (challenge: TargetChallenge, config: PlatformConfig, 
     return refusal === undefined ? [] : [refusal];
   });
 
-// Rounded up: the platform never quotes less than the target asks
-const priceOf = (atomic: bigint, decimals: number): MicroUsd =>
-  (decimals >= 6 ? (atomic + 10n ** BigInt(decimals - 6) - 1n) / 10n ** BigInt(decimals - 6) : atomic * 10n ** BigInt(6 - decimals)) as MicroUsd;
+/**
+ * Why the platform won't pay an x402 option: not on a network and in an asset of the registry it pays
+ * x402 in, or one of core's refusals, the Signer's too.
+ */
+export type X402Refusal = X402OptionRefusal | 'not_in_registry';
 
-// A v2 option of any JSON shape, when the platform pays it
-const x402Option = (requirement: unknown, config: PlatformConfig): ChosenOption | undefined => {
-  if (!isRecord(requirement))
-    return undefined;
-  const { scheme, network: networkId, asset: address, amount, extra } = requirement;
-  if (scheme !== 'exact' || typeof networkId !== 'string' || typeof address !== 'string' || typeof amount !== 'string' || !/^\d{1,30}$/.test(amount))
-    return undefined;
-  if (isRecord(extra) && extra['name'] === 'GatewayWalletBatched')
-    return undefined;
-  const network = findNetwork(networkId);
-  if (!network || !(routableChains.x402 as readonly string[]).includes(network.chain))
-    return undefined;
-  if (network.chain === 'solana' && solanaRefusalOf(extra, config) !== undefined)
-    return undefined;
-  // Base58 addresses are case-sensitive, EVM addresses aren't
-  const sameAddress = network.namespace === 'solana'
-    ? (item: Asset) => item.address === address
-    : (item: Asset) => item.address.toLowerCase() === address.toLowerCase();
-  const asset = config.assets.find(item => item.network.id === network.id && sameAddress(item));
-  const atomicAmount = BigInt(amount);
-  if (!asset || atomicAmount <= 0n)
-    return undefined;
+// A v2 option of any JSON shape: the option when the platform pays it, else why not. The same checks as
+// the Signer's, so a quote is never refused when it signs.
+const x402Option = (requirement: unknown, config: PlatformConfig): { readonly option: ChosenOption; readonly refusal?: undefined } | { readonly option?: undefined; readonly refusal: X402Refusal } => {
+  const exact = asExactX402Option(requirement);
+  if (!exact)
+    return { refusal: 'not_exact' };
+  const network = findNetwork(exact.network);
+  const asset = network && (routableChains.x402 as readonly string[]).includes(network.chain) ? findOptionAsset(config, network, exact.asset) : undefined;
+  if (!network || !asset)
+    return { refusal: 'not_in_registry' };
+  const checked = checkX402Option(exact, { asset, network, ourSolanaWallet: config.signer.wallets?.solana });
+  if (checked.refusal !== undefined)
+    return { refusal: checked.refusal };
 
-  return { protocol: 'x402', requirement: requirement as PaymentRequirements, asset, atomicAmount, price: priceOf(atomicAmount, asset.decimals) };
+  return { option: { protocol: 'x402', requirement: exact as unknown as PaymentRequirements, asset, atomicAmount: checked.atomicAmount, price: checked.price } };
 };
+
+/** Why the platform pays none of the target's x402 options it doesn't, one reason each in their order, for the log. Version 2 only. */
+export const x402Refusals = (challenge: TargetChallenge, config: PlatformConfig): readonly X402Refusal[] =>
+  challenge.x402Version !== 2 ? [] : challenge.accepts.flatMap(requirement => {
+    const { refusal } = x402Option(requirement, config);
+
+    return refusal === undefined ? [] : [refusal];
+  });
 
 // On a tie: x402 on Base, then x402 on Solana, then MPP. Nothing moves until the target settles an x402
 // payment, and its transaction costs us no fee.
 const tieOrder = (option: ChosenOption): number => option.protocol === 'mpp' ? 2 : option.asset.network.chain === 'solana' ? 1 : 0;
 
 /**
- * Picks the cheapest option the platform pays. On a tie, x402 on Base, then on Solana, then MPP.
- * - x402: a version 2 challenge's `exact` option with a decimal string `amount`, on Base or Solana, in
- *   an asset of the registry pegged to USD, and not a Circle Gateway nanopayment. On Solana, the option
- *   names a fee payer that isn't our wallet;
- * - MPP: a Tempo charge on `mpp.network` in pull mode, without splits, in an asset of the registry on
- *   that network, and not expired.
+ * Picks the cheapest option the platform pays, skipping every option the Signer would refuse. On a tie,
+ * x402 on Base, then on Solana, then MPP.
+ * - x402: a version 2 challenge's `exact` option on Base or Solana, in an asset of the registry pegged
+ *   to USD, that core's `checkX402Option` takes: a decimal string `amount`, a payTo of the network, at
+ *   most 5 minutes to settle, an EIP-3009 authorization on Base, and on Solana a fee payer that isn't
+ *   our wallet;
+ * - MPP: a Tempo charge on `mpp.network` in pull mode, without splits or a machine-token route, in an
+ *   asset of the registry on that network, with an expiry, if any, that is a date still to come.
  */
 export const chooseOption = (challenge: TargetChallenge, config: PlatformConfig, now: Date): ChosenOption | undefined => {
   const candidates: ChosenOption[] = [];
   if (challenge.x402Version === 2) {
     for (const requirement of challenge.accepts) {
-      const option = x402Option(requirement, config);
+      const { option } = x402Option(requirement, config);
       if (option)
         candidates.push(option);
     }

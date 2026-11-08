@@ -20,6 +20,8 @@ describe('a routed target\'s Tempo charge', () => {
     // Both modes, as no `supportedModes` says; no chain ID, signed on mpp.network's; a sponsored fee
     expect(checkTempoCharge(charge({ methodDetails: { feePayer: true } }), examplePlatform).charge).toMatchObject({ sponsored: true });
     expect(checkTempoCharge(charge({}, { supportedModes: ['push', 'pull'] }), examplePlatform).charge).toBeDefined();
+    // Only `true` turns a machine-token route on
+    expect(checkTempoCharge(charge({}, { machineTokenEnabled: false }), examplePlatform).charge).toBeDefined();
   });
 
   it.each([
@@ -29,6 +31,7 @@ describe('a routed target\'s Tempo charge', () => {
     ['another chain', charge({}, { chainId: 4_217 }), 'wrong_chain'],
     ['push mode only', charge({}, { supportedModes: ['push'] }), 'push_only'],
     ['splits', charge({}, { splits: [{ amount: '100', recipient }] }), 'splits'],
+    ['a machine-token route', charge({}, { machineTokenEnabled: true }), 'machine_token'],
     ['a currency outside the registry', charge({ currency: '0x20c0000000000000000000000000000000000001' }), 'unsupported_currency'],
     ['a zero amount', charge({ amount: '0' }), 'invalid_amount'],
     ['an amount that isn\'t atomic', charge({ amount: '0.001' }), 'invalid_amount'],

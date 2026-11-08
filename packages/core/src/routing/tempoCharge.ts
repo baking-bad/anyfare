@@ -5,9 +5,10 @@ import type { Asset, PlatformConfig } from '../platform/config.js';
 
 /**
  * Why the platform won't pay a routed target's MPP challenge, as a code for the logs. Push mode,
- * splits, and an automatic swap are not supported.
+ * splits, and an automatic swap are not supported, nor a machine-token route, which pays with an
+ * approval and a swap of another token than the challenge's currency.
  */
-export type TempoChargeRefusal = 'not_tempo_charge' | 'wrong_chain' | 'push_only' | 'splits' | 'unsupported_currency' | 'invalid_amount';
+export type TempoChargeRefusal = 'not_tempo_charge' | 'wrong_chain' | 'push_only' | 'splits' | 'machine_token' | 'unsupported_currency' | 'invalid_amount';
 
 /** The parts of an MPP challenge the check reads: `mppx`'s `Challenge`, with its request as sent. */
 export interface MppChallengeLike {
@@ -38,7 +39,8 @@ const priceOf = (atomic: bigint, decimals: number): MicroUsd => {
 
 /**
  * Checks a target's MPP challenge against what the platform pays: a Tempo charge on
- * `mpp.network`, payable in pull mode, without splits, in an asset of the registry on that network.
+ * `mpp.network`, payable in pull mode, without splits or a machine-token route, in an asset of the
+ * registry on that network.
  * A challenge without a chain ID is signed on `mpp.network`'s, as `mppx`'s client does with a pinned
  * chain. The proxy checks it to choose an option, and the Signer again before it signs.
  */
@@ -61,6 +63,9 @@ export const checkTempoCharge = (
   const splits = details['splits'];
   if (Array.isArray(splits) && splits.length > 0)
     return { refusal: 'splits' };
+  // `mppx`'s client would sign an approval and a swap from a token outside the registry
+  if (details['machineTokenEnabled'] === true)
+    return { refusal: 'machine_token' };
   const currency = request['currency'];
   const asset = typeof currency === 'string'
     ? config.assets.find(item => item.network.id === config.mpp.network.id && item.address.toLowerCase() === currency.toLowerCase())

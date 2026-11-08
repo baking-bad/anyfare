@@ -7,7 +7,7 @@ import { loadPlatformConfig, type PlatformConfig } from '@anyfare/core';
 import { encodeBase58, fixtureTime } from '@anyfare/testing';
 
 import {
-  chooseOption, InvalidTargetError, mppRefusals, parseRoutingTarget, parseTargetChallenge, routingQuote, solanaRefusals, targetReceipt,
+  chooseOption, InvalidTargetError, mppRefusals, parseRoutingTarget, parseTargetChallenge, routingQuote, solanaRefusals, targetReceipt, x402Refusals,
 } from '../src/index.js';
 
 const config = await loadPlatformConfig({ env: { CONFIG_PATH: 'config/example.yaml' } });
@@ -59,7 +59,9 @@ describe('the routing link', () => {
 });
 
 describe('choosing the target\'s option and the quote', () => {
-  const plain = { scheme: 'exact', network: base, amount: '2000', asset: usdc, payTo: '0x1', maxTimeoutSeconds: 60, extra: { name: 'USDC', version: '2' } };
+  const plain = {
+    scheme: 'exact', network: base, amount: '2000', asset: usdc, payTo: '0x6666666666666666666666666666666666666666', maxTimeoutSeconds: 60, extra: { name: 'USDC', version: '2' },
+  };
   const required = (body: unknown) => ({ 'payment-required': encodePaymentRequiredHeader(body as never) });
   const header = (accepts: unknown[]) => required({ x402Version: 2, resource: { url: 'https://a.b/c' }, accepts });
   const parsed = (accepts: unknown[]) => parseTargetChallenge(header(accepts))!;
@@ -97,14 +99,18 @@ describe('choosing the target\'s option and the quote', () => {
     const challenge = parsed([
       null, 5, 'exact', true, [], [plain], {},
       { scheme: 'exact' }, { scheme: 'exact', network: 5, asset: usdc, amount: '1' }, { scheme: 'exact', network: base, asset: [usdc], amount: '1' },
-      { ...plain, extra: null }, { ...plain, extra: 'USDC' }, { ...plain, extra: [] }, { ...plain, amount: '7', extra: 'not a record' },
+      { ...plain, extra: null }, { ...plain, extra: 'USDC' }, { ...plain, extra: [] }, { ...plain, amount: '5', extra: 'not a record' }, { ...plain, amount: '7' },
       { scheme: 'exact', network: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1', asset: 5, amount: '1', extra: null },
       { scheme: 'exact', network: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1', extra: 'feePayer' },
     ]);
 
     expect(() => solanaRefusals(challenge, config)).not.toThrow();
     expect(solanaRefusals(challenge, config)).toEqual(['no_fee_payer', 'no_fee_payer']);
-    expect(chooseOption(challenge, config, now)).toMatchObject({ protocol: 'x402', atomicAmount: 7n, requirement: { amount: '7', extra: 'not a record' } });
+    expect(x402Refusals(challenge, config)).toEqual([
+      'not_exact', 'not_exact', 'not_exact', 'not_exact', 'not_exact', 'not_exact', 'not_exact', 'not_exact', 'not_exact', 'not_exact',
+      'invalid_option', 'invalid_option', 'invalid_option', 'invalid_option', 'not_exact', 'not_exact',
+    ]);
+    expect(chooseOption(challenge, config, now)).toMatchObject({ protocol: 'x402', atomicAmount: 7n, requirement: { amount: '7' } });
   });
 
   it('picks the cheapest exact option on a network we pay, skipping Gateway nanopayments and unknown assets', () => {
@@ -148,6 +154,39 @@ describe('choosing the target\'s option and the quote', () => {
   it('matches EVM asset addresses in any case', () => {
     expect(chooseOption(parsed([{ ...plain, asset: usdc.toLowerCase() }]), config, now)).toMatchObject({ asset: { name: 'base-usdc' } });
     expect(chooseOption(parsed([{ ...plain, asset: usdc.toUpperCase().replace('0X', '0x') }]), config, now)).toMatchObject({ asset: { name: 'base-usdc' } });
+  });
+
+  it('skips an option the Signer would refuse, such as Permit2 listed first, and pays the next one at the same price', () => {
+    const challenge = parsed([{ ...plain, extra: { name: 'USDC', version: '2', assetTransferMethod: 'permit2' } }, { ...plain, extra: { name: 'USDC', version: '2', assetTransferMethod: 'eip3009' } }]);
+
+    expect(chooseOption(challenge, config, now)).toMatchObject({ protocol: 'x402', requirement: { extra: { assetTransferMethod: 'eip3009' } } });
+    expect(x402Refusals(challenge, config)).toEqual(['transfer_method']);
+  });
+
+  it('pays an option with up to 5 minutes to settle, and skips a longer one', () => {
+    const challenge = parsed([{ ...plain, amount: '1000', maxTimeoutSeconds: 301 }, { ...plain, amount: '1001', maxTimeoutSeconds: 300 }]);
+
+    expect(chooseOption(challenge, config, now)).toMatchObject({ protocol: 'x402', atomicAmount: 1001n, requirement: { maxTimeoutSeconds: 300 } });
+    expect(x402Refusals(challenge, config)).toEqual(['invalid_timeout']);
+    expect(chooseOption(parsed([{ ...plain, maxTimeoutSeconds: '99' }]), config, now)).toBeUndefined();
+  });
+
+  it.each([
+    ['a payTo that isn\'t an address', { payTo: '0x1' }, 'invalid_pay_to'],
+    ['an upfront payment flow', { extra: { name: 'USDC', version: '2', paymentFlow: 'upfront' } }, 'invalid_option'],
+    ['a Gateway nanopayment', { extra: { name: 'GatewayWalletBatched', version: '1' } }, 'transfer_method'],
+    ['an asset outside the registry', { asset: '0x0000000000000000000000000000000000000001' }, 'not_in_registry'],
+    ['a network we don\'t pay x402 on', { network: 'eip155:42431', asset: pathUsd }, 'not_in_registry'],
+    ['no amount', { amount: '0' }, 'invalid_amount'],
+  ])('skips %s, and says why', (_name, overrides, refusal) => {
+    const challenge = parsed([{ ...plain, ...overrides }]);
+
+    expect(chooseOption(challenge, config, now)).toBeUndefined();
+    expect(x402Refusals(challenge, config)).toEqual([refusal]);
+  });
+
+  it('gives no x402 reason for a challenge whose options aren\'t version 2', () => {
+    expect(x402Refusals(parseTargetChallenge(required({ x402Version: 1, accepts: [{}] }))!, config)).toEqual([]);
   });
 
   it('reads an MPP challenge of WWW-Authenticate: Payment, alone or beside x402, keeping its expiry and digest', () => {
@@ -258,6 +297,17 @@ describe('choosing the target\'s option and the quote', () => {
     expect(challenge.mpp).toHaveLength(5);
     expect(chooseOption(challenge, config, now)).toBeUndefined();
     expect(mppRefusals(challenge, config, now)).toEqual(['push_only', 'splits', 'unsupported_currency', 'wrong_chain', 'expired']);
+  });
+
+  it('takes an MPP expiry that isn\'t a date for expired, and a challenge without one for current', () => {
+    const undated = mppChallenge('1000', {}, { expires: '2026-13-01T00:00:00.000Z' });
+    const timeless = mppChallenge('1001', {}, { expires: undefined });
+    const challenge = parseTargetChallenge({ 'www-authenticate': [undated, timeless].join(', ') })!;
+
+    expect(challenge.mpp.map(item => item.expires)).toEqual(['2026-13-01T00:00:00.000Z', undefined]);
+    expect(mppRefusals(challenge, config, now)).toEqual(['expired']);
+    expect(chooseOption(challenge, config, now)).toMatchObject({ protocol: 'mpp', atomicAmount: 1001n, expires: undefined });
+    expect(chooseOption(parseTargetChallenge({ 'www-authenticate': undated })!, config, now)).toBeUndefined();
   });
 
   describe('the target\'s receipt', () => {
