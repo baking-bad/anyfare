@@ -15,6 +15,13 @@
       "when": 1794105307092,
       "tag": "0001_accounts_and_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794106942349,
+      "tag": "0002_ledger",
+      "breakpoints": true
     }
   ]
 }

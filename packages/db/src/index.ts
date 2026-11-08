@@ -17,3 +17,7 @@ export { createApiKeyRepository } from './apiKeyRepository.js';
 export type { ApiKeyRepositoryOptions } from './apiKeyRepository.js';
 export { createKeyStore, createPaymentKeyRepository } from './paymentKeyRepository.js';
 export type { PaymentKeyRepositoryOptions } from './paymentKeyRepository.js';
+export { createPaymentRepository } from './paymentRepository.js';
+export type { PaymentRepository, PaymentRepositoryOptions, SettlingPayment, StatusChange } from './paymentRepository.js';
+export { createLedger, ledgerAccountIds } from './ledgerRepository.js';
+export type { CreditResult, Ledger, LedgerOptions } from './ledgerRepository.js';
