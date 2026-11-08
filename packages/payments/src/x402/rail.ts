@@ -1,0 +1,407 @@
+import { createHash } from 'node:crypto';
+
+import { isRecord, usdToAtomic, type Clock, type LogSink, type Logger } from '@anyfare/common';
+import { InvalidPaymentStatusChangeError, type JsonObject, type Payment } from '@anyfare/core';
+import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from '@x402/core/http';
+import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements, SettleResponse } from '@x402/core/types';
+
+import { detectX402, type Credential } from '../credentials.js';
+import { PaymentInvalidError, SettlementFailedError, type SettlementFailure } from '../errors.js';
+import type { ClaimStore, PaymentRecorder, SettlementLedger } from '../ports.js';
+import type { Authorization, PaymentRail, Quote, Receipt } from '../rail.js';
+import type { X402Setup } from './setup.js';
+
+// The header that carries the settle response to the buyer
+export const paymentResponseHeader = 'payment-response';
+// The x402 pending answer: broadcast, not final yet
+export const settlementPending = 'settlement_pending';
+const reasonPattern = /^[a-z0-9_]{1,64}$/;
+// How long a payment's claim outlives its own deadline, and the longest it is held
+const claimGraceMs = 60_000;
+const maxClaimMs = 7 * 24 * 60 * 60_000;
+const base64Pattern = /^[A-Za-z0-9+/]+=*$/;
+
+// The transfer method each namespace's `exact` scheme uses when a quote names none
+const defaultTransferMethods: Readonly<Record<string, string>> = { eip155: 'eip3009' };
+
+/**
+ * Whether a payment uses the transfer method its quote does. The SDK matches a paid quote that
+ * merely contains ours, so one that adds `assetTransferMethod: "permit2"` on EVM would otherwise pass.
+ */
+const sameTransferMethod = (requirements: PaymentRequirements, payload: PaymentPayload): boolean => {
+  const paid = payload.accepted.extra?.['assetTransferMethod'];
+  const quoted = requirements.extra['assetTransferMethod'] ?? defaultTransferMethods[requirements.network.split(':')[0]!];
+
+  return paid === undefined || paid === quoted;
+};
+
+/**
+ * Whether an EVM payment is signed for a transfer method its option doesn't offer. The facilitator
+ * picks the method from the payload's shape, not from the option, so a Permit2 payload is refused
+ * unless the option is Permit2.
+ */
+const otherTransferMethod = (requirements: PaymentRequirements, payload: PaymentPayload): boolean =>
+  requirements.network.startsWith('eip155:') && payload.payload['permit2Authorization'] !== undefined && requirements.extra['assetTransferMethod'] !== 'permit2';
+
+/** Whole seconds, as a decimal string or a number. Undefined when it isn't a non-negative integer. */
+const secondsOf = (value: unknown): bigint | undefined => {
+  if (typeof value === 'string' && /^[0-9]+$/.test(value))
+    return BigInt(value);
+
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : undefined;
+};
+
+/**
+ * What makes a signed payment single-use, and how long to hold it. On EVM: the EIP-3009 (or Permit2)
+ * nonce, in lowercase, held until the signature's own deadline, since it verifies until then. On
+ * Solana: a SHA-256 of the signed transaction's bytes, so another spelling of the same base64 is the
+ * same payment. Held at least for the option's timeout, plus a minute each, and at most a week.
+ * Undefined when the payload has no nonce, deadline, or transaction.
+ */
+const claimOf = (requirements: PaymentRequirements, payload: PaymentPayload, nowMs: number): { readonly key: string; readonly expiresAtMs: number } | undefined => {
+  const shortest = BigInt(nowMs + requirements.maxTimeoutSeconds * 1_000 + claimGraceMs);
+  const longest = BigInt(nowMs + maxClaimMs);
+  const until = (deadlineMs: bigint): number => Number(deadlineMs < shortest ? shortest : deadlineMs > longest ? longest : deadlineMs);
+
+  if (requirements.network.startsWith('eip155:')) {
+    const permit2 = requirements.extra['assetTransferMethod'] === 'permit2';
+    const signed = payload.payload[permit2 ? 'permit2Authorization' : 'authorization'];
+    const nonce = isRecord(signed) ? signed['nonce'] : undefined;
+    const validBefore = isRecord(signed) ? secondsOf(signed[permit2 ? 'deadline' : 'validBefore']) : undefined;
+    if (typeof nonce !== 'string' || nonce === '' || validBefore === undefined)
+      return undefined;
+
+    return { key: `x402:${requirements.network}:${nonce.toLowerCase()}`, expiresAtMs: until(validBefore * 1_000n + BigInt(claimGraceMs)) };
+  }
+  if (requirements.network.startsWith('solana:')) {
+    const transaction = payload.payload['transaction'];
+    const text = typeof transaction === 'string' ? transaction.trim() : '';
+    const bytes = base64Pattern.test(text) ? Buffer.from(text, 'base64') : Buffer.alloc(0);
+    if (bytes.length === 0)
+      return undefined;
+
+    return { key: `x402:${requirements.network}:${createHash('sha256').update(bytes).digest('hex')}`, expiresAtMs: until(shortest) };
+  }
+
+  return undefined;
+};
+
+/** Whether a payment carries any x402 extension. This resource offers none. */
+const carriesExtensions = (payload: PaymentPayload): boolean => {
+  const { extensions } = payload as { extensions?: unknown };
+
+  return extensions !== undefined && extensions !== null && !(isRecord(extensions) && Object.keys(extensions).length === 0);
+};
+
+/** What the x402 rail keeps between verify and settle. */
+export interface X402Authorization extends Authorization {
+  readonly rail: 'x402';
+  readonly payload: PaymentPayload;
+  readonly requirements: PaymentRequirements;
+  // The asset's registry name, such as `base-usdc`, whose treasury books the payment
+  readonly asset: string;
+  // The claim on the payment's nonce, released when nothing settles
+  readonly claim: string;
+}
+
+export interface X402RailOptions {
+  readonly setup: X402Setup;
+  readonly recorder: PaymentRecorder;
+  readonly ledger: SettlementLedger;
+  // One call per signed payment, across every proxy replica
+  readonly claims: ClaimStore;
+  // For the claims' expiry
+  readonly clock: Clock;
+  readonly logger: Logger;
+}
+
+/**
+ * What the settlement follow-up finishes for a payment still `settling`. Without `settled`, it repeats
+ * the settle with the facilitator until the outcome is final. With `settled`, the facilitator already
+ * settled it and only the booking failed: the follow-up books that answer with `ledger.settle` and
+ * doesn't call the facilitator again.
+ */
+export interface SettlementRequest {
+  readonly paymentPayload: PaymentPayload;
+  readonly paymentRequirements: PaymentRequirements;
+  readonly settled?: SettleResponse;
+}
+
+export const toSettlementRequest = (payload: PaymentPayload, requirements: PaymentRequirements, settled?: SettleResponse): JsonObject =>
+  ({ paymentPayload: payload, paymentRequirements: requirements, ...settled ? { settled } : {} }) as unknown as JsonObject;
+
+export const fromSettlementRequest = (value: JsonObject | undefined): SettlementRequest | undefined =>
+  isRecord(value) && isRecord(value['paymentPayload']) && isRecord(value['paymentRequirements']) && (value['settled'] === undefined || isRecord(value['settled']))
+    ? value as unknown as SettlementRequest
+    : undefined;
+
+/** A settle response as the `PAYMENT-RESPONSE` header carries it to the buyer. */
+export const encodeSettleReceipt = (result: SettleResponse): string => encodePaymentResponseHeader(result);
+
+const x402Only = (authorization: Authorization): X402Authorization => {
+  if (authorization.rail !== 'x402' || !('payload' in authorization))
+    throw new TypeError(`The x402 rail can't take a ${authorization.rail} authorization`);
+
+  return authorization as X402Authorization;
+};
+
+const decode = (credential: Credential): PaymentPayload => {
+  if (credential.rail !== 'x402')
+    throw new TypeError(`The x402 rail can't take a ${credential.rail} credential`);
+  try {
+    if (credential.version !== 2)
+      throw new PaymentInvalidError('x402 v1 (X-PAYMENT) isn\'t accepted. Pay with PAYMENT-SIGNATURE (x402 v2).');
+
+    let payload: unknown;
+    try {
+      payload = decodePaymentSignatureHeader(credential.header.expose());
+    }
+    catch {
+      throw new PaymentInvalidError('PAYMENT-SIGNATURE isn\'t an x402 payment: base64 of its JSON');
+    }
+    if (!isRecord(payload) || payload['x402Version'] !== 2 || !isRecord(payload['accepted']) || !isRecord(payload['payload']))
+      throw new PaymentInvalidError('PAYMENT-SIGNATURE isn\'t an x402 v2 payment');
+
+    return payload as unknown as PaymentPayload;
+  }
+  finally {
+    credential.header.destroy();
+  }
+};
+
+/**
+ * x402: requirements per request from the quote, with the SDK's resource server, one `exact` option
+ * per offered asset at or above its minimum price. Claims the payment's nonce, so one signed payment
+ * pays for one call, then verifies through the network's facilitator before forwarding, and records
+ * the payment as `verified`. Settles after a billable response, before any byte goes out, and books
+ * it. Otherwise cancels: nothing settles. Finalize and abort read the payment first, so running either
+ * twice moves money once.
+ */
+export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger }: X402RailOptions): PaymentRail => {
+  const { server } = setup;
+
+  // A claim that can't be released expires on its own: the buyer's retry waits for it
+  const release = async (claim: string, log: LogSink): Promise<void> => {
+    try {
+      await claims.release(claim);
+    }
+    catch (error) {
+      log.warn({ error, claim }, 'The payment\'s claim couldn\'t be released. It expires on its own.');
+    }
+  };
+
+  // What a finalize that already ran answered, from the payment's row
+  const storedReceipt = (row: Payment): Receipt => {
+    const status = row.status === 'settled' ? 'settled' : 'settling';
+
+    return { headers: row.receipt === undefined ? {} : { [paymentResponseHeader]: row.receipt }, settlement: { status, transaction: row.transactionHash } };
+  };
+
+  // The same quote gives the same requirements, so the paid retry matches what the 402 offered
+  const requirementsFor = async (quote: Quote): Promise<PaymentRequirements[]> => {
+    const offered = setup.assets.filter(asset => asset.minPrice <= quote.priceMicroUsd);
+    const lists = await Promise.all(offered.map(asset => server.buildPaymentRequirements({
+      scheme: 'exact',
+      network: asset.network as Network,
+      payTo: asset.payTo,
+      // Exact, and never below the price
+      price: { amount: usdToAtomic(quote.priceMicroUsd, { decimals: asset.decimals, rounding: 'ceil' }).toString(), asset: asset.address, extra: { ...asset.extra } },
+    })));
+
+    return lists.flat();
+  };
+
+  const settlementFailed = async (authorization: X402Authorization, to: 'failed' | 'settling', failure: SettlementFailure, request?: JsonObject): Promise<never> => {
+    await recorder.changeStatus({ paymentId: authorization.paymentId, to, ...(request ? { settlementRequest: request } : { settlementRequest: null }) });
+    // Nothing was charged, so the buyer may pay with the same signature again
+    if (to === 'failed')
+      await release(authorization.claim, authorization.log ?? logger);
+    throw new SettlementFailedError(failure);
+  };
+
+  return {
+    name: 'x402',
+    settlesBeforeResponse: true,
+    detect: detectX402,
+    challenge: async quote => {
+      const accepts = await requirementsFor(quote);
+      if (accepts.length === 0)
+        return undefined;
+
+      const resource = { url: quote.resource, description: quote.description };
+      const required = await server.createPaymentRequiredResponse(accepts, resource, 'Payment required');
+
+      return { headers: { 'payment-required': encodePaymentRequiredHeader(required) }, body: { ...required } };
+    },
+    authorize: async (credential, quote) => {
+      const payload = decode(credential);
+      const matched = server.findMatchingRequirements(await requirementsFor(quote), payload);
+      const requirements = matched && sameTransferMethod(matched, payload) ? matched : undefined;
+      if (!requirements)
+        throw new PaymentInvalidError('The payment doesn\'t match an option for this price. Request the resource again for the current options.');
+      const asset = setup.assetName(requirements.network, requirements.asset);
+      if (!asset)
+        throw new PaymentInvalidError('The payment\'s asset isn\'t offered');
+      // The extensions it echoes must be the ones this challenge offers, as the SDK's HTTP server
+      // checks. The challenge offers none, so a payment that carries any is refused.
+      const echoed = server.validateExtensions({ x402Version: 2, resource: { url: quote.resource }, accepts: [requirements] } satisfies PaymentRequired, payload);
+      if (!echoed.valid || carriesExtensions(payload)) {
+        throw new PaymentInvalidError('The payment carries extensions this resource doesn\'t offer. Request the resource again for the current options.', {
+          reason: 'extension_echo_mismatch',
+        });
+      }
+      if (otherTransferMethod(requirements, payload)) {
+        throw new PaymentInvalidError('The payment uses a transfer method this option doesn\'t offer. Request the resource again for the current options.', {
+          reason: 'transfer_method',
+        });
+      }
+      const single = claimOf(requirements, payload, clock.now().getTime());
+      if (single === undefined)
+        throw new PaymentInvalidError('The payment has no nonce, deadline, or transaction to make it single-use', { reason: 'invalid_payload' });
+
+      // Concurrent calls with one signature: the first claim verifies, the others are refused
+      const claim = single.key;
+      if (!await claims.tryClaim(claim, single.expiresAtMs))
+        throw new PaymentInvalidError('This payment was already used. Request the resource again and sign a new one.', { reason: 'replayed' });
+
+      const facilitator = setup.facilitatorFor(requirements.network)?.name;
+      let verified: Awaited<ReturnType<typeof server.verifyPayment>>;
+      try {
+        verified = await server.verifyPayment(payload, requirements);
+        if (!verified.isValid) {
+          const reason = verified.invalidReason && reasonPattern.test(verified.invalidReason) ? verified.invalidReason : undefined;
+          throw new PaymentInvalidError(`The facilitator rejected the payment${reason ? `: ${reason}` : ''}`, {
+            reason: verified.invalidReason?.slice(0, 200) ?? 'unknown', ...facilitator === undefined ? {} : { facilitator },
+          });
+        }
+
+        await recorder.create({
+          id: quote.paymentId,
+          requestId: quote.requestId,
+          rail: 'x402',
+          buyerAccountId: undefined,
+          keyId: undefined,
+          targetHost: quote.subject.targetHost,
+          targetPath: quote.subject.targetPath,
+          network: requirements.network,
+          asset,
+          atomicAmount: BigInt(requirements.amount),
+          amount: quote.priceMicroUsd,
+          status: 'verified',
+        });
+      }
+      catch (error) {
+        // Nothing was forwarded, so the same signature may try again
+        await release(claim, quote.log ?? logger);
+        throw error;
+      }
+      const authorization: X402Authorization = {
+        rail: 'x402',
+        paymentId: quote.paymentId,
+        amount: quote.priceMicroUsd,
+        buyer: `address:${requirements.network}:${verified.payer ?? 'unknown'}`,
+        receipt: undefined,
+        network: requirements.network,
+        payload,
+        requirements,
+        asset,
+        claim,
+        ...quote.log ? { log: quote.log } : {},
+      };
+
+      return authorization;
+    },
+    finalize: async (authorization): Promise<Receipt> => {
+      const x402 = x402Only(authorization);
+      const { paymentId, payload, requirements, asset, log = logger } = x402;
+      const { network } = requirements;
+      const facilitator = setup.facilitatorFor(network)?.name;
+      const where = { facilitator, network };
+
+      // A finalize that already ran: its receipt, without asking the facilitator again
+      const row = await recorder.find(paymentId);
+      if (row?.status === 'settled' || (row?.status === 'settling' && row.receipt !== undefined))
+        return storedReceipt(row);
+      if (row?.status === 'settling') {
+        // The outcome is unknown, and the settlement follow-up repeats it
+        throw new SettlementFailedError({
+          outcome: 'unknown', ...row.transactionHash ? { transaction: row.transactionHash } : {}, ...facilitator === undefined ? {} : { facilitator }, network,
+        });
+      }
+      if (row?.status !== 'verified')
+        throw new InvalidPaymentStatusChangeError(paymentId, row?.status, 'settled');
+
+      const request = toSettlementRequest(payload, requirements);
+      let result: SettleResponse;
+      try {
+        result = await server.settlePayment(payload, requirements);
+      }
+      catch (error) {
+        // A timeout or a 503: the outcome is unknown. The settlement follow-up repeats it.
+        log.warn({ error, paymentId, ...where }, 'The settlement\'s outcome is unknown. The settlement follow-up repeats it.');
+        const reason = (error as { reason?: unknown }).reason;
+
+        return settlementFailed(x402, 'settling', {
+          outcome: 'unknown', ...typeof reason === 'string' ? { reason } : {}, ...facilitator === undefined ? {} : { facilitator }, network, cause: error,
+        }, request);
+      }
+
+      if (result.success) {
+        const receipt = encodePaymentResponseHeader(result);
+        const transaction = result.transaction || undefined;
+        try {
+          await ledger.settle({ paymentId, asset, transactionHash: transaction, receipt, needsReview: false });
+        }
+        catch (error) {
+          // The buyer paid on chain, and the booking failed. The settlement follow-up books the settled
+          // answer it keeps, without settling again.
+          log.error({ error, paymentId, transaction, ...where }, 'The payment settled, but its booking failed. The settlement follow-up books it.');
+          try {
+            await recorder.changeStatus({
+              paymentId,
+              to: 'settling',
+              ...transaction ? { transactionHash: transaction } : {},
+              receipt,
+              // The buyer paid and got no response
+              needsReview: true,
+              settlementRequest: toSettlementRequest(payload, requirements, result),
+            });
+          }
+          catch (recordError) {
+            log.error({ error: recordError, paymentId, transaction, ...where }, 'The settled payment couldn\'t be recorded as settling. It needs review.');
+          }
+          throw new SettlementFailedError({
+            outcome: 'unknown', reason: 'booking_failed', ...transaction ? { transaction } : {}, ...facilitator === undefined ? {} : { facilitator }, network, cause: error,
+          });
+        }
+
+        return { headers: { [paymentResponseHeader]: receipt }, settlement: { status: 'settled', transaction } };
+      }
+      if (result.errorReason === settlementPending && result.transaction) {
+        // Broadcast, not final: the response goes out, and the worker finishes the settlement
+        const receipt = encodePaymentResponseHeader(result);
+        await recorder.changeStatus({ paymentId, to: 'settling', transactionHash: result.transaction, receipt, settlementRequest: request });
+
+        return { headers: { [paymentResponseHeader]: receipt }, settlement: { status: 'settling', transaction: result.transaction } };
+      }
+
+      const reason = result.errorReason ?? 'unknown';
+      log.warn({ paymentId, reason, transaction: result.transaction || undefined, ...where }, 'The settlement failed. Nothing was charged.');
+      return settlementFailed(x402, 'failed', {
+        outcome: 'failed', reason, ...result.transaction ? { transaction: result.transaction } : {}, ...facilitator === undefined ? {} : { facilitator }, network,
+      });
+    },
+    abort: async authorization => {
+      const { paymentId, claim, log = logger } = x402Only(authorization);
+      const row = await recorder.find(paymentId);
+      // An abort that already ran, or a settlement that failed: nothing to give back
+      if (row?.status === 'cancelled' || row?.status === 'failed')
+        return;
+      if (row?.status === 'settled' || row?.status === 'settling')
+        throw new Error(`The payment ${paymentId} is ${row.status}: it can't be cancelled after its settlement`);
+
+      await recorder.changeStatus({ paymentId, to: 'cancelled' });
+      await release(claim, log);
+    },
+  };
+};
