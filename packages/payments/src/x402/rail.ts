@@ -211,11 +211,10 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
     return lists.flat();
   };
 
-  const settlementFailed = async (authorization: X402Authorization, to: 'failed' | 'settling', failure: SettlementFailure, request?: JsonObject): Promise<never> => {
-    await recorder.changeStatus({ paymentId: authorization.paymentId, to, ...(request ? { settlementRequest: request } : { settlementRequest: null }) });
-    // Nothing was charged, so the buyer may pay with the same signature again
-    if (to === 'failed')
-      await release(authorization.claim, authorization.log ?? logger);
+  // Nothing was charged, so the buyer may pay with the same signature again
+  const settlementFailed = async (authorization: X402Authorization, failure: SettlementFailure): Promise<never> => {
+    await recorder.changeStatus({ paymentId: authorization.paymentId, to: 'failed', settlementRequest: null });
+    await release(authorization.claim, authorization.log ?? logger);
     throw new SettlementFailedError(failure);
   };
 
@@ -318,32 +317,60 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
       const facilitator = setup.facilitatorFor(network)?.name;
       const where = { facilitator, network };
 
+      // What a finalize that already ran answered, from the payment's row. Undefined unless it is
+      // settled or settling.
+      const answered = (row: Payment | undefined): Receipt | undefined => {
+        if (row?.status === 'settled' || (row?.status === 'settling' && row.receipt !== undefined))
+          return storedReceipt(row);
+        // Settling without a receipt: another finalize is settling, or one stopped during its settle.
+        // The outcome is unknown, and the settlement follow-up repeats it.
+        if (row?.status === 'settling') {
+          throw new SettlementFailedError({
+            outcome: 'unknown', ...row.transactionHash ? { transaction: row.transactionHash } : {}, ...facilitator === undefined ? {} : { facilitator }, network,
+          });
+        }
+
+        return undefined;
+      };
+
       // A finalize that already ran: its receipt, without asking the facilitator again
       const row = await recorder.find(paymentId);
-      if (row?.status === 'settled' || (row?.status === 'settling' && row.receipt !== undefined))
-        return storedReceipt(row);
-      if (row?.status === 'settling') {
-        // The outcome is unknown, and the settlement follow-up repeats it
-        throw new SettlementFailedError({
-          outcome: 'unknown', ...row.transactionHash ? { transaction: row.transactionHash } : {}, ...facilitator === undefined ? {} : { facilitator }, network,
-        });
-      }
+      const before = answered(row);
+      if (before)
+        return before;
       if (row?.status !== 'verified')
         throw new InvalidPaymentStatusChangeError(paymentId, row?.status, 'settled');
 
       const request = toSettlementRequest(payload, requirements);
+      // Before the settle, so a crash or a deploy during it leaves the payment where the settlement
+      // follow-up finds it, with the settle to repeat. A settle that landed before the crash may then
+      // be answered as a used nonce: the follow-up takes such an answer as needing review, never as
+      // a failed settlement. Only from verified: of two finalizes that read it verified, one settles,
+      // and the other answers what the row says.
+      try {
+        await recorder.changeStatus({ paymentId, to: 'settling', from: 'verified', settlementRequest: request });
+      }
+      catch (error) {
+        if (!(error instanceof InvalidPaymentStatusChangeError))
+          throw error;
+        const after = answered(await recorder.find(paymentId));
+        if (after)
+          return after;
+        throw error;
+      }
       let result: SettleResponse;
       try {
         result = await server.settlePayment(payload, requirements);
       }
       catch (error) {
-        // A timeout or a 503: the outcome is unknown. The settlement follow-up repeats it.
+        // A timeout or a 503: the outcome is unknown. The payment stays settling, and the settlement
+        // follow-up repeats it.
         log.warn({ error, paymentId, ...where }, 'The settlement\'s outcome is unknown. The settlement follow-up repeats it.');
         const reason = (error as { reason?: unknown }).reason;
 
-        return settlementFailed(x402, 'settling', {
+        throw new SettlementFailedError({
           outcome: 'unknown', ...typeof reason === 'string' ? { reason } : {}, ...facilitator === undefined ? {} : { facilitator }, network, cause: error,
-        }, request);
+        });
       }
 
       if (result.success) {
@@ -387,7 +414,7 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
 
       const reason = result.errorReason ?? 'unknown';
       log.warn({ paymentId, reason, transaction: result.transaction || undefined, ...where }, 'The settlement failed. Nothing was charged.');
-      return settlementFailed(x402, 'failed', {
+      return settlementFailed(x402, {
         outcome: 'failed', reason, ...result.transaction ? { transaction: result.transaction } : {}, ...facilitator === undefined ? {} : { facilitator }, network,
       });
     },

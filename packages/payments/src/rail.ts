@@ -51,6 +51,10 @@ export interface Authorization {
   // For the log: the network and the asset's registry name an on-chain payment uses
   readonly network?: string;
   readonly asset?: string;
+  // The moment after which the payment can no longer settle, in milliseconds since the epoch: the
+  // proxy keeps the call under it, so the money can still move after a billable answer. Undefined:
+  // the rail has no such moment.
+  readonly deadlineMs?: number;
   // The request's logger, from the quote, for the lines finalize and abort write
   readonly log?: LogSink;
 }

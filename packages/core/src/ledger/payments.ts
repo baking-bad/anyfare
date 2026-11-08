@@ -14,11 +14,12 @@ export const billingDecisions = ['billable', 'not_billable'] as const;
 export type BillingDecision = typeof billingDecisions[number];
 
 // Where each status may go. Credits hold, then capture or release. x402 and MPP verify, then
-// settle (maybe through settling) or cancel. Everything else is final.
+// settle (maybe through settling) or cancel. A settling payment may stay settling to record what its
+// settlement learned, such as its transaction or receipt. Everything else is final.
 const nextStatuses: Readonly<Record<PaymentStatus, readonly PaymentStatus[]>> = {
   held: ['captured', 'released'],
   verified: ['settling', 'settled', 'cancelled', 'failed'],
-  settling: ['settled', 'failed'],
+  settling: ['settling', 'settled', 'failed'],
   captured: [],
   settled: [],
   released: [],

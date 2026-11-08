@@ -18,6 +18,8 @@ export interface PaymentRepositoryOptions {
 export interface StatusChange {
   readonly paymentId: string;
   readonly to: PaymentStatus;
+  // Only from this status: of two writers that read the same status, one wins
+  readonly from?: PaymentStatus;
   readonly fee?: bigint;
   readonly transactionHash?: string;
   readonly receipt?: string;
@@ -43,8 +45,8 @@ export interface PaymentRepository {
   }): Promise<Payment>;
   /**
    * Throws InvalidPaymentStatusChangeError unless the status graph allows the change from the current
-   * status. Only the ledger moves a payment to `captured` or `released`, because it books the money
-   * in the same transaction as the change.
+   * status, and with `from`, unless the current status is `from`. Only the ledger moves a payment to
+   * `captured` or `released`, because it books the money in the same transaction as the change.
    */
   changeStatus(change: StatusChange): Promise<Payment>;
   find(paymentId: string): Promise<Payment | undefined>;
@@ -147,7 +149,7 @@ export const createPaymentRepository = ({ db, clock }: PaymentRepositoryOptions)
 
       return toPayment(row);
     },
-    changeStatus: async ({ paymentId, to, fee, transactionHash, receipt, needsReview, settlementRequest }) => {
+    changeStatus: async ({ paymentId, to, from, fee, transactionHash, receipt, needsReview, settlementRequest }) => {
       const [row] = await db.update(payments)
         .set({
           status: to,
@@ -158,8 +160,13 @@ export const createPaymentRepository = ({ db, clock }: PaymentRepositoryOptions)
           ...(needsReview === undefined ? {} : { needsReview }),
           ...(settlementRequest === undefined ? {} : { settlementRequest }),
         })
-        // Only from a status the change is allowed from, checked and written in one statement
-        .where(and(eq(payments.id, paymentId), inArray(payments.status, [...statusesBefore(to)])))
+        // Only from a status the change is allowed from, and from `from` when given, checked and
+        // written in one statement
+        .where(and(
+          eq(payments.id, paymentId),
+          inArray(payments.status, [...statusesBefore(to)]),
+          from === undefined ? undefined : eq(payments.status, from),
+        ))
         .returning();
       if (!row)
         throw new InvalidPaymentStatusChangeError(paymentId, (await find(paymentId))?.status, to);

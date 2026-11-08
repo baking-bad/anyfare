@@ -9,7 +9,7 @@ import type { PaymentRequired } from '@x402/core/types';
 import { ExactEvmScheme } from '@x402/evm/exact/client';
 import { ExactSvmScheme } from '@x402/svm/exact/client';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createLogger, Secret, type Logger } from '@anyfare/common';
 import {
@@ -94,9 +94,9 @@ const createPorts = (railSetup = setup, { log = logger, bookingFails }: { log?: 
   const created: (NewPayment & { status: string })[] = [];
   const changes: Parameters<PaymentRecorder['changeStatus']>[0][] = [];
   const settled: SettleInput[] = [];
-  const update = (paymentId: string, to: Payment['status'], fields: Partial<Payment> = {}): Payment => {
+  const update = (paymentId: string, to: Payment['status'], fields: Partial<Payment> = {}, from?: Payment['status']): Payment => {
     const row = rows.get(paymentId);
-    if (!row || !canChangePaymentStatus(row.status, to))
+    if (!row || !canChangePaymentStatus(row.status, to) || (from !== undefined && row.status !== from))
       throw new InvalidPaymentStatusChangeError(paymentId, row?.status, to);
     const next = { ...row, ...fields, status: to };
     rows.set(paymentId, next);
@@ -125,7 +125,7 @@ const createPorts = (railSetup = setup, { log = logger, bookingFails }: { log?: 
         ...change.transactionHash === undefined ? {} : { transactionHash: change.transactionHash },
         ...change.receipt === undefined ? {} : { receipt: change.receipt },
         ...change.needsReview === undefined ? {} : { needsReview: change.needsReview },
-      });
+      }, change.from);
       changes.push(change);
 
       return next;
@@ -187,6 +187,12 @@ const authorized = async (options?: Parameters<typeof createPorts>[1]) => {
 };
 
 const settleCount = (target: FakeFacilitator = facilitator) => target.requests.filter(request => request.path === '/settle').length;
+
+// The change finalize records before the settle: settling, with the settle to repeat
+const beforeSettle = (paymentId: string) => ({
+  paymentId, to: 'settling', from: 'verified',
+  settlementRequest: { paymentPayload: expect.objectContaining({ x402Version: 2 }), paymentRequirements: expect.objectContaining({ network: base }) },
+});
 
 /** A Base payment whose option says it accepted another value of one field. */
 const altered = (field: string, value: unknown) => async (rail: PaymentRail): Promise<string> => {
@@ -389,6 +395,19 @@ describe('x402 payments through the facilitator', () => {
     await expect(rail.authorize(paidCredential(rail, await pay(await requiredOf(rail, quote), base)), quote)).rejects.toBeInstanceOf(FacilitatorUnavailableError);
   });
 
+  it('records the payment as settling, with the settle to repeat, before the facilitator answers', async () => {
+    const { rail, changes, authorization } = await authorized();
+    facilitator.handle('/settle', facilitatorAnswers.timeout(1_500));
+    const before = settleCount();
+
+    const finalizing = rail.finalize(authorization).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(settleCount() - before).toBe(1));
+
+    expect(changes).toEqual([beforeSettle(authorization.paymentId)]);
+    expect(await finalizing).toMatchObject({ code: 'settlement_failed', outcome: 'unknown' });
+    expect(changes).toHaveLength(1);
+  });
+
   it('sends the response on a pending settlement with a hash, and records it as settling with what to repeat', async () => {
     const { rail, changes, settled, authorization, quote } = await authorized();
     facilitator.handle('/settle', facilitatorAnswers.pending('0xbroadcast'));
@@ -397,7 +416,7 @@ describe('x402 payments through the facilitator', () => {
     const receipt = await rail.finalize(authorization);
 
     expect(decodePaymentResponseHeader(receipt.headers['payment-response']!)).toMatchObject({ success: false, errorReason: 'settlement_pending', transaction: '0xbroadcast' });
-    expect(changes).toEqual([expect.objectContaining({
+    expect(changes).toEqual([beforeSettle(quote.paymentId), expect.objectContaining({
       paymentId: quote.paymentId, to: 'settling', transactionHash: '0xbroadcast', receipt: receipt.headers['payment-response'],
       settlementRequest: { paymentPayload: expect.objectContaining({ x402Version: 2 }), paymentRequirements: expect.objectContaining({ network: base }) },
     })]);
@@ -421,8 +440,8 @@ describe('x402 payments through the facilitator', () => {
 
     await expect(rail.finalize(authorization)).rejects.toBeInstanceOf(SettlementFailedError);
 
-    expect(changes).toEqual([expect.objectContaining({ to: status, settlementRequest: status === 'settling' ? expect.any(Object) : null })]);
-    expect(changes[0]).not.toHaveProperty('receipt');
+    // Settling from before the settle, so a payment whose outcome is unknown needs no other change
+    expect(changes).toEqual([beforeSettle(authorization.paymentId), ...status === 'failed' ? [{ paymentId: authorization.paymentId, to: 'failed', settlementRequest: null }] : []]);
     expect(settled).toEqual([]);
   });
 
@@ -578,6 +597,24 @@ describe('finalize and abort, run twice', () => {
     expect(settled).toHaveLength(1);
   });
 
+  it('settles once for two concurrent finalizes: the other answers unknown, and the payment ends settled', async () => {
+    const { rail, rows, changes, settled, authorization } = await authorized();
+    const before = settleCount();
+
+    const results = await Promise.allSettled([rail.finalize(authorization), rail.finalize(authorization)]);
+
+    expect(settleCount() - before).toBe(1);
+    const receipts = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+    const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason as unknown] : []);
+    expect(receipts).toEqual([expect.objectContaining({ settlement: { status: 'settled', transaction: expect.stringMatching(/^0x/) } })]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(SettlementFailedError);
+    expect(errors[0]).toMatchObject({ outcome: 'unknown' });
+    expect(rows.get(authorization.paymentId)).toMatchObject({ status: 'settled', receipt: receipts[0]!.headers['payment-response'] });
+    expect(changes.map(change => change.to)).not.toContain('failed');
+    expect(settled).toHaveLength(1);
+  });
+
   it('records a payment that settled but whose booking failed as settling, with the settled answer to book, and sends no response', async () => {
     const { rail, changes, authorization } = await authorized({ bookingFails: new Error('The call has no target leg to charge') });
     const before = settleCount();
@@ -586,13 +623,16 @@ describe('finalize and abort, run twice', () => {
 
     expect(error).toBeInstanceOf(SettlementFailedError);
     expect(error).toMatchObject({ outcome: 'unknown', reason: 'booking_failed', network: base, transaction: expect.stringMatching(/^0x[0-9a-f]{64}$/) });
-    expect(changes).toEqual([expect.objectContaining({ to: 'settling', transactionHash: error.transaction, receipt: expect.any(String), needsReview: true })]);
-    const request = fromSettlementRequest(changes[0]!.settlementRequest as JsonObject);
+    expect(changes).toEqual([
+      beforeSettle(authorization.paymentId),
+      expect.objectContaining({ to: 'settling', transactionHash: error.transaction, receipt: expect.any(String), needsReview: true }),
+    ]);
+    const request = fromSettlementRequest(changes[1]!.settlementRequest as JsonObject);
     expect(request?.settled).toMatchObject({ success: true, transaction: error.transaction, network: base });
     expect(request?.paymentRequirements).toMatchObject({ network: base, payTo: basePayTo });
     // The settlement follow-up books it. A second finalize answers what was stored, without settling again.
     expect(await rail.finalize(authorization)).toEqual({
-      headers: { 'payment-response': changes[0]!.receipt }, settlement: { status: 'settling', transaction: error.transaction },
+      headers: { 'payment-response': changes[1]!.receipt }, settlement: { status: 'settling', transaction: error.transaction },
     });
     expect(settleCount() - before).toBe(1);
   });
@@ -611,7 +651,7 @@ describe('finalize and abort, run twice', () => {
     expect(calls).toBe(2);
     expect(decodePaymentResponseHeader(receipt.headers['payment-response']!)).toMatchObject({ success: false, errorReason: 'settlement_pending', transaction: '0xbroadcast' });
     expect(receipt.settlement).toEqual({ status: 'settling', transaction: '0xbroadcast' });
-    expect(changes).toEqual([expect.objectContaining({ to: 'settling', transactionHash: '0xbroadcast' })]);
+    expect(changes).toEqual([beforeSettle(authorization.paymentId), expect.objectContaining({ to: 'settling', transactionHash: '0xbroadcast' })]);
     expect(settled).toEqual([]);
   });
 
@@ -625,7 +665,7 @@ describe('finalize and abort, run twice', () => {
     await expect(rail.finalize(authorization)).rejects.toMatchObject({ code: 'settlement_failed', outcome: 'failed', reason: 'transaction_failed', transaction: '0xbroadcast' });
 
     expect(calls).toBe(2);
-    expect(changes).toEqual([expect.objectContaining({ to: 'failed', settlementRequest: null })]);
+    expect(changes).toEqual([beforeSettle(authorization.paymentId), expect.objectContaining({ to: 'failed', settlementRequest: null })]);
     expect(settled).toEqual([]);
   });
 

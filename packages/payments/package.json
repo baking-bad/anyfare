@@ -2,7 +2,7 @@
   "name": "@anyfare/payments",
   "version": "0.1.0",
   "private": true,
-  "description": "Payment rails: credits and x402, and the combined 402",
+  "description": "Payment rails: credits, x402 and MPP, and the combined 402",
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -25,9 +25,11 @@
     "@x402/core": "2.30.0",
     "@x402/evm": "2.30.0",
     "@x402/svm": "2.30.0",
+    "mppx": "0.13.1",
     "viem": "2.57.3"
   },
   "devDependencies": {
+    "@anyfare/db": "0.1.0",
     "@anyfare/testing": "0.1.0"
   }
 }

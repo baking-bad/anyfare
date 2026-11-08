@@ -10,6 +10,7 @@ describe('payment status changes', () => {
     ['verified', 'settled'],
     ['verified', 'cancelled'],
     ['verified', 'failed'],
+    ['settling', 'settling'],
     ['settling', 'settled'],
     ['settling', 'failed'],
   ] as const)('allows %s → %s', (from, to) => {
@@ -19,11 +20,12 @@ describe('payment status changes', () => {
   it('allows nothing else, and nothing out of a final status', () => {
     const allowed = paymentStatuses.flatMap(from => paymentStatuses.filter(to => canChangePaymentStatus(from, to)).map(to => `${from}→${to}`));
 
-    expect(allowed).toHaveLength(8);
+    expect(allowed).toHaveLength(9);
     for (const final of ['captured', 'settled', 'released', 'cancelled', 'failed'] as const)
       expect(paymentStatuses.filter(to => canChangePaymentStatus(final, to))).toEqual([]);
     expect(statusesBefore('held')).toEqual([]);
     expect(statusesBefore('verified')).toEqual([]);
+    expect(statusesBefore('settling')).toEqual(['verified', 'settling']);
     expect(statusesBefore('settled')).toEqual(['verified', 'settling']);
   });
 });

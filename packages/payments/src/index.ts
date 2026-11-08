@@ -1,4 +1,4 @@
-export type { ClaimStore, CreditsLedger, KeyStore, PaymentRecorder, SettlementLedger } from './ports.js';
+export type { ClaimStore, CreditsLedger, KeyStore, PaymentRecorder, ReplayStore, SettlementLedger } from './ports.js';
 export type { Authorization, ChallengePart, PaymentRail, PaymentSubject, Quote, Receipt, RequestHeaders } from './rail.js';
 export { createCreditsDetector, detectCredential, detectMpp, detectX402 } from './credentials.js';
 export type { Credential, CredentialDetector, CreditsCredential, CreditsKey, MppCredential, X402Credential } from './credentials.js';
@@ -20,3 +20,13 @@ export {
   createX402Rail, encodeSettleReceipt, fromSettlementRequest, paymentResponseHeader, settlementPending, toSettlementRequest,
 } from './x402/rail.js';
 export type { SettlementRequest, X402Authorization, X402RailOptions } from './x402/rail.js';
+export { createMppRail, maxTransactionWindowMs, minTransactionWindowMs } from './mpp/rail.js';
+export type { MppAuthorization, MppChargeRequest, MppRailOptions } from './mpp/rail.js';
+export { createTempoRpc, errorReason, nodeHasTransaction, rpcFailure, TempoChainMismatchError } from './mpp/rpc.js';
+export type { TempoRpc, TempoRpcOptions } from './mpp/rpc.js';
+export {
+  createMppSettlementCheck, encodeMppReceipt, fromMppSettlementRequest, mppReceiptGraceMs, paymentReceiptHeader, toMppSettlementRequest,
+} from './mpp/settlement.js';
+export type { MppSettlementCheck, MppSettlementCheckOptions, MppSettlementRequest, MppSettlementStatus } from './mpp/settlement.js';
+export { initializeMpp } from './mpp/setup.js';
+export type { MppAsset, MppServers, MppSetup, MppSetupOptions, MppxServer } from './mpp/setup.js';

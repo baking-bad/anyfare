@@ -1,3 +1,5 @@
+import type { Store } from 'mppx';
+
 import type { MicroUsd } from '@anyfare/common';
 import type {
   BillingDecision, CaptureResult, HoldInput, HoldResult, InitialPaymentStatus, JsonObject, NewPayment, Payment, PaymentKey, PaymentStatus,
@@ -41,10 +43,15 @@ export interface PaymentRecorder {
     readonly upstreamStatus: number | undefined;
     readonly upstreamLatencyMs: number | undefined;
   }): Promise<Payment>;
-  /** Moves a payment to another status. Throws InvalidPaymentStatusChangeError for a change the graph doesn't allow. */
+  /**
+   * Moves a payment to another status. Throws InvalidPaymentStatusChangeError for a change the graph
+   * doesn't allow, and with `from`, unless the payment is in that status: of two writers that read the
+   * same status, one wins.
+   */
   changeStatus(input: {
     readonly paymentId: string;
     readonly to: PaymentStatus;
+    readonly from?: PaymentStatus;
     readonly fee?: MicroUsd;
     readonly transactionHash?: string;
     readonly receipt?: string;
@@ -78,3 +85,9 @@ export interface ClaimStore {
   /** Gives the key up, so it can be claimed again. */
   release(key: string): Promise<void>;
 }
+
+/**
+ * Port: the MPP replay store, `mppx`'s atomic key-value store. Shared by every proxy replica, so a
+ * credential works once across all of them. `db` implements it on Redis.
+ */
+export type ReplayStore = Store.AtomicStore;

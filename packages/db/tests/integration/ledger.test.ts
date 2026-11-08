@@ -313,6 +313,34 @@ describe('payment status changes', () => {
     expect(settled).toMatchObject({ status: 'settled', transactionHash: '0xabc', fee: 1n, needsReview: true });
   });
 
+  it('lets one of two concurrent changes from verified to settling through, given from', async () => {
+    const { payments, payment: created } = await recorded('verified');
+
+    const results = await Promise.allSettled([
+      payments.changeStatus({ paymentId: created.id, to: 'settling', from: 'verified', transactionHash: '0xfirst' }),
+      payments.changeStatus({ paymentId: created.id, to: 'settling', from: 'verified', transactionHash: '0xsecond' }),
+    ]);
+
+    const won = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+    const lost = results.flatMap(result => result.status === 'rejected' ? [result.reason as unknown] : []);
+    expect(won).toHaveLength(1);
+    expect(lost).toEqual([expect.any(InvalidPaymentStatusChangeError)]);
+    expect((lost[0] as Error).message).toBe(`The payment ${created.id} can't go from settling to settling`);
+    expect(await payments.find(created.id)).toMatchObject({ status: 'settling', transactionHash: won[0]!.transactionHash });
+    // Without from, a settling payment may still record what it learns
+    expect(await payments.changeStatus({ paymentId: created.id, to: 'settling', receipt: 'receipt' })).toMatchObject({ status: 'settling', receipt: 'receipt' });
+    // Final, so no other test lists it as settling
+    await payments.changeStatus({ paymentId: created.id, to: 'failed', from: 'settling', settlementRequest: null });
+  });
+
+  it('refuses a change from a status the payment isn\'t in', async () => {
+    const { payments, payment: created } = await recorded('verified');
+
+    expect(await thrown(payments.changeStatus({ paymentId: created.id, to: 'failed', from: 'settling' }))).toBeInstanceOf(InvalidPaymentStatusChangeError);
+    expect((await payments.find(created.id))?.status).toBe('verified');
+    expect(await thrown(payments.changeStatus({ paymentId: 'pay_missing', to: 'settling', from: 'verified' }))).toBeInstanceOf(InvalidPaymentStatusChangeError);
+  });
+
   it('records the billing decision while the payment is open, and refuses it after', async () => {
     const { payments, payment: created } = await recorded('held');
 
