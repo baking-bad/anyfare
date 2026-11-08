@@ -18,6 +18,27 @@ export type HoldResult =
   | { readonly ok: true; readonly payment: Payment }
   | { readonly ok: false; readonly refusal: HoldRefusal };
 
+/**
+ * A settled on-chain payment to book (x402, MPP). Its fee is fixed in its quote: the payment's amount
+ * less the target's price.
+ */
+export interface SettleInput {
+  readonly paymentId: string;
+  // The asset the buyer paid in, by its registry name, such as base-usdc: its treasury took the money in
+  readonly asset: string;
+  readonly transactionHash: string | undefined;
+  // The settle response, as the rail sends it to the buyer
+  readonly receipt: string | undefined;
+  // The buyer paid and got no response
+  readonly needsReview: boolean;
+}
+
+/** A captured or settled payment, and the platform's fee on it: the quote less the target's price. */
+export interface CaptureResult {
+  readonly payment: Payment;
+  readonly fee: MicroUsd;
+}
+
 /** A buyer's credits: what they can spend, and what is held for calls in flight. */
 export interface CreditsBalance {
   readonly available: MicroUsd;

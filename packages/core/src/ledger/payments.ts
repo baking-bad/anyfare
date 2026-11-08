@@ -110,6 +110,15 @@ export class CreditReferenceConflictError extends AnyfareError {
   }
 }
 
+/** An operator reused a treasury transfer's reference for other assets or amounts: references are idempotency keys. */
+export class TreasuryTransferReferenceConflictError extends AnyfareError {
+  readonly code = 'idempotency_conflict';
+
+  constructor() {
+    super('This reference was already used for another treasury transfer: other assets or amounts');
+  }
+}
+
 /** A hold reused a payment's ID for another buyer, key or amount: payment IDs are idempotency keys. */
 export class HoldReferenceConflictError extends AnyfareError {
   readonly code = 'idempotency_conflict';
