@@ -16,7 +16,8 @@ import {
 import { createMasterKeyAuth, decorateAccount } from './accounts/auth.js';
 import { registerAccountRoutes } from './accounts/routes.js';
 import { createAccountService } from './accounts/service.js';
-import { createSignupLimit } from './accounts/signupLimit.js';
+import { createIpLimit, createSignupLimit } from './accounts/signupLimit.js';
+import { registerCatalogRoutes } from './catalog/routes.js';
 import { errorStatuses } from './errors.js';
 import { registerInternalRoutes } from './internal/routes.js';
 import { registerKeyRoutes } from './keys/routes.js';
@@ -125,6 +126,7 @@ export const createApp = ({
     clock,
   });
   registerLedgerRoutes(app, { db: postgres.db, clock, ids, authenticate });
+  registerCatalogRoutes(app, { db: postgres.db, config, limit: createIpLimit({ limiter, limit: config.rateLimits.documents, name: 'documents' }) });
 
   // The internal API on a listener of its own, with the same request IDs, logs, and error envelope
   const internal = createServer({ logger, errorStatuses, requestIds });

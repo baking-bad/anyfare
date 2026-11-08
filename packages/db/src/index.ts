@@ -27,5 +27,7 @@ export { createRoutingRepository, maxRoutedEndpointsPerHost } from './routingRep
 export type {
   EndpointRegistration, NewSignature, NewTargetPayment, RoutingRepository, RoutingRepositoryOptions, TargetPaymentRecord, UnbookedRoutingLoss,
 } from './routingRepository.js';
+export { createCatalogRepository } from './catalogRepository.js';
+export type { CatalogRepository, CatalogRepositoryOptions, RoutedCatalogEntry } from './catalogRepository.js';
 export { createTreasuryRepository } from './treasuryRepository.js';
 export type { ReconciliationRunRecord, TreasuryRepository, TreasuryRepositoryOptions, TreasuryTransferRecord } from './treasuryRepository.js';

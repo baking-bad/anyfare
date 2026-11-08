@@ -41,3 +41,27 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # The Signer's own Redis, apart from the one the proxy and the API use
+  signer-redis:
+    image: redis:8
+    command:
+      - redis-server
+      - --requirepass
+      - ${SIGNER_REDIS_PASSWORD:-anyfare}
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory-policy
+      - noeviction
+    ports:
+      - 127.0.0.1:${SIGNER_REDIS__PORT:-6381}:6379
+    volumes:
+      - ./.tmp/signer_redis_data:/data
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "redis-cli -a ${SIGNER_REDIS_PASSWORD:-anyfare} --no-auth-warning ping | grep -q PONG" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5

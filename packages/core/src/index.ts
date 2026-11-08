@@ -11,3 +11,4 @@ export * from './accounts/index.js';
 export * from './ledger/index.js';
 export * from './treasury/index.js';
 export * from './routing/index.js';
+export * from './catalog.js';
