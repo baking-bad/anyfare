@@ -15,3 +15,5 @@ export { createAccountRepository } from './accountRepository.js';
 export type { AccountRepositoryOptions } from './accountRepository.js';
 export { createApiKeyRepository } from './apiKeyRepository.js';
 export type { ApiKeyRepositoryOptions } from './apiKeyRepository.js';
+export { createKeyStore, createPaymentKeyRepository } from './paymentKeyRepository.js';
+export type { PaymentKeyRepositoryOptions } from './paymentKeyRepository.js';
