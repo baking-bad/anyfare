@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
 
-import { isRecord, usdToAtomic, type Clock, type LogSink, type Logger } from '@anyfare/common';
-import { InvalidPaymentStatusChangeError, type JsonObject, type Payment } from '@anyfare/core';
+import { encodeSignedDelegate, SCHEMA, type SignedDelegate } from '@near-js/transactions';
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from '@x402/core/http';
 import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements, SettleResponse } from '@x402/core/types';
+import { deserialize } from 'borsh';
+
+import { isRecord, usdToAtomic, type Clock, type LogSink, type Logger } from '@anyfare/common';
+import { InvalidPaymentStatusChangeError, type JsonObject, type Payment } from '@anyfare/core';
 
 import { detectX402, type Credential } from '../credentials.js';
 import { PaymentInvalidError, SettlementFailedError, type SettlementFailure } from '../errors.js';
@@ -62,16 +65,55 @@ const secondsOf = (value: unknown): bigint | undefined => {
 };
 
 /**
+ * A NEAR payment's signed delegate action in its canonical bytes, with its sender. Borsh reads a
+ * signed delegate action from the front of its bytes and ignores what follows, so the same action
+ * with a byte appended would be another payment to the claim and to the facilitator's settlement key,
+ * while the chain runs it once. Such a payload is refused: the bytes must be exactly the action's
+ * encoding. Undefined when it isn't base64 of a signed delegate action and nothing more.
+ */
+const canonicalNearDelegate = (signed: unknown): { readonly bytes: Uint8Array; readonly senderId: string } | undefined => {
+  const text = typeof signed === 'string' ? signed.trim() : '';
+  if (!base64Pattern.test(text))
+    return undefined;
+  const bytes = Buffer.from(text, 'base64');
+  let canonical: Uint8Array;
+  let senderId: unknown;
+  try {
+    const decoded = deserialize(SCHEMA.SignedDelegate, bytes) as unknown as SignedDelegate;
+    senderId = decoded.delegateAction.senderId;
+    canonical = encodeSignedDelegate(decoded);
+  }
+  catch {
+    return undefined;
+  }
+
+  return typeof senderId === 'string' && senderId !== '' && Buffer.from(canonical).equals(bytes) ? { bytes: canonical, senderId } : undefined;
+};
+
+/** What makes a payment single-use, and for how long: its claim, and on NEAR its payer's. */
+interface PaymentClaim {
+  readonly key: string;
+  // NEAR: the payer's own claim, held with the payment's, so a payer has one payment in flight
+  readonly payerKey?: string;
+  readonly expiresAtMs: number;
+}
+
+/**
  * What makes a signed payment single-use, and how long to hold it. On EVM: the EIP-3009 (or Permit2)
  * nonce, in lowercase, held until the signature's own deadline, since it verifies until then. On
  * Solana: a SHA-256 of the signed transaction's bytes, so another spelling of the same base64 is the
- * same payment. On NEAR: the same over the signed delegate action's bytes. Held at least for the option's timeout, plus a minute each, and at most a week.
- * Undefined when the payload has no nonce, deadline, or transaction.
+ * same payment. On NEAR: the same over the signed delegate action's canonical bytes, and a second
+ * claim on its sender. A delegate action's nonce is per access key and the buyer's client reads it
+ * from the chain, so a payer's second payment signed while the first hasn't landed carries the same
+ * nonce, and only one of them can land. Held at least for the option's timeout, plus a minute each,
+ * and at most a week: on NEAR, longer than the delegate action can execute. Undefined when the
+ * payload has no nonce, deadline, or transaction, or a NEAR action that isn't canonical.
  */
-const claimOf = (requirements: PaymentRequirements, payload: PaymentPayload, nowMs: number): { readonly key: string; readonly expiresAtMs: number } | undefined => {
+const claimOf = (requirements: PaymentRequirements, payload: PaymentPayload, nowMs: number): PaymentClaim | undefined => {
   const shortest = BigInt(nowMs + requirements.maxTimeoutSeconds * 1_000 + claimGraceMs);
   const longest = BigInt(nowMs + maxClaimMs);
   const until = (deadlineMs: bigint): number => Number(deadlineMs < shortest ? shortest : deadlineMs > longest ? longest : deadlineMs);
+  const hashOf = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
   if (requirements.network.startsWith('eip155:')) {
     const permit2 = requirements.extra['assetTransferMethod'] === 'permit2';
@@ -83,15 +125,23 @@ const claimOf = (requirements: PaymentRequirements, payload: PaymentPayload, now
 
     return { key: `x402:${requirements.network}:${nonce.toLowerCase()}`, expiresAtMs: until(validBefore * 1_000n + BigInt(claimGraceMs)) };
   }
-  if (requirements.network.startsWith('solana:') || requirements.network.startsWith('near:')) {
-    const signed = payload.payload[requirements.network.startsWith('near:') ? 'signedDelegateAction' : 'transaction'];
+  if (requirements.network.startsWith('solana:')) {
+    const signed = payload.payload['transaction'];
     const text = typeof signed === 'string' ? signed.trim() : '';
     const bytes = base64Pattern.test(text) ? Buffer.from(text, 'base64') : Buffer.alloc(0);
     if (bytes.length === 0)
       return undefined;
 
-    // This claim only makes one signed payment single-use. Limiting a payer to one payment in flight is not done here.
-    return { key: `x402:${requirements.network}:${createHash('sha256').update(bytes).digest('hex')}`, expiresAtMs: until(shortest) };
+    return { key: `x402:${requirements.network}:${hashOf(bytes)}`, expiresAtMs: until(shortest) };
+  }
+  if (requirements.network.startsWith('near:')) {
+    const delegate = canonicalNearDelegate(payload.payload['signedDelegateAction']);
+    if (!delegate)
+      return undefined;
+
+    return {
+      key: `x402:${requirements.network}:${hashOf(delegate.bytes)}`, payerKey: `x402:${requirements.network}:payer:${delegate.senderId}`, expiresAtMs: until(shortest),
+    };
   }
 
   return undefined;
@@ -130,6 +180,8 @@ export interface X402Authorization extends Authorization {
   readonly asset: string;
   // The claim on the payment's nonce, released when nothing settles
   readonly claim: string;
+  // NEAR: the claim on the payer, released once the payment is final or nothing settles
+  readonly payerClaim?: string;
   // When the payment can no longer settle: the proxy keeps the call under it
   readonly deadlineMs: number;
 }
@@ -202,8 +254,8 @@ const decode = (credential: Credential): PaymentPayload => {
 /**
  * x402: requirements per request from the quote, with the SDK's resource server, one `exact` option
  * per offered asset at or above its minimum price. Claims the payment's nonce, so one signed payment
- * pays for one call, then verifies through the network's facilitator before forwarding, and records
- * the payment as `verified`. Settles after a billable response, before any byte goes out, and books
+ * pays for one call, and on NEAR its payer, so a payer has one payment in flight. Then verifies
+ * through the network's facilitator before forwarding, and records the payment as `verified`. Settles after a billable response, before any byte goes out, and books
  * it. Otherwise cancels: nothing settles. Finalize and abort read the payment first, so running either
  * twice moves money once.
  */
@@ -211,12 +263,16 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
   const { server } = setup;
 
   // A claim that can't be released expires on its own: the buyer's retry waits for it
-  const release = async (claim: string, log: LogSink): Promise<void> => {
-    try {
-      await claims.release(claim);
-    }
-    catch (error) {
-      log.warn({ error, claim }, 'The payment\'s claim couldn\'t be released. It expires on its own.');
+  const release = async (log: LogSink, ...keys: readonly (string | undefined)[]): Promise<void> => {
+    for (const claim of keys) {
+      if (claim === undefined)
+        continue;
+      try {
+        await claims.release(claim);
+      }
+      catch (error) {
+        log.warn({ error, claim }, 'The payment\'s claim couldn\'t be released. It expires on its own.');
+      }
     }
   };
 
@@ -244,7 +300,7 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
   // Nothing was charged, so the buyer may pay with the same signature again
   const settlementFailed = async (authorization: X402Authorization, failure: SettlementFailure): Promise<never> => {
     await recorder.changeStatus({ paymentId: authorization.paymentId, to: 'failed', settlementRequest: null });
-    await release(authorization.claim, authorization.log ?? logger);
+    await release(authorization.log ?? logger, authorization.claim, authorization.payerClaim);
     throw new SettlementFailedError(failure);
   };
 
@@ -288,7 +344,7 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
       const single = claimOf(requirements, payload, nowMs);
       const deadlineMs = deadlineOf(requirements, payload, nowMs);
       if (single === undefined || deadlineMs === undefined)
-        throw new PaymentInvalidError('The payment has no nonce, deadline, or transaction to make it single-use', { reason: 'invalid_payload' });
+        throw new PaymentInvalidError('The payment has no nonce, deadline, or transaction in its exact encoding to make it single-use', { reason: 'invalid_payload' });
       // A payment that expires before the call and its settle can finish would let the answer out unpaid
       if (deadlineMs - nowMs < minPaymentWindowMs) {
         throw new PaymentInvalidError(`The payment expires too soon. Sign it valid for at least ${minPaymentWindowMs / 1_000} seconds.`, {
@@ -298,8 +354,27 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
 
       // Concurrent calls with one signature: the first claim verifies, the others are refused
       const claim = single.key;
+      const { payerKey: payerClaim } = single;
+      const log = quote.log ?? logger;
       if (!await claims.tryClaim(claim, single.expiresAtMs))
         throw new PaymentInvalidError('This payment was already used. Request the resource again and sign a new one.', { reason: 'replayed' });
+      // NEAR: then the payer's, so a payer's second payment waits for its first to be final
+      let payerFree = true;
+      if (payerClaim !== undefined) {
+        try {
+          payerFree = await claims.tryClaim(payerClaim, single.expiresAtMs);
+        }
+        catch (error) {
+          await release(log, claim);
+          throw error;
+        }
+      }
+      if (!payerFree) {
+        await release(log, claim);
+        throw new PaymentInvalidError('This payer has another NEAR payment in flight, which this one\'s nonce would collide with. Pay again once it has settled.', {
+          reason: 'payer_busy',
+        });
+      }
 
       const facilitator = setup.facilitatorFor(requirements.network)?.name;
       let verified: Awaited<ReturnType<typeof server.verifyPayment>>;
@@ -329,7 +404,7 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
       }
       catch (error) {
         // Nothing was forwarded, so the same signature may try again
-        await release(claim, quote.log ?? logger);
+        await release(log, claim, payerClaim);
         throw error;
       }
       const authorization: X402Authorization = {
@@ -343,6 +418,7 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
         requirements,
         asset,
         claim,
+        ...payerClaim === undefined ? {} : { payerClaim },
         deadlineMs,
         ...quote.log ? { log: quote.log } : {},
       };
@@ -351,7 +427,7 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
     },
     finalize: async (authorization): Promise<Receipt> => {
       const x402 = x402Only(authorization);
-      const { paymentId, payload, requirements, asset, log = logger } = x402;
+      const { paymentId, payload, requirements, asset, payerClaim, log = logger } = x402;
       const { network } = requirements;
       const facilitator = setup.facilitatorFor(network)?.name;
       const where = { facilitator, network };
@@ -413,6 +489,9 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
       }
 
       if (result.success) {
+        // Final on chain: the payer's next payment reads a nonce past this one's. The payment's own
+        // claim stays until it expires, so the same signature never pays twice.
+        await release(log, payerClaim);
         const receipt = encodePaymentResponseHeader(result);
         const transaction = result.transaction || undefined;
         try {
@@ -458,7 +537,7 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
       });
     },
     abort: async authorization => {
-      const { paymentId, claim, log = logger } = x402Only(authorization);
+      const { paymentId, claim, payerClaim, log = logger } = x402Only(authorization);
       const row = await recorder.find(paymentId);
       // An abort that already ran, or a settlement that failed: nothing to give back
       if (row?.status === 'cancelled' || row?.status === 'failed')
@@ -467,7 +546,7 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
         throw new Error(`The payment ${paymentId} is ${row.status}: it can't be cancelled after its settlement`);
 
       await recorder.changeStatus({ paymentId, to: 'cancelled' });
-      await release(claim, log);
+      await release(log, claim, payerClaim);
     },
   };
 };

@@ -21,11 +21,13 @@
   "dependencies": {
     "@anyfare/common": "0.1.0",
     "@anyfare/core": "0.1.0",
+    "@near-js/transactions": "2.5.1",
     "@solana/kit": "8.6.0",
     "@x402/core": "2.30.0",
     "@x402/evm": "2.30.0",
     "@x402/near": "2.30.0",
     "@x402/svm": "2.30.0",
+    "borsh": "1.0.0",
     "mppx": "0.13.1",
     "viem": "2.57.3"
   },

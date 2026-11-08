@@ -1,20 +1,21 @@
 import { fixtureTime } from '@anyfare/testing';
 
+import { decodeSignedDelegateB64 } from '@x402/near';
 import { encodeFunctionData, type Hex } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { Abis, Transaction } from 'viem/tempo';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { createLogger, randomIdGenerator } from '@anyfare/common';
-import { loadPlatformConfig, type JsonObject, type PlatformConfig } from '@anyfare/core';
+import { createLogger, randomIdGenerator, Secret } from '@anyfare/common';
+import { findAsset, loadPlatformConfig, type JsonObject, type PlatformConfig } from '@anyfare/core';
 import { createLedger, createPaymentRepository, createRoutingRepository, ledgerAccountIds } from '@anyfare/db';
 import {
   createFacilitatorLookup, createFacilitators, createMppSettlementCheck, createTempoRpc, encodeMppReceipt, encodeSettleReceipt, mppReceiptGraceMs,
-  refusedReason, toMppSettlementRequest, type MppSettlementCheck,
+  refusedReason, toMppSettlementRequest, toSettlementRequest, type MppSettlementCheck,
 } from '@anyfare/payments';
 import {
-  createFakeClock, createTestDatabase, nearFacilitatorOff, facilitatorAnswers, moderatoChainId, pathUsdAddress, startFakeFacilitator, startFakeTempoRpc,
-  type FakeFacilitator, type FakeTempoRpc, type TempoBroadcast, type TestDatabase,
+  createFakeClock, createTestDatabase, createTestNearPayer, nearFacilitatorOff, facilitatorAnswers, moderatoChainId, pathUsdAddress, startFakeFacilitator,
+  startFakeNearRpc, startFakeTempoRpc, type FakeFacilitator, type FakeNearRpc, type FakeTempoRpc, type TempoBroadcast, type TestDatabase, type TestNearPayer,
 } from '@anyfare/testing';
 
 import { createSettlementFollowUp, presubmissionRefusals, SettlementFollowUpError, settlingGraceMs } from '../../src/settlementFollowUp.js';
@@ -348,12 +349,24 @@ describe('the settlement follow-up for x402', () => {
       await payments().changeStatus({ paymentId: refused, to: 'failed', settlementRequest: null });
   });
 
-  it('lists only reasons of @x402/evm and @x402/svm decided before a submission as final', () => {
+  it('lists only reasons of @x402/evm, @x402/svm and @x402/near decided before a submission as final', () => {
     for (const reason of [
       'invalid_exact_evm_nonce_already_used', 'duplicate_settlement', 'permit2_invalid_nonce', 'invalid_exact_evm_failed_to_verify_signature', 'insufficient_funds',
       'invalid_exact_evm_signature', 'invalid_exact_evm_payload_signature', refusedReason(400), refusedReason(409), settlementPendingReason,
+      'settlement_failed', 'verification_failed', 'unexpected_verify_error',
+      ...[
+        'payload_delegate_action_expired', 'payload_delegate_action_nonce_out_of_range', 'payload_delegate_action_nonce_already_used', 'access_key_lookup_failed',
+        'access_key_not_found', 'function_call_key_not_allowed', 'unsupported_access_key_permission', 'current_block_height_unavailable', 'account_lookup_failed',
+        'sender_account_not_found', 'token_account_lookup_failed', 'token_account_not_found', 'token_contract_no_code', 'balance_check_failed', 'storage_check_failed',
+        'recipient_not_registered_for_storage',
+        // The facilitator's height and its own setup, which may change while a transaction it sent is polled
+        'payload_delegate_action_timeout_window_exceeds_max_timeout', 'no_relayer_configured', 'relayer_cannot_be_payer',
+      ].map(name => `invalid_exact_near_${name}`),
+      'recipient_not_ours',
     ])
-      expect(presubmissionRefusals.has(reason)).toBe(false);
+      expect(presubmissionRefusals.has(reason), reason).toBe(false);
+    for (const reason of ['invalid_exact_near_payload_recipient_mismatch', 'invalid_exact_near_payload_signature', 'invalid_exact_near_max_timeout'])
+      expect(presubmissionRefusals.has(reason), reason).toBe(true);
   });
 
   it('fails the run when the facilitator doesn\'t answer, keeping the payment settling for the next one', async () => {
@@ -449,6 +462,214 @@ describe('the settlement follow-up for x402', () => {
     });
     expect(later).toEqual({ ...zeros, settled: 1 });
     expect(await statusOf(id)).toBe('settled');
+  });
+});
+
+describe('the settlement follow-up for x402 on NEAR, through our facilitator', () => {
+  const near = 'near:testnet';
+  const facilitatorSecret = 'near-facilitator-secret-0123456789abcdef';
+  // A delegate action's message, as the scheme answers a settle that failed
+  const panicked = JSON.stringify({ ActionError: { index: 0, kind: { FunctionCallError: { ExecutionError: 'Smart contract panicked: The account doesn\'t have enough balance' } } } });
+  let nearRpc: FakeNearRpc;
+  let payer: TestNearPayer;
+  let nearConfig: PlatformConfig;
+
+  beforeAll(async () => {
+    nearRpc = await startFakeNearRpc();
+    payer = createTestNearPayer({ accountId: 'buyer.testnet', rpc: nearRpc });
+    // Our NEAR facilitator, played by the fake, beside CDP
+    nearConfig = { ...config, facilitators: [...config.facilitators.filter(item => item.name !== 'near'), { ...config.facilitators.find(item => item.name === 'near')!, url: facilitator.url, enabled: true }] };
+  });
+
+  afterAll(async () => {
+    await nearRpc?.close();
+  });
+
+  /** A settling NEAR payment, with the signed delegate action the payer's client made, as the rail leaves it. */
+  const settlingNear = async ({ receipt }: { readonly receipt?: string } = {}): Promise<{ readonly id: string; readonly maxBlockHeight: bigint; readonly signed: string }> => {
+    counter += 1;
+    const id = `pay_near_settling_${counter}`;
+    const asset = findAsset(nearConfig, 'near-usdc')!;
+    const requirements: Parameters<typeof toSettlementRequest>[1] = {
+      scheme: 'exact', network: near, asset: asset.address, amount: '1000', payTo: asset.payTo!, maxTimeoutSeconds: 300, extra: {},
+    };
+    const payload = await payer.paymentFor({ x402Version: 2, resource: { url: 'https://pay.anyfare.test/api.target.test/v1/quote' }, accepts: [requirements] });
+    const signed = String(payload.payload['signedDelegateAction']);
+    await payments().create({
+      id, requestId: `req-${counter}`, rail: 'x402', buyerAccountId: undefined, keyId: undefined, targetHost: 'api.target.test', targetPath: '/v1/quote',
+      network: near, asset: 'near-usdc', atomicAmount: quote, amount: quote, status: 'verified',
+    });
+    await recordTargetLeg(id);
+    await payments().changeStatus({
+      paymentId: id, to: 'settling', ...receipt ? { receipt, transactionHash: 'near-pending-hash' } : {}, settlementRequest: toSettlementRequest(payload, requirements),
+    });
+
+    return { id, maxBlockHeight: decodeSignedDelegateB64(signed).delegate.maxBlockHeight, signed };
+  };
+
+  /** One run with the NEAR height `height` answers, past the grace period. Counts the height's reads. */
+  const followNear = async ({ height, logger = silent }: { readonly height?: () => Promise<bigint>; readonly logger?: typeof silent } = {}) => {
+    clock.advance(graceMs + 1_000);
+
+    return createSettlementFollowUp({
+      payments: payments(),
+      ledger: createLedger({ db: database.db, clock, ids: randomIdGenerator }),
+      facilitatorFor: createFacilitatorLookup(nearConfig, createFacilitators({
+        config: nearConfig, cdpApiKey: () => { throw new Error('No CDP key in tests'); }, facilitatorApiKey: () => Secret.from(facilitatorSecret), clock,
+      })),
+      ...height ? { nearHeight: height } : {},
+      clock,
+      settleMs: nearConfig.timeouts.settleMs,
+      logger,
+    })();
+  };
+
+  const failedSettle = (reason: string, message?: string) => () => ({
+    status: 200, body: { success: false, errorReason: reason, ...message === undefined ? {} : { errorMessage: message }, transaction: 'near-relayer-hash', network: near, payer: 'buyer.testnet' },
+  });
+
+  const resolve = async (id: string): Promise<void> => {
+    if ((await find(id))?.status === 'settling')
+      await payments().changeStatus({ paymentId: id, to: 'failed', settlementRequest: null });
+  };
+
+  it('books a settled NEAR payment, repeating the settle through our facilitator with its key', async () => {
+    const paid = await settlingNear({ receipt: 'eyJuZWFyIjp0cnVlfQ' });
+    const before = settleRequests().length;
+
+    expect(await followNear()).toEqual({ ...zeros, settled: 1 });
+
+    expect(await find(paid.id)).toMatchObject({ status: 'settled', needsReview: false });
+    const [repeated] = settleRequests().slice(before);
+    expect(repeated!.headers['x-api-key']).toBe(facilitatorSecret);
+    expect(repeated!.body).toMatchObject({ paymentPayload: { payload: { signedDelegateAction: paid.signed } }, paymentRequirements: { network: near } });
+  });
+
+  it.each(['invalid_exact_near_payload_recipient_mismatch', 'invalid_exact_near_payload_signature', 'invalid_exact_near_payload_amount_mismatch'])(
+    'marks a NEAR payment refused with %s, decided before any submission, failed while its delegate action is well ahead of the chain', async reason => {
+      const refused = await settlingNear();
+      facilitator.handle('/settle', failedSettle(reason));
+      let reads = 0;
+
+      expect(await followNear({ height: async () => { reads += 1; return nearRpc.height; } })).toEqual({ ...zeros, failed: 1 });
+
+      expect(reads).toBe(1);
+      expect(refused.maxBlockHeight - nearRpc.height).toBeGreaterThan(200n);
+      expect(await find(refused.id)).toMatchObject({ status: 'failed', needsReview: false, fee: undefined });
+    });
+
+  it('flags a refusal decided before any submission for review once the delegate action is within the settle timeout of its max_block_height', async () => {
+    const closing = await settlingNear();
+    facilitator.handle('/settle', failedSettle('invalid_exact_near_payload_recipient_mismatch'));
+
+    // 40 blocks at 0.57 s: 22.8 s, under the 30 s settle timeout
+    const result = await undecided(followNear({ height: async () => closing.maxBlockHeight - 40n }));
+
+    expect(result).toEqual({ ...zeros, unknown: 1 });
+    expect(await find(closing.id)).toMatchObject({ status: 'settling', needsReview: true });
+    await resolve(closing.id);
+  });
+
+  it('reads the NEAR height once a run, and finalizes nothing when the read fails or there is no NEAR RPC', async () => {
+    const { lines, logger } = capture();
+    const [first, second] = [await settlingNear(), await settlingNear()];
+    facilitator.handle('/settle', failedSettle('invalid_exact_near_payload_amount_mismatch'));
+    let reads = 0;
+
+    const failing = await undecided(followNear({ logger, height: async () => { reads += 1; throw new Error('The NEAR RPC didn\'t answer block'); } }));
+    const flagged = await Promise.all([first, second].map(async item => (await find(item.id))?.needsReview));
+    await resolve(first.id);
+    await resolve(second.id);
+    const third = await settlingNear();
+    const withoutRpc = await undecided(followNear());
+
+    expect(failing).toEqual({ ...zeros, unknown: 2 });
+    expect(reads).toBe(1);
+    expect(flagged).toEqual([true, true]);
+    expect(withoutRpc).toEqual({ ...zeros, unknown: 1 });
+    expect(await find(third.id)).toMatchObject({ status: 'settling', needsReview: true });
+    expect(lines.filter(line => line['msg'] === 'The NEAR height couldn\'t be read: no NEAR refusal is final this run')).toEqual([
+      expect.objectContaining({ level: 40, error: expect.objectContaining({ message: 'The NEAR RPC didn\'t answer block' }) }),
+    ]);
+    await resolve(third.id);
+  });
+
+  it.each([
+    ['an expired delegate action, which the scheme checks before its nonce', 'invalid_exact_near_payload_delegate_action_expired', undefined],
+    ['a used delegate nonce', 'invalid_exact_near_payload_delegate_action_nonce_already_used', undefined],
+    ['the inner receipt\'s DelegateActionInvalidNonce', 'settlement_failed', JSON.stringify({ ActionError: { index: 0, kind: { DelegateActionInvalidNonce: { delegate_nonce: 7, ak_nonce: 7 } } } })],
+    // nearcore checks a delegate action's expiry before its nonce: a second transaction for one that landed may report this
+    ['the inner receipt\'s DelegateActionExpired', 'settlement_failed', JSON.stringify({ ActionError: { index: 0, kind: 'DelegateActionExpired' } })],
+    ['an inner receipt\'s ActionError it can\'t read', 'settlement_failed', `{"ActionError":{"index":0,"kind":{"FunctionCallError":${'x'.repeat(40)}…`],
+    ['a transaction not included before the delegate action expired', 'settlement_failed', 'not included before the delegate action expired'],
+    // Depend on the facilitator's height or setup, not the payload alone
+    ['a timeout window past the max timeout', 'invalid_exact_near_payload_delegate_action_timeout_window_exceeds_max_timeout', undefined],
+    ['a payment our facilitator calls not ours', 'recipient_not_ours', undefined],
+    ['a relayer that is the payer', 'invalid_exact_near_relayer_cannot_be_payer', undefined],
+    ['no relayer', 'invalid_exact_near_no_relayer_configured', undefined],
+  ])('flags a NEAR payment for review on %s, without reading the height', async (_case, reason, message) => {
+    const { lines, logger } = capture();
+    const refused = await settlingNear({ receipt: 'eyJuZWFyIjp0cnVlfQ' });
+    facilitator.handle('/settle', failedSettle(reason, message));
+    let reads = 0;
+
+    expect(await undecided(followNear({ logger, height: async () => { reads += 1; return nearRpc.height; } }))).toEqual({ ...zeros, unknown: 1 });
+
+    expect(reads).toBe(0);
+    expect(await find(refused.id)).toMatchObject({ status: 'settling', needsReview: true });
+    expect(lines.find(line => line['paymentId'] === refused.id && line['alert'] === true)).toMatchObject({
+      level: 50, facilitator: 'near', network: near, reason, transaction: 'near-relayer-hash', ...message === undefined ? {} : { message },
+    });
+    await resolve(refused.id);
+  });
+
+  it('marks a NEAR payment failed when the inner ft_transfer receipt failed: its ActionError is final, and nothing moved', async () => {
+    const reverted = await settlingNear({ receipt: 'eyJuZWFyIjp0cnVlfQ' });
+    const { lines, logger } = capture();
+    facilitator.handle('/settle', failedSettle('settlement_failed', panicked));
+
+    expect(await followNear({ logger })).toEqual({ ...zeros, failed: 1 });
+
+    expect(await find(reverted.id)).toMatchObject({ status: 'failed', needsReview: false });
+    expect(lines.find(line => line['paymentId'] === reverted.id && line['msg'] === 'A settlement failed for good. Nothing was booked.')).toMatchObject({
+      level: 40, reason: 'settlement_failed', message: panicked,
+    });
+  });
+
+  it.each([
+    ['its InvalidNonce', 'Transaction nonce 7 must be larger than nonce of the used access key 7'],
+    ['an expired block hash', 'Transaction has expired'],
+    ['a short NEAR balance', 'Sender relay.anyfare.testnet does not have enough balance to cover the transaction'],
+  ])('keeps a NEAR payment settling, unflagged, when the node refused the relayer\'s own transaction for %s, and books it once a repeat lands', async (_case, message) => {
+    const refused = await settlingNear({ receipt: 'eyJuZWFyIjp0cnVlfQ' });
+    const { lines, logger } = capture();
+    facilitator.handle('/settle', failedSettle('settlement_failed', message));
+
+    expect(await undecided(followNear({ logger }))).toEqual({ ...zeros, unknown: 1 });
+    expect(await find(refused.id)).toMatchObject({ status: 'settling', needsReview: false });
+    expect(lines.find(line => line['paymentId'] === refused.id)).toMatchObject({
+      level: 40, msg: 'A NEAR settlement included nothing this time: the next run repeats it', reason: 'settlement_failed', message,
+    });
+    expect(lines.filter(line => line['alert'] === true)).toEqual([]);
+
+    facilitator.reset();
+    expect(await followNear()).toEqual({ ...zeros, settled: 1 });
+    expect(await find(refused.id)).toMatchObject({ status: 'settled', needsReview: false });
+  });
+
+  it('logs the first 200 characters of the facilitator\'s message on review, never the payment', async () => {
+    const { lines, logger } = capture();
+    const flagged = await settlingNear({ receipt: 'eyJuZWFyIjp0cnVlfQ' });
+    const message = `not included before the delegate action expired: ${'x'.repeat(400)}`;
+    facilitator.handle('/settle', failedSettle('settlement_failed', message));
+
+    await undecided(followNear({ logger }));
+
+    const alert = lines.find(line => line['paymentId'] === flagged.id && line['alert'] === true);
+    expect(alert).toMatchObject({ msg: 'The facilitator refused a settle that may have landed before: the payment needs review', message: message.slice(0, 200) });
+    expect(JSON.stringify(lines)).not.toContain(flagged.signed);
+    expect(JSON.stringify(lines)).not.toContain(flagged.signed.slice(0, 40));
+    await resolve(flagged.id);
   });
 });
 

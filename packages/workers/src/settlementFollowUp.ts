@@ -1,3 +1,5 @@
+import { decodeSignedDelegateB64 } from '@x402/near';
+
 import { isRecord, type Clock, type Logger } from '@anyfare/common';
 import type { JsonObject, Payment, PlatformConfig } from '@anyfare/core';
 import type { Ledger, PaymentRepository } from '@anyfare/db';
@@ -23,12 +25,12 @@ export const settlingGraceMs = (config: { readonly timeouts: Pick<PlatformConfig
 /**
  * Refusals a facilitator decides before it submits anything, from the payload and the requirements
  * alone, so a settle of the same payload that landed earlier can't be why: the x402 names CDP answers,
- * and those of `@x402/evm` and `@x402/svm` 2.30. Refusals that read the chain after a settle may have
- * moved the money (a used nonce, a spent balance or allowance, a simulation, an expired deadline or
- * blockhash, a duplicate) aren't here. Neither are those of a check that can fail for a moment: the
- * signature reasons, which the SDK also answers when a smart wallet's signature can't be read through
- * its RPC. Nor the facilitator client's `refused_<status>`, a 4xx without an answer, which says nothing
- * of what was submitted.
+ * those of `@x402/evm`, `@x402/svm` and `@x402/near` 2.30, and our NEAR facilitator's own. Refusals
+ * that read the chain after a settle may have moved the money (a used nonce, a spent balance or
+ * allowance, a simulation, an expired deadline, blockhash or delegate action, a duplicate) aren't here.
+ * Neither are those of a check that can fail for a moment: the EVM signature reasons, which the SDK
+ * also answers when a smart wallet's signature can't be read through its RPC. Nor the facilitator
+ * client's `refused_<status>`, a 4xx without an answer, which says nothing of what was submitted.
  */
 export const presubmissionRefusals: ReadonlySet<string> = new Set([
   // Any scheme. Not `insufficient_funds`: a settle that landed earlier spends the balance it reads.
@@ -67,7 +69,66 @@ export const presubmissionRefusals: ReadonlySet<string> = new Set([
   'invalid_exact_svm_payload_unknown_fourth_instruction', 'invalid_exact_svm_payload_unknown_fifth_instruction',
   'invalid_exact_svm_payload_unknown_sixth_instruction', 'invalid_exact_svm_payload_unknown_seventh_instruction',
   'invalid_exact_svm_payload_unknown_optional_instruction',
+  // NEAR: @x402/near, decided from the payload and the requirements alone: the requirement, the
+  // payload's shape and signature, and the one ft_transfer it carries. Not those that read the chain or
+  // the facilitator's own setup, either of which may change while a transaction it sent is still
+  // polled: the expiry (checked before the nonce, so an expired delegate action may have landed), the
+  // timeout window (the facilitator's height), the relayer, and our facilitator's recipients.
+  ...[
+    'network_mismatch', 'asset_mismatch', 'pay_to_mismatch', 'amount_mismatch', 'max_timeout', 'payload_shape', 'payload_signed_delegate_action',
+    'payload_signature', 'payload_action_count', 'payload_action_kind', 'payload_method_name', 'payload_token_contract_mismatch', 'payload_ft_transfer_args',
+    'payload_recipient_mismatch', 'payload_amount_mismatch', 'payload_attached_deposit', 'payload_gas_limit_exceeded',
+  ].map(reason => `invalid_exact_near_${reason}`),
 ]);
+
+// A NEAR block, counted a little short of its 0.6 s, so the time a delegate action has left is never overstated
+const nearBlockMs = 570n;
+// The SDK's NEAR scheme answers a submission that failed with this reason, and says why in its message
+const nearSettlementFailed = 'settlement_failed';
+// Our facilitator's message when the node no longer knows the relayer's transaction, past its delegate
+// action's max_block_height: nothing moved, unless a node that lags didn't see it land
+const nearNotIncluded = 'not included before the delegate action expired';
+// The inner receipt's ActionError, as our facilitator answers a delegate action that executed and failed
+const actionErrorPattern = /^\s*\{\s*"ActionError"\s*:/;
+// The ActionError kinds of a delegate action an earlier transaction may have executed: nearcore checks
+// its expiry before its nonce, so a second transaction for one that landed may report either
+const delegateRanBefore: ReadonlySet<string> = new Set(['DelegateActionInvalidNonce', 'DelegateActionExpired']);
+
+/**
+ * Whether an ActionError message says a transaction for the same delegate action may have executed
+ * before. Its kind is a name, or an object keyed by one. A message that can't be read says nothing
+ * either way: true.
+ */
+const mayHaveRunBefore = (message: string): boolean => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(message);
+  }
+  catch {
+    return true;
+  }
+  const error = isRecord(parsed) ? parsed['ActionError'] : undefined;
+  const kind = isRecord(error) ? error['kind'] : undefined;
+  const names = typeof kind === 'string' ? [kind] : isRecord(kind) ? Object.keys(kind) : [];
+
+  return names.length === 0 || names.some(name => delegateRanBefore.has(name));
+};
+// How much of a facilitator's message a line keeps
+const messageLength = 200;
+
+/** A NEAR payment's delegate action's max_block_height, from the settle request's payload. Undefined: none found. */
+const nearMaxBlockHeightOf = (request: SettlementRequest): bigint | undefined => {
+  const payload: unknown = request.paymentPayload.payload;
+  const signed = isRecord(payload) ? payload['signedDelegateAction'] : undefined;
+  if (typeof signed !== 'string' || signed === '')
+    return undefined;
+  try {
+    return decodeSignedDelegateB64(signed).delegate.maxBlockHeight;
+  }
+  catch {
+    return undefined;
+  }
+};
 
 // Unix seconds, as the payload carries them
 const secondsPattern = /^\d{1,15}$/;
@@ -85,12 +146,22 @@ const evmDeadlineOf = (request: SettlementRequest): number | undefined => {
 
 type SettleResponse = Awaited<ReturnType<Facilitator['settle']>>;
 
+/** A refusal's fields on a line: the reason, the start of the message, and the transaction. Never the payment. */
+const answerFields = (result: SettleResponse, payment: Payment): Record<string, unknown> => ({
+  reason: result.errorReason ?? null,
+  ...result.errorMessage ? { message: result.errorMessage.slice(0, messageLength) } : {},
+  transaction: result.transaction || payment.transactionHash || null,
+});
+
 export interface SettlementFollowUpOptions {
   readonly payments: Pick<PaymentRepository, 'listSettling' | 'claimSettling' | 'changeStatus'>;
   readonly ledger: Pick<Ledger, 'settle'>;
   readonly facilitatorFor: (network: string) => Facilitator | undefined;
   // Reads an MPP transaction's receipt on the Tempo node. Without it, MPP payments wait.
   readonly mppCheck?: MppSettlementCheck;
+  // The NEAR network's final block height, read once a run when a NEAR refusal needs it. Without it,
+  // no NEAR refusal is final.
+  readonly nearHeight?: () => Promise<bigint>;
   // What "updated too recently" and "a deadline ahead" are measured against
   readonly clock: Clock;
   // timeouts.settleMs: the grace period, and how far ahead a deadline must be for a refusal to be final
@@ -126,8 +197,13 @@ export class SettlementFollowUpError extends Error {
  * its booking failed: it is booked from that answer, without the facilitator. A payment flagged for
  * review is never sent again: it waits for an operator. Any other repeats the identical settle.
  * Settled → booked. Pending → next run. A refusal decided before anything was submitted, while the
- * payment's deadline is still well ahead → `failed`, nothing booked. Any other refusal may follow a
- * settle that landed, so the payment is flagged for review, kept `settling`, and an operator decides.
+ * payment's deadline is still well ahead → `failed`, nothing booked: on NEAR, while its delegate
+ * action's max_block_height is well ahead of the chain's final height. Any other refusal may follow a
+ * settle that landed: the payment is flagged for review, kept `settling`, and an operator decides.
+ * Our NEAR facilitator's `settlement_failed` says what happened in its message: not included before
+ * the delegate action expired → review; the inner receipt's ActionError for a used nonce or an
+ * expired delegate action → review, any other → `failed`; anything else, the node refusing the
+ * relayer's own transaction, included nothing, and the next run repeats it.
  *
  * MPP: reads the transaction's receipt on the Tempo node, never broadcasting it. Settled → booked.
  * Reverted, without the expected transfer, or expired → `failed`, unless flagged for review. Not
@@ -137,10 +213,19 @@ export class SettlementFollowUpError extends Error {
  * money once, so a rerun after a crash books nothing twice.
  */
 export const createSettlementFollowUp = ({
-  payments, ledger, facilitatorFor, mppCheck, clock, settleMs, logger, batchSize = defaultBatchSize,
+  payments, ledger, facilitatorFor, mppCheck, nearHeight, clock, settleMs, logger, batchSize = defaultBatchSize,
 }: SettlementFollowUpOptions) => async (): Promise<SettlementFollowUpResult> => {
   const counts = { settled: 0, failed: 0, pending: 0, unknown: 0, skipped: 0 };
   const now = clock.now().getTime();
+
+  // The NEAR height, read at most once a run. Undefined: there's no NEAR RPC, or it didn't answer.
+  let nearHeightNow: Promise<bigint | undefined> | undefined;
+  const readNearHeight = (): Promise<bigint | undefined> => nearHeightNow ??= nearHeight
+    ? nearHeight().catch((error: unknown) => {
+      logger.warn({ error }, 'The NEAR height couldn\'t be read: no NEAR refusal is final this run');
+      return undefined;
+    })
+    : Promise.resolve(undefined);
 
   const book = async (payment: Payment, asset: string, settlement: {
     readonly transactionHash: string | undefined;
@@ -175,26 +260,61 @@ export const createSettlementFollowUp = ({
   };
 
   // The money may have moved: never failed. Flagged, kept settling, and undecided until an operator acts.
-  const flagForReview = async (payment: Payment, where: Readonly<Record<string, unknown>>, reason: string | null, transaction: string | undefined): Promise<void> => {
+  // The line has the facilitator's reason and the start of its message, never the payment.
+  const flagForReview = async (payment: Payment, where: Readonly<Record<string, unknown>>, result: SettleResponse): Promise<void> => {
     await payments.changeStatus({ paymentId: payment.id, to: 'settling', from: 'settling', needsReview: true });
     counts.unknown += 1;
-    logger.error({ ...where, reason, transaction: transaction || payment.transactionHash || null, alert: true },
-      'The facilitator refused a settle that may have landed before: the payment needs review');
+    logger.error({ ...where, ...answerFields(result, payment), alert: true }, 'The facilitator refused a settle that may have landed before: the payment needs review');
   };
 
   // Of two runners that listed the payment, only the one that claims it asks about it
   const claim = (payment: Payment): Promise<boolean> => payments.claimSettling({ paymentId: payment.id, seenUpdatedAt: payment.updatedAt });
 
   // Whether a refusal proves nothing was ever submitted, so the payment can be `failed`
-  const finalRefusal = (payment: Payment, request: SettlementRequest, reason: string | undefined): boolean => {
+  const finalRefusal = async (payment: Payment, request: SettlementRequest, reason: string | undefined): Promise<boolean> => {
     if (reason === undefined || !presubmissionRefusals.has(reason))
       return false;
     // Solana's transactions expire with their blockhash, which the payload doesn't carry: the reason alone decides
     if (payment.network?.startsWith('solana:'))
       return true;
+    // NEAR: the delegate action executes until its max_block_height, which the payload carries
+    if (payment.network?.startsWith('near:')) {
+      const maxBlockHeight = nearMaxBlockHeightOf(request);
+      const height = maxBlockHeight === undefined ? undefined : await readNearHeight();
+
+      return maxBlockHeight !== undefined && height !== undefined && (maxBlockHeight - height) * nearBlockMs > BigInt(settleMs);
+    }
     const deadline = evmDeadlineOf(request);
 
     return deadline !== undefined && deadline * 1_000 - now > settleMs;
+  };
+
+  /**
+   * Our NEAR facilitator's `settlement_failed` on a repeated settle, by its message, in this order.
+   * - Not included before the delegate action expired: a node that lags may not have seen one land. Review.
+   * - The inner receipt's ActionError: the delegate action executed. A used nonce or an expired
+   *   delegate action may follow an earlier transaction for it that moved the money: review. Any other
+   *   kind, such as the token's panic for an unregistered account or a short balance, is final, and
+   *   nothing moved: `failed`.
+   * - Anything else is the node refusing the relayer's own transaction, InvalidNonce included: nothing
+   *   was included, and the delegate's nonce is unused. Kept settling, unflagged; the next run repeats it.
+   */
+  const followNearFailure = async (payment: Payment, at: Readonly<Record<string, unknown>>, result: SettleResponse): Promise<void> => {
+    const message = result.errorMessage ?? '';
+    if (message.includes(nearNotIncluded))
+      await flagForReview(payment, at, result);
+    else if (actionErrorPattern.test(message)) {
+      if (mayHaveRunBefore(message)) {
+        await flagForReview(payment, at, result);
+        return;
+      }
+      await markFailed(payment);
+      logger.warn({ ...at, ...answerFields(result, payment) }, 'A settlement failed for good. Nothing was booked.');
+    }
+    else {
+      counts.unknown += 1;
+      logger.warn({ ...at, ...answerFields(result, payment) }, 'A NEAR settlement included nothing this time: the next run repeats it');
+    }
   };
 
   // MPP: the transaction's receipt by its hash on the Tempo node
@@ -289,12 +409,14 @@ export const createSettlementFollowUp = ({
       counts.pending += 1;
       logger.debug({ ...at, transaction: result.transaction || null }, 'A settlement is still pending');
     }
-    else if (finalRefusal(payment, request, result.errorReason)) {
+    else if (network?.startsWith('near:') && result.errorReason === nearSettlementFailed)
+      await followNearFailure(payment, at, result);
+    else if (await finalRefusal(payment, request, result.errorReason)) {
       await markFailed(payment);
-      logger.warn({ ...at, reason: result.errorReason ?? null, transaction: result.transaction || null }, 'A settlement failed for good. Nothing was booked.');
+      logger.warn({ ...at, ...answerFields(result, payment) }, 'A settlement failed for good. Nothing was booked.');
     }
     else
-      await flagForReview(payment, at, result.errorReason ?? null, result.transaction);
+      await flagForReview(payment, at, result);
   };
 
   // Only rows whose finalize has had its time

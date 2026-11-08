@@ -25,7 +25,7 @@ import {
 
 import {
   createFacilitators, createX402Rail, FacilitatorUnavailableError, fromSettlementRequest, initializeX402, minPaymentWindowMs, PaymentInvalidError,
-  SettlementFailedError, type Authorization, type PaymentRail, type PaymentRecorder, type Quote, type SettlementLedger, type X402Setup,
+  SettlementFailedError, type Authorization, type PaymentRail, type PaymentRecorder, type Quote, type SettlementLedger, type X402Authorization, type X402Setup,
 } from '../../src/index.js';
 
 const base = 'eip155:84532';
@@ -51,6 +51,7 @@ let rpc: FakeSolanaRpc;
 let nearRpc: Server;
 let nearNonce = 7;
 let nearSigner: ReturnType<typeof createClientNearSigner>;
+let otherNearSigner: ReturnType<typeof createClientNearSigner>;
 let config: PlatformConfig;
 let setup: X402Setup;
 
@@ -102,12 +103,17 @@ beforeAll(async () => {
     });
   });
   await new Promise<void>(resolve => nearRpc.listen(0, '127.0.0.1', resolve));
-  const nearKey = generateKeyPairSync('ed25519');
-  nearSigner = createClientNearSigner({
-    accountId: 'buyer.testnet',
-    secretKey: `ed25519:${encodeBase58(Buffer.concat([Buffer.from(nearKey.privateKey.export({ format: 'jwk' }).d!, 'base64url'), Buffer.from(nearKey.publicKey.export({ format: 'jwk' }).x!, 'base64url')]))}`,
-    rpcUrls: { [near]: `http://127.0.0.1:${(nearRpc.address() as AddressInfo).port}` },
-  });
+  const nearSignerOf = (accountId: string) => {
+    const nearKey = generateKeyPairSync('ed25519');
+
+    return createClientNearSigner({
+      accountId,
+      secretKey: `ed25519:${encodeBase58(Buffer.concat([Buffer.from(nearKey.privateKey.export({ format: 'jwk' }).d!, 'base64url'), Buffer.from(nearKey.publicKey.export({ format: 'jwk' }).x!, 'base64url')]))}`,
+      rpcUrls: { [near]: `http://127.0.0.1:${(nearRpc.address() as AddressInfo).port}` },
+    });
+  };
+  nearSigner = nearSignerOf('buyer.testnet');
+  otherNearSigner = nearSignerOf('other-buyer.testnet');
   config = withTestPayTo(await configWith(facilitator.url));
   setup = await initializeX402({ config, facilitators: createFacilitators({ config, cdpApiKey: noCdpKey, facilitatorApiKey: facilitatorKey, clock }), timeoutMs: 5_000 });
 });
@@ -199,12 +205,12 @@ const requiredOf = async (rail: PaymentRail, quote: Quote): Promise<PaymentRequi
 
 const buyer = privateKeyToAccount(generatePrivateKey());
 
-/** A payment the official x402 client signs for one of the 402's options, on `network`. */
-const pay = async (required: PaymentRequired, network: string): Promise<string> => {
+/** A payment the official x402 client signs for one of the 402's options, on `network`. On NEAR, `buyer.testnet` pays, unless another signer is given. */
+const pay = async (required: PaymentRequired, network: string, signer = nearSigner): Promise<string> => {
   const client = new x402Client()
     .register(base, new ExactEvmScheme(buyer))
     .register(solana, new ExactSvmScheme(await generateKeyPairSigner(), { rpcUrl: rpc.url }))
-    .register(near, new ExactNearScheme(nearSigner));
+    .register(near, new ExactNearScheme(signer));
 
   return encodePaymentSignatureHeader(await client.createPaymentPayload({ ...required, accepts: required.accepts.filter(option => option.network === network) }));
 };
@@ -684,7 +690,7 @@ describe('NEAR payments', () => {
     expect(sent[0]!.body).toMatchObject({ paymentPayload: { payload: { signedDelegateAction: signed } }, paymentRequirements: { network: near, asset: nearUsdc, amount: '1000', payTo: nearPayTo } });
   });
 
-  it('claims one key per signed action: a SHA-256 of its bytes, however its base64 is padded', async () => {
+  it('claims one key per signed action, a SHA-256 of its bytes however its base64 is padded, and one for its payer', async () => {
     const { rail, claims } = createPorts();
     const payload = decodePaymentSignatureHeader(await pay(await requiredOf(rail, quoteOf()), near));
     const signed = String(payload.payload['signedDelegateAction']);
@@ -696,12 +702,90 @@ describe('NEAR payments', () => {
 
     expect(spellings.length).toBeGreaterThanOrEqual(3);
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
-    expect([...claims.claims.keys()]).toEqual([`x402:${near}:${createHash('sha256').update(Buffer.from(signed, 'base64')).digest('hex')}`]);
+    expect(results.flatMap(result => result.status === 'rejected' ? [result.reason as unknown] : []))
+      .toEqual(spellings.slice(1).map(() => expect.objectContaining({ reason: 'replayed' })));
+    const [first] = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+    const deadline = Date.now() + 300 * 1_000 + 60_000;
+    expect([...claims.claims.keys()]).toEqual([`x402:${near}:${createHash('sha256').update(Buffer.from(signed, 'base64')).digest('hex')}`, `x402:${near}:payer:buyer.testnet`]);
+    // Both for the option's 300 s timeout and a minute: longer than the delegate action can execute
+    for (const expiresAt of claims.claims.values())
+      expect(Math.abs(expiresAt - deadline)).toBeLessThan(5_000);
 
+    await rail.abort(first!);
+    expect(claims.claims.size).toBe(0);
     const other = decodePaymentSignatureHeader(await pay(await requiredOf(rail, quoteOf()), near));
     expect(other.payload['signedDelegateAction']).not.toBe(signed);
     await expect(rail.authorize(paidCredential(rail, encodePaymentSignatureHeader(other)), quoteOf())).resolves.toMatchObject({ network: near });
     expect(claims.claims.size).toBe(2);
+  });
+
+  it('refuses a payer\'s second NEAR payment while the first is in flight as payer_busy, asking the facilitator nothing, and takes it once the first settles or aborts', async () => {
+    const { rail, claims, created } = createPorts();
+    const signed = async (signer = nearSigner) => encodePaymentSignatureHeader(decodePaymentSignatureHeader(await pay(await requiredOf(rail, quoteOf()), near, signer)));
+    const authorize = async (header: string) => rail.authorize(paidCredential(rail, header), quoteOf());
+    const [second, third, fourth] = [await signed(), await signed(), await signed()];
+
+    const first = await authorize(await signed());
+    const before = facilitator.requests.length;
+    const rows = created.length;
+    const refusal = await authorize(second).catch((error: unknown) => error);
+
+    expect(refusal).toBeInstanceOf(PaymentInvalidError);
+    expect(refusal).toMatchObject({ code: 'payment_invalid', reason: 'payer_busy' });
+    expect(facilitator.requests.length).toBe(before);
+    expect(created.length).toBe(rows);
+    // The refused payment's own claim is given back: it may pay once the payer is free
+    expect([...claims.claims.keys()]).toEqual([(first as X402Authorization).claim, `x402:${near}:payer:buyer.testnet`]);
+    // Another payer pays meanwhile
+    const elsewhere = await authorize(await signed(otherNearSigner));
+    expect(elsewhere).toMatchObject({ buyer: 'address:near:testnet:other-buyer.testnet' });
+
+    // Settled: the payer is free, and the payment's own claim stays, so its signature pays once
+    await rail.finalize(first);
+    expect(claims.claims.has((first as X402Authorization).claim)).toBe(true);
+    const next = await authorize(second);
+    await expect(authorize(third)).rejects.toMatchObject({ reason: 'payer_busy' });
+    // Aborted: the payer is free again
+    await rail.abort(next);
+    await expect(authorize(fourth)).resolves.toMatchObject({ network: near, buyer: 'address:near:testnet:buyer.testnet' });
+  });
+
+  it('frees the payer when the facilitator refuses its payment or its settlement fails, and not while the settlement is pending', async () => {
+    const { rail, claims } = createPorts();
+    const payerClaim = `x402:${near}:payer:buyer.testnet`;
+    const signed = async () => pay(await requiredOf(rail, quoteOf()), near);
+    const authorize = async (header: string) => rail.authorize(paidCredential(rail, header), quoteOf());
+
+    facilitator.handle('/verify', facilitatorAnswers.invalid('invalid_exact_near_payload_delegate_action_nonce_already_used'));
+    await expect(authorize(await signed())).rejects.toMatchObject({ reason: 'invalid_exact_near_payload_delegate_action_nonce_already_used' });
+    expect(claims.claims.size).toBe(0);
+    facilitator.reset();
+
+    facilitator.handle('/settle', facilitatorAnswers.failed('settlement_failed'));
+    await expect(rail.finalize(await authorize(await signed()))).rejects.toBeInstanceOf(SettlementFailedError);
+    expect(claims.claims.has(payerClaim)).toBe(false);
+
+    facilitator.handle('/settle', facilitatorAnswers.pending('pending-hash'));
+    await rail.finalize(await authorize(await signed()));
+    expect(claims.claims.has(payerClaim)).toBe(true);
+    await expect(authorize(await signed())).rejects.toMatchObject({ reason: 'payer_busy' });
+  });
+
+  it('refuses a signed action with a byte appended as invalid_payload, before asking the facilitator: borsh would read the same action', async () => {
+    const { rail, claims } = createPorts();
+    const quote = quoteOf();
+    const payload = decodePaymentSignatureHeader(await pay(await requiredOf(rail, quote), near));
+    const signed = Buffer.from(String(payload.payload['signedDelegateAction']), 'base64');
+    const padded = Buffer.concat([signed, Buffer.from([0])]).toString('base64');
+    const before = facilitator.requests.length;
+
+    expect(decodeSignedDelegateB64(padded).delegate).toEqual(decodeSignedDelegateB64(signed.toString('base64')).delegate);
+    await expect(rail.authorize(paidCredential(rail, encodePaymentSignatureHeader({ ...payload, payload: { ...payload.payload, signedDelegateAction: padded } })), quote))
+      .rejects.toMatchObject({ code: 'payment_invalid', reason: 'invalid_payload' });
+    expect(facilitator.requests.length).toBe(before);
+    expect(claims.claims.size).toBe(0);
+    // The action itself, as signed, still pays
+    await expect(rail.authorize(paidCredential(rail, encodePaymentSignatureHeader(payload)), quoteOf())).resolves.toMatchObject({ network: near });
   });
 
   it('gives a payment the option\'s timeout at half a second a block: the SDK counts the window in blocks, which take about 0.6 s', async () => {
@@ -963,8 +1047,13 @@ describe('the payment in logs and errors', () => {
     await attempt(ports, authorize => authorize());
     facilitator.reset();
     await attempt(ports, async authorize => {
-      await authorize();
-      await authorize();
+      const first = await authorize();
+      try {
+        await authorize();
+      }
+      finally {
+        await ports.rail.abort(first);
+      }
     });
     facilitator.handle('/settle', facilitatorAnswers.failed());
     await attempt(ports, async authorize => ports.rail.finalize(await authorize()));

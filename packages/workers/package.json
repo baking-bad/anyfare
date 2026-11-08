@@ -25,6 +25,7 @@
     "@anyfare/db": "0.1.0",
     "@anyfare/payments": "0.1.0",
     "@prometheus-io/client": "^0.16.1",
+    "@x402/near": "2.30.0",
     "viem": "2.57.3"
   },
   "devDependencies": {
