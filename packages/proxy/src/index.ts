@@ -1,3 +1,8 @@
+export { createApp, keyCacheDefaults, routedMethods } from './app.js';
+export type { ProxyDependencies, ProxyServer } from './app.js';
+export { defaultMetricsPort, defaultPort, startProxy, startupCheckTimeoutMs } from './start.js';
+export { createRouting, quoteTtlSeconds, settleMarginMs } from './routing/routes.js';
+export type { Routing, RoutingOptions } from './routing/routes.js';
 export { errorStatuses, KeyRequiredError, ResponseTooLargeError, UpstreamUnavailableError } from './errors.js';
 export { createProxyMetrics } from './metrics.js';
 export type { PaymentOutcome, ProxyMetrics, RoutingOutcome } from './metrics.js';

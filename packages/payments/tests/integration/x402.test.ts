@@ -22,8 +22,8 @@ import {
 } from '@anyfare/testing';
 
 import {
-  createFacilitators, createX402Rail, FacilitatorUnavailableError, fromSettlementRequest, initializeX402, PaymentInvalidError, SettlementFailedError,
-  type Authorization, type PaymentRail, type PaymentRecorder, type Quote, type SettlementLedger, type X402Setup,
+  createFacilitators, createX402Rail, FacilitatorUnavailableError, fromSettlementRequest, initializeX402, minPaymentWindowMs, PaymentInvalidError,
+  SettlementFailedError, type Authorization, type PaymentRail, type PaymentRecorder, type Quote, type SettlementLedger, type X402Setup,
 } from '../../src/index.js';
 
 const base = 'eip155:84532';
@@ -536,6 +536,39 @@ describe('one signed payment, one call', () => {
     await expect(rail.authorize(paidCredential(rail, header), quote)).rejects.toMatchObject({ code: 'payment_invalid', reason: 'invalid_payload' });
     expect(facilitator.requests.length).toBe(before);
     expect(claims.claims.size).toBe(0);
+  });
+
+  it('refuses a Base payment that expires in 10 seconds as too_short, before asking the facilitator: its settle could fail after the call', async () => {
+    const { rail, claims } = createPorts();
+    const quote = quoteOf();
+    const payload = decodePaymentSignatureHeader(await pay(await requiredOf(rail, quote), base));
+    const authorization = payload.payload['authorization'] as Record<string, unknown>;
+    const validBefore = Math.floor(Date.now() / 1_000) + 10;
+    const header = encodePaymentSignatureHeader({ ...payload, payload: { ...payload.payload, authorization: { ...authorization, validBefore: String(validBefore) } } });
+    const before = facilitator.requests.length;
+
+    await expect(rail.authorize(paidCredential(rail, header), quote)).rejects.toMatchObject({ code: 'payment_invalid', reason: 'too_short' });
+    expect(facilitator.requests.length).toBe(before);
+    expect(claims.claims.size).toBe(0);
+    expect(minPaymentWindowMs).toBe(15_000);
+  });
+
+  it('gives a payment the moment it can no longer settle: a Base payment\'s validBefore, and a minute for a Solana one', async () => {
+    const { rail } = createPorts();
+    const baseQuote = quoteOf();
+    const header = await pay(await requiredOf(rail, baseQuote), base);
+    const { validBefore } = decodePaymentSignatureHeader(header).payload['authorization'] as { validBefore: string };
+    const solanaQuote = quoteOf();
+    const solanaHeader = await pay(await requiredOf(rail, solanaQuote), solana);
+
+    const onBase = await rail.authorize(paidCredential(rail, header), baseQuote);
+    const before = Date.now();
+    const onSolana = await rail.authorize(paidCredential(rail, solanaHeader), solanaQuote);
+
+    expect(onBase.deadlineMs).toBe(Number(validBefore) * 1_000);
+    expect(onBase.deadlineMs! - Date.now()).toBeGreaterThan(minPaymentWindowMs);
+    expect(onSolana.deadlineMs).toBeGreaterThanOrEqual(before + 60_000);
+    expect(onSolana.deadlineMs).toBeLessThanOrEqual(Date.now() + 60_000);
   });
 
   it('takes a Solana transaction once, however its base64 is padded', async () => {

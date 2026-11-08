@@ -20,6 +20,11 @@ const reasonPattern = /^[a-z0-9_]{1,64}$/;
 const claimGraceMs = 60_000;
 const maxClaimMs = 7 * 24 * 60 * 60_000;
 const base64Pattern = /^[A-Za-z0-9+/]+=*$/;
+// The shortest time a payment may have left to settle when it is authorized: enough for the call
+// and the settle after it
+export const minPaymentWindowMs = 15_000;
+// How long a Solana payment can settle: its transaction's blockhash expires after about 150 blocks
+const solanaWindowMs = 60_000;
 
 // The transfer method each namespace's `exact` scheme uses when a quote names none
 const defaultTransferMethods: Readonly<Record<string, string>> = { eip155: 'eip3009' };
@@ -86,6 +91,21 @@ const claimOf = (requirements: PaymentRequirements, payload: PaymentPayload, now
   return undefined;
 };
 
+/**
+ * The moment after which a payment can no longer settle, in milliseconds since the epoch. On EVM: its
+ * authorization's validBefore, or Permit2's deadline. On Solana: a minute from now, a blockhash's
+ * lifetime. Undefined when the payload has no deadline.
+ */
+const deadlineOf = (requirements: PaymentRequirements, payload: PaymentPayload, nowMs: number): number | undefined => {
+  if (requirements.network.startsWith('solana:'))
+    return nowMs + solanaWindowMs;
+  const permit2 = requirements.extra['assetTransferMethod'] === 'permit2';
+  const signed = payload.payload[permit2 ? 'permit2Authorization' : 'authorization'];
+  const seconds = isRecord(signed) ? secondsOf(signed[permit2 ? 'deadline' : 'validBefore']) : undefined;
+
+  return seconds === undefined ? undefined : Number(seconds * 1_000n);
+};
+
 /** Whether a payment carries any x402 extension. This resource offers none. */
 const carriesExtensions = (payload: PaymentPayload): boolean => {
   const { extensions } = payload as { extensions?: unknown };
@@ -102,6 +122,8 @@ export interface X402Authorization extends Authorization {
   readonly asset: string;
   // The claim on the payment's nonce, released when nothing settles
   readonly claim: string;
+  // When the payment can no longer settle: the proxy keeps the call under it
+  readonly deadlineMs: number;
 }
 
 export interface X402RailOptions {
@@ -254,9 +276,17 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
           reason: 'transfer_method',
         });
       }
-      const single = claimOf(requirements, payload, clock.now().getTime());
-      if (single === undefined)
+      const nowMs = clock.now().getTime();
+      const single = claimOf(requirements, payload, nowMs);
+      const deadlineMs = deadlineOf(requirements, payload, nowMs);
+      if (single === undefined || deadlineMs === undefined)
         throw new PaymentInvalidError('The payment has no nonce, deadline, or transaction to make it single-use', { reason: 'invalid_payload' });
+      // A payment that expires before the call and its settle can finish would let the answer out unpaid
+      if (deadlineMs - nowMs < minPaymentWindowMs) {
+        throw new PaymentInvalidError(`The payment expires too soon. Sign it valid for at least ${minPaymentWindowMs / 1_000} seconds.`, {
+          reason: 'too_short',
+        });
+      }
 
       // Concurrent calls with one signature: the first claim verifies, the others are refused
       const claim = single.key;
@@ -305,6 +335,7 @@ export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger 
         requirements,
         asset,
         claim,
+        deadlineMs,
         ...quote.log ? { log: quote.log } : {},
       };
 
