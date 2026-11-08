@@ -6,6 +6,12 @@
     },
     {
       "path": "packages/core"
+    },
+    {
+      "path": "packages/db"
+    },
+    {
+      "path": "packages/testing"
     }
   ]
 }

@@ -1,0 +1,30 @@
+{
+  "name": "@anyfare/testing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fakes and test helpers, for tests only",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "vitest run --root ../.. --project testing"
+  },
+  "dependencies": {
+    "@anyfare/common": "0.1.0",
+    "@anyfare/core": "0.1.0",
+    "@anyfare/db": "0.1.0",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1"
+  }
+}
