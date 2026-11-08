@@ -16,7 +16,8 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -p tsconfig.check.json",
-    "test": "vitest run --root ../.. --project signer"
+    "test": "vitest run --root ../.. --project signer",
+    "start": "node dist/main.js"
   },
   "dependencies": {
     "@anyfare/common": "0.1.0",
