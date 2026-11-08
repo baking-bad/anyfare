@@ -11,6 +11,8 @@ export { createRedisInvalidationBus, invalidationChannel } from './invalidation.
 export type { RedisInvalidationBus, RedisInvalidationBusOptions } from './invalidation.js';
 export { createRedisRateLimiter, rateLimitKeyPrefix } from './rateLimiter.js';
 export type { RedisRateLimiterOptions } from './rateLimiter.js';
+export { createRedisReplayStore, replayKeyPrefix } from './replayStore.js';
+export type { RedisReplayStore, RedisReplayStoreOptions, ReplayStoreChange } from './replayStore.js';
 export { createAccountRepository } from './accountRepository.js';
 export type { AccountRepositoryOptions } from './accountRepository.js';
 export { createApiKeyRepository } from './apiKeyRepository.js';

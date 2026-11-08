@@ -21,3 +21,9 @@ export { associatedTokenAddress, decodeSolanaPayment, encodeBase58, startFakeSol
 export type { FakeSolanaRpc, SolanaPayment } from './solanaRpc.js';
 export { createMemoryClaimStore } from './claims.js';
 export type { MemoryClaimStore } from './claims.js';
+export {
+  createTestTempoPayer, moderatoChainId, pathUsdAddress, pushMppCredential, startFakeTempoRpc, tamperMppSignature,
+} from './tempoRpc.js';
+export type {
+  FakeTempoRpc, FakeTempoRpcOptions, TempoBroadcast, TempoRpcCall, TempoSimulation, TempoTransactionChange, TestTempoPayer, TestTempoPayerOptions,
+} from './tempoRpc.js';
