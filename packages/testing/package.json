@@ -22,6 +22,7 @@
     "@anyfare/common": "0.1.0",
     "@anyfare/core": "0.1.0",
     "@anyfare/db": "0.1.0",
+    "@solana/kit": "8.6.0",
     "pg": "^8.23.1",
     "undici": "^8.11.2"
   },
