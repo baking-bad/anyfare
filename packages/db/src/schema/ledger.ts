@@ -1,11 +1,12 @@
 import { sql } from 'drizzle-orm';
 import {
-  bigint, boolean, check, customType, date, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex,
+  bigint, boolean, check, date, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex,
 } from 'drizzle-orm/pg-core';
 
 import type { BillingDecision, JsonObject, PaymentStatus, RailName } from '@anyfare/core';
 
 import { accounts, apiKeys } from './accounts.js';
+import { atomicAmount } from './columns.js';
 
 // Owned by the ledger. Amounts are integer micro-USD. IDs and times come from the IdGenerator and
 // Clock ports, never from column defaults.
@@ -13,13 +14,6 @@ import { accounts, apiKeys } from './accounts.js';
 const timestamps = {
   createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull(),
 };
-
-// An on-chain amount in an asset's atomic units, which can pass a bigint for 18-decimal assets
-const atomicAmount = customType<{ data: bigint; driverData: string }>({
-  dataType: () => 'numeric(78, 0)',
-  toDriver: value => value.toString(),
-  fromDriver: value => BigInt(value),
-});
 
 /**
  * One account of the double-entry ledger: an account's available or held money, or a platform

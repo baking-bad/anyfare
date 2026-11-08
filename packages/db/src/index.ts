@@ -21,3 +21,7 @@ export { createPaymentRepository } from './paymentRepository.js';
 export type { PaymentRepository, PaymentRepositoryOptions, SettlingPayment, StatusChange } from './paymentRepository.js';
 export { createLedger, ledgerAccountIds } from './ledgerRepository.js';
 export type { CreditResult, Ledger, LedgerOptions } from './ledgerRepository.js';
+export { createRoutingRepository, maxRoutedEndpointsPerHost } from './routingRepository.js';
+export type {
+  EndpointRegistration, NewSignature, NewTargetPayment, RoutingRepository, RoutingRepositoryOptions, TargetPaymentRecord, UnbookedRoutingLoss,
+} from './routingRepository.js';
