@@ -10,3 +10,13 @@ export { createPaymentStep, paymentIdPrefix } from './payments/step.js';
 export type { PaidCall, PaidCallTrace, PaymentStart, PaymentStep, PaymentStepOptions, RoutedCallInput, TargetOutcome } from './payments/step.js';
 export { keyPath, registerKeyRoute } from './platform/key.js';
 export type { KeyRouteOptions } from './platform/key.js';
+export {
+  createRoutingLinkRewriter, filterResponseHeaders, forwardedRequestHeaders, forwardedResponseHeaders, rewriteLinkHeader, routedRequestHeaders,
+  routedResponseHeaders, targetPaymentHeaders,
+} from './routing/headers.js';
+export type { RoutingLinkOptions } from './routing/headers.js';
+export {
+  createEndpointRegistrar, createOptOutCheck, createSignerClient, internalSecretHeader, isOwnHost, optOutBodyLimit, optOutPath, optOutTimeoutMs,
+  optOutTtlSeconds, ownDomainsOf, routedEndpointsPath, signerSecretHeader, SignerUnavailableError, signPath,
+} from './routing/support.js';
+export type { EndpointRegistrar, OptOutCheck, SignedPayment, SignerClient, SignerFailure, SignInput, X402Requirement } from './routing/support.js';
