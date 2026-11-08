@@ -1,0 +1,18 @@
+node_modules/
+dist/
+coverage/
+.tmp/
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Local tooling, never committed
+.claude/
+CLAUDE.local.md
+
+*.tsbuildinfo
+config.local.yaml
+config.local.yml
+config.local.json
+*.log
