@@ -149,6 +149,22 @@ describe('the balance monitor', () => {
     expect(logs.filter(line => line['msg'] === lowWallet)).toEqual([expect.objectContaining({ level: 40, wallet: 'signer:base', held: '4', dailyLimit: '5', alert: true })]);
   });
 
+  it('alerts for the NEAR hot wallet below a day\'s spend limit: it is the payTo buyers pay, noted as the Signer\'s', async () => {
+    const nearUsdc = asset('near-usdc');
+    const withHotWallet = {
+      ...config, assets: assetsNamed('near-usdc'), signer: { ...config.signer, wallets: { ...config.signer.wallets, near: nearUsdc.payTo } },
+    };
+    // $3 of USDC on NEAR against a $5 daily limit
+    const near = { balance: async () => 3_000_000n };
+    const registry = new Registry();
+
+    expect(treasuryWallets(withHotWallet)).toEqual([expect.objectContaining({ name: 'payTo:near-usdc', role: 'pay_to', signer: 'signer:near' })]);
+    await balances(withHotWallet, readerFor({ near }), registry, 5_000_000n);
+
+    expect(await registry.metrics()).toMatch(/treasury_balance_usd\{wallet="payTo:near-usdc",asset="near-usdc"\} 3\n/);
+    expect(logs.filter(line => line['msg'] === lowWallet)).toEqual([expect.objectContaining({ level: 40, wallet: 'payTo:near-usdc', held: '3', dailyLimit: '5', alert: true })]);
+  });
+
   it('fails the run when a balance can\'t be read, logging the RPC\'s short message, never its URL', async () => {
     const listener = createNetServer();
     await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
