@@ -1,6 +1,6 @@
 import { once } from 'node:events';
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { createLogger, Secret } from '@anyfare/common';
 import { createTestRedis, type TestRedis } from '@anyfare/testing';
@@ -23,6 +23,9 @@ afterAll(async () => {
 });
 
 const inOneMinute = () => Date.now() + 60_000;
+// A claim's expiry is our clock's time, which Redis reads against its own: they may differ by this
+// much either way, as with a Redis in a VM whose clock lags for a moment
+const maxClockSkewMs = 1_000;
 
 describe('the replay store', () => {
   it('claims a credential once across replicas, under <prefix>mpp: until the claim expires', async () => {
@@ -36,18 +39,24 @@ describe('the replay store', () => {
     expect(await second.tryClaim('mppx:charge:0xabc', expires)).toBe(false);
     const key = `${redis.prefix}mpp:mppx:charge:0xabc`;
     expect(JSON.parse((await redis.client.get(key))!)).toEqual({ expires, type: 'mppx:replay' });
+    const before = Date.now();
     const ttl = await redis.client.pTTL(key);
-    expect(ttl).toBeGreaterThan(55_000);
-    expect(ttl).toBeLessThanOrEqual(60_000);
+    const after = Date.now();
+    // What's left of the minute by our clock, give or take the skew
+    expect(ttl).toBeGreaterThanOrEqual(expires - after - maxClockSkewMs);
+    expect(ttl).toBeLessThanOrEqual(expires - before + maxClockSkewMs);
   });
 
   it('claims a key again once the first claim has expired', async () => {
     const store = createRedisReplayStore({ redis });
 
-    expect(await store.tryClaim('mppx:charge:0xdef', Date.now() + 50)).toBe(true);
-    await new Promise(resolve => setTimeout(resolve, 100));
+    const expires = Date.now() + 50;
+    expect(await store.tryClaim('mppx:charge:0xdef', expires)).toBe(true);
 
-    expect(await store.tryClaim('mppx:charge:0xdef', inOneMinute())).toBe(true);
+    // Claimable again once Redis's clock passes the expiry, at most the skew after ours does
+    await vi.waitFor(async () => expect(await store.tryClaim('mppx:charge:0xdef', inOneMinute())).toBe(true), {
+      timeout: expires - Date.now() + maxClockSkewMs + 500, interval: 20,
+    });
   });
 
   it('claims a released key again at once, on any replica', async () => {
