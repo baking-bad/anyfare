@@ -7,3 +7,5 @@ export type { FakeIdGenerator } from './ids.js';
 export { createManualTimers } from './timers.js';
 export type { ManualTimers } from './timers.js';
 export { fixtureInstant, fixtureTime, fixtureDay, fixtureRun } from './dateFixtures.js';
+export { createTestRedis, dropRedisConnections } from './redis.js';
+export type { TestRedis } from './redis.js';

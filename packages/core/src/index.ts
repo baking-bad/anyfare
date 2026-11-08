@@ -4,3 +4,5 @@ export { createDocumentLocator, fromPointer, toIssue, toIssues, toPointer } from
 export type { IssueDraft, IssueLocation, IssueLocator } from './validation/issues.js';
 export * from './platform/index.js';
 export * from './audit.js';
+export * from './rateLimit.js';
+export * from './invalidation.js';

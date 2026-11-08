@@ -1,0 +1,153 @@
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+import { createLogger } from '@anyfare/common';
+import type { InvalidationEvent } from '@anyfare/core';
+import { createTestRedis, dropRedisConnections, type TestRedis } from '@anyfare/testing';
+
+import { createRedis, createRedisInvalidationBus, invalidationChannel, type Redis, type RedisInvalidationBus } from '../../src/index.js';
+
+const logger = createLogger({ level: 'silent' });
+let redis: TestRedis;
+const opened: Redis[] = [];
+const buses: RedisInvalidationBus[] = [];
+
+beforeAll(async () => {
+  redis = await createTestRedis();
+});
+
+afterAll(async () => {
+  await Promise.all(buses.map(bus => bus.close()));
+  await Promise.all(opened.map(connection => connection.close()));
+  await redis?.cleanup();
+});
+
+// A bus on its own connection, as another replica would have
+const createBus = (prefix = redis.prefix): RedisInvalidationBus => {
+  const connection = createRedis({ url: redis.url, logger, prefix });
+  opened.push(connection);
+  const bus = createRedisInvalidationBus({ redis: connection, logger });
+  buses.push(bus);
+
+  return bus;
+};
+
+const collect = async (bus: RedisInvalidationBus): Promise<InvalidationEvent[]> => {
+  const events: InvalidationEvent[] = [];
+  await bus.subscribe(event => {
+    events.push(event);
+  });
+
+  return events;
+};
+
+describe('Redis invalidation bus', () => {
+  it('delivers a published event to a subscriber on another connection', async () => {
+    const publisher = createBus();
+    const received = await collect(createBus());
+
+    await publisher.publish({ kind: 'account', id: 'acct_1' });
+    await publisher.publish({ kind: 'key', id: 'key_1' });
+
+    await vi.waitFor(() => expect(received).toEqual([{ kind: 'account', id: 'acct_1' }, { kind: 'key', id: 'key_1' }]));
+  });
+
+  it('keeps prefixes apart: an event under one prefix doesn\'t reach a subscriber under another', async () => {
+    const otherPrefix = `${redis.prefix}other:`;
+    const publisher = createBus();
+    const otherPublisher = createBus(otherPrefix);
+    const received = await collect(createBus());
+    const otherReceived = await collect(createBus(otherPrefix));
+
+    await publisher.publish({ kind: 'account', id: 'acc_1' });
+    await vi.waitFor(() => expect(received).toEqual([{ kind: 'account', id: 'acc_1' }]));
+    // Redis delivers in publish order, so if the first event had leaked it would arrive before this one
+    await otherPublisher.publish({ kind: 'account', id: 'acc_2' });
+
+    await vi.waitFor(() => expect(otherReceived).toEqual([{ kind: 'account', id: 'acc_2' }]));
+    expect(received).toEqual([{ kind: 'account', id: 'acc_1' }]);
+  });
+
+  it('delivers to every handler, survives a failing handler, and stops after unsubscribe', async () => {
+    const publisher = createBus();
+    const subscriber = createBus();
+    const first: InvalidationEvent[] = [];
+    const second: InvalidationEvent[] = [];
+    await subscriber.subscribe(() => {
+      throw new Error('handler failed');
+    });
+    const unsubscribe = await subscriber.subscribe(event => {
+      first.push(event);
+    });
+    await subscriber.subscribe(async event => {
+      second.push(event);
+    });
+
+    await publisher.publish({ kind: 'account', id: 'one' });
+    await vi.waitFor(() => expect(second).toHaveLength(1));
+    await unsubscribe();
+    await publisher.publish({ kind: 'account', id: 'two' });
+
+    await vi.waitFor(() => expect(second).toHaveLength(2));
+    expect(first).toEqual([{ kind: 'account', id: 'one' }]);
+  });
+
+  it('ignores malformed messages and keeps delivering', async () => {
+    const subscriber = createBus();
+    const received = await collect(subscriber);
+    const channel = `${redis.prefix}${invalidationChannel}`;
+
+    await redis.client.publish(channel, 'not json');
+    await redis.client.publish(channel, JSON.stringify({ kind: 'payment', id: 'p_1' }));
+    await redis.client.publish(channel, JSON.stringify({ kind: 'account', id: '' }));
+    await redis.client.publish(channel, JSON.stringify({ kind: 'account', id: 'kept', extra: true }));
+
+    await vi.waitFor(() => expect(received).toEqual([{ kind: 'account', id: 'kept' }]));
+  });
+
+  it('stops delivering after close, and can still publish', async () => {
+    const subscriber = createBus();
+    const received = await collect(subscriber);
+    const watcher = await collect(createBus());
+
+    await subscriber.close();
+    await subscriber.publish({ kind: 'key', id: 'after-close' });
+
+    await vi.waitFor(() => expect(watcher).toEqual([{ kind: 'key', id: 'after-close' }]));
+    expect(received).toEqual([]);
+  });
+
+  it('tells subscribers when the subscription is back after its connection dropped, and keeps delivering', async () => {
+    const prefix = `${redis.prefix}reconnect:`;
+    const publisher = createBus(prefix);
+    const subscriber = createBus(prefix);
+    const events: InvalidationEvent[] = [];
+    const reconnects = vi.fn();
+    await subscriber.subscribe(event => {
+      events.push(event);
+    }, { onReconnect: reconnects });
+    await publisher.publish({ kind: 'account', id: 'before' });
+    await vi.waitFor(() => expect(events).toEqual([{ kind: 'account', id: 'before' }]));
+    expect(reconnects).not.toHaveBeenCalled();
+
+    expect(await dropRedisConnections(redis, `${prefix}${invalidationChannel}`)).toBe(1);
+
+    await vi.waitFor(() => expect(reconnects).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    await publisher.publish({ kind: 'account', id: 'after' });
+    await vi.waitFor(() => expect(events).toEqual([{ kind: 'account', id: 'before' }, { kind: 'account', id: 'after' }]));
+  });
+
+  it('stops telling a subscriber about reconnects once it unsubscribes', async () => {
+    const prefix = `${redis.prefix}unsubscribed:`;
+    const subscriber = createBus(prefix);
+    const kept = vi.fn();
+    const dropped = vi.fn();
+    await subscriber.subscribe(() => undefined, { onReconnect: kept });
+    const unsubscribe = await subscriber.subscribe(() => undefined, { onReconnect: dropped });
+    await unsubscribe();
+
+    await dropRedisConnections(redis, `${prefix}${invalidationChannel}`);
+
+    await vi.waitFor(() => expect(kept).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    expect(dropped).not.toHaveBeenCalled();
+  });
+});
