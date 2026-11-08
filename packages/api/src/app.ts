@@ -1,9 +1,15 @@
 import type { FastifyInstance } from 'fastify';
 
-import { createServer, type IdGenerator, type Logger, type Server } from '@anyfare/common';
-import type { PlatformConfig } from '@anyfare/core';
-import type { Postgres, Redis } from '@anyfare/db';
+import {
+  createServer, randomIdGenerator, systemClock, type Clock, type IdGenerator, type Logger, type Server,
+} from '@anyfare/common';
+import { cryptoRandomSource, type ApiKeyRepository, type PlatformConfig, type RandomSource } from '@anyfare/core';
+import { createApiKeyRepository, createRedisRateLimiter, type Postgres, type Redis } from '@anyfare/db';
 
+import { createMasterKeyAuth, decorateAccount } from './accounts/auth.js';
+import { registerAccountRoutes } from './accounts/routes.js';
+import { createAccountService } from './accounts/service.js';
+import { createSignupLimit } from './accounts/signupLimit.js';
 import { errorStatuses } from './errors.js';
 
 export interface ApiDependencies {
@@ -11,10 +17,18 @@ export interface ApiDependencies {
   readonly logger: Logger;
   readonly postgres: Postgres;
   readonly redis: Redis;
+  // Times of accounts, keys, and audit entries. Default: the system clock.
+  readonly clock?: Clock;
+  // IDs of accounts, keys, and audit entries. Default: random UUIDs.
+  readonly ids?: IdGenerator;
+  // Randomness for keys. Default: node:crypto.
+  readonly random?: RandomSource;
   // Request IDs for requests without one. Default: random UUIDs.
   readonly requestIds?: IdGenerator;
   // The proxies in front, whose X-Forwarded-For gives the client IP. Default: none.
   readonly trustProxy?: string;
+  // Master key lookups. Default: the api_keys repository.
+  readonly apiKeys?: Pick<ApiKeyRepository, 'findActiveByHash'>;
 }
 
 // A POST with `Content-Type: application/json` and no body has no body, rather than invalid JSON
@@ -31,7 +45,18 @@ const acceptEmptyJson = (app: FastifyInstance): void => {
 };
 
 /** The Platform API on api.anyfare.agents.bakingbad.dev. Readiness covers Postgres and Redis. */
-export const createApp = ({ logger, postgres, redis, requestIds, trustProxy }: ApiDependencies): Server => {
+export const createApp = ({
+  config,
+  logger,
+  postgres,
+  redis,
+  clock = systemClock,
+  ids = randomIdGenerator,
+  random = cryptoRandomSource,
+  requestIds,
+  trustProxy,
+  apiKeys = createApiKeyRepository({ db: postgres.db }),
+}: ApiDependencies): Server => {
   const server = createServer({
     logger,
     errorStatuses,
@@ -42,7 +67,17 @@ export const createApp = ({ logger, postgres, redis, requestIds, trustProxy }: A
       { name: 'redis', check: () => redis.ping() },
     ],
   });
-  acceptEmptyJson(server.app);
+  const { app } = server;
+  decorateAccount(app);
+  acceptEmptyJson(app);
+
+  const authenticate = createMasterKeyAuth({ keyPrefixes: config.keyPrefixes, apiKeys });
+  const limiter = createRedisRateLimiter({ redis });
+  registerAccountRoutes(app, {
+    accounts: createAccountService({ db: postgres.db, clock, ids, random, keyPrefixes: config.keyPrefixes }),
+    authenticate,
+    signupLimit: createSignupLimit({ limiter, limit: config.rateLimits.signup }),
+  });
 
   return server;
 };
