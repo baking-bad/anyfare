@@ -133,6 +133,18 @@ describe('GET /v1/payments', () => {
     expect(response.status).toBe(400);
   });
 
+  it.each([
+    ['a cursor that is garbage', 'not-a-cursor'],
+    ['a cursor whose time is out of range', Buffer.from('-271821-04-20T00:00:00.000Z|pay_x').toString('base64url')],
+    ['a cursor from before 2000', Buffer.from('1999-12-31T00:00:00.000Z|pay_x').toString('base64url')],
+  ])('refuses %s with 400 invalid_request', async (_case, after) => {
+    const owner = await signup();
+
+    const response = await get(owner.masterKey, `/v1/payments?after=${after}`);
+
+    expect(response).toMatchObject({ status: 400, body: { error: { code: 'invalid_request' } } });
+  });
+
   it('needs the master key', async () => {
     const response = await fetch(`${url}/v1/payments`);
 

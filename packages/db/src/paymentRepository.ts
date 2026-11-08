@@ -2,7 +2,7 @@ import { and, asc, desc, eq, gt, inArray, lt, or } from 'drizzle-orm';
 
 import type { Clock } from '@anyfare/common';
 import {
-  InvalidPaymentStatusChangeError, PaymentFinalizedError, statusesBefore, type BillingDecision, type InitialPaymentStatus, type JsonObject,
+  InvalidPaymentCursorError, InvalidPaymentStatusChangeError, PaymentFinalizedError, statusesBefore, type BillingDecision, type InitialPaymentStatus, type JsonObject,
   type NewPayment, type Payment, type PaymentPage, type PaymentStatus,
 } from '@anyfare/core';
 
@@ -93,11 +93,16 @@ const toPayment = (row: typeof payments.$inferSelect): Payment => ({
 
 // The page cursor: the last payment's time and ID, so payments made in the same millisecond keep their order
 const encodeCursor = (payment: Payment): string => Buffer.from(`${payment.createdAt.toISOString()}|${payment.id}`).toString('base64url');
-const decodeCursor = (cursor: string): { readonly createdAt: Date; readonly id: string } | undefined => {
+// Payments are from this year on, so an earlier time is no cursor of ours
+const earliestCursorTime = Date.UTC(2000, 0, 1);
+/** Throws InvalidPaymentCursorError unless the cursor is one `encodeCursor` made. */
+const decodeCursor = (cursor: string): { readonly createdAt: Date; readonly id: string } => {
   const [time = '', id] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
   const createdAt = new Date(time);
+  if (!id || !Number.isFinite(createdAt.getTime()) || createdAt.getTime() < earliestCursorTime)
+    throw new InvalidPaymentCursorError();
 
-  return id && !Number.isNaN(createdAt.getTime()) ? { createdAt, id } : undefined;
+  return { createdAt, id };
 };
 
 export const createPaymentRepository = ({ db, clock }: PaymentRepositoryOptions): PaymentRepository => {

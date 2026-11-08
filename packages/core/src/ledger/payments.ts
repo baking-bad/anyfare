@@ -118,3 +118,12 @@ export class HoldReferenceConflictError extends AnyfareError {
     super('This payment was already held for another buyer, key or amount');
   }
 }
+
+/** A page cursor that isn't one a previous page returned. */
+export class InvalidPaymentCursorError extends AnyfareError {
+  readonly code = 'invalid_request';
+
+  constructor() {
+    super('after is not a cursor from a previous page');
+  }
+}
