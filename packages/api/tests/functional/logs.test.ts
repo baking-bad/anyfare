@@ -135,6 +135,7 @@ describe('the API\'s startup', () => {
         { name: 'base-usdc', network: 'eip155:84532' },
         { name: 'solana-usdc', network: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1' },
         { name: 'tempo-pathusd', network: 'eip155:42431' },
+        { name: 'near-usdc', network: 'near:testnet' },
       ],
     })]);
     const logged = JSON.stringify(startLines);

@@ -26,7 +26,7 @@ import {
 import { createFacilitators, initializeX402, type X402Setup } from '@anyfare/payments';
 import { createApp as createSigner } from '@anyfare/signer';
 import {
-  createFakeResolver, createTestDatabase, createTestRedis, encodeBase58, facilitatorAnswers, startFakeFacilitator, startFakeUpstream, type FakeFacilitator,
+  createFakeResolver, nearFacilitatorOff, createTestDatabase, createTestRedis, encodeBase58, facilitatorAnswers, startFakeFacilitator, startFakeUpstream, type FakeFacilitator,
   type FakeUpstream, type TestDatabase, type TestRedis,
 } from '@anyfare/testing';
 
@@ -144,7 +144,7 @@ beforeAll(async () => {
         // A 10% routing fee, so the split shows
         routingFeeBps: 1000,
         rateLimits: { signup: generous, paymentKey: generous, unpaidIp: generous },
-        facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }],
+        facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }, nearFacilitatorOff],
         mpp: { enabled: false },
         signer: { maxPerCall: '0.5', maxPerNetworkPerDay: '100' },
       })).toString('base64'),

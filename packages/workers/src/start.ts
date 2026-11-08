@@ -99,6 +99,7 @@ export const startWorkers = async ({ env, logger }: AppContext): Promise<Running
   let facilitators = createFacilitators({
     config,
     cdpApiKey: auth => ({ id: readSecret(auth.apiKeyId, env), secret: readSecret(auth.apiKeySecret, env) }),
+    facilitatorApiKey: auth => readSecret(auth.apiKey, env),
     clock: systemClock,
   });
   // Hold expiry and routing losses need neither the facilitators nor the Tempo node, so an outage at

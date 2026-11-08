@@ -17,7 +17,7 @@ import { createAccountRepository, createLedger, createPaymentKeyRepository, ledg
 import { createFacilitators, initializeX402 } from '@anyfare/payments';
 import { createApp as createSigner } from '@anyfare/signer';
 import {
-  associatedTokenAddress, createFakeResolver, createTestDatabase, createTestRedis, decodeSolanaPayment, encodeBase58, startFakeFacilitator, startFakeSolanaRpc,
+  associatedTokenAddress, nearFacilitatorOff, createFakeResolver, createTestDatabase, createTestRedis, decodeSolanaPayment, encodeBase58, startFakeFacilitator, startFakeSolanaRpc,
   startFakeUpstream, type FakeFacilitator, type FakeSolanaRpc, type FakeUpstream, type SolanaPayment, type TestDatabase, type TestRedis,
 } from '@anyfare/testing';
 
@@ -114,7 +114,7 @@ beforeAll(async () => {
       CONFIG: Buffer.from(JSON.stringify({
         routingFeeBps: 0,
         rateLimits: { signup: generous, paymentKey: generous, unpaidIp: generous },
-        facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }],
+        facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }, nearFacilitatorOff],
         mpp: { enabled: false },
         signer: { maxPerCall: '0.05', maxPerNetworkPerDay: '100', wallets: { solana: solanaWallet.address } },
       })).toString('base64'),

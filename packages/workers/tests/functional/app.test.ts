@@ -10,7 +10,7 @@ import { loadPlatformConfig, type PlatformConfig } from '@anyfare/core';
 import { createPaymentRepository, createPostgres, createRoutingRepository, createTreasuryRepository } from '@anyfare/db';
 import { createFacilitators } from '@anyfare/payments';
 import {
-  createFakeClock, createManualTimers, createTestCertificate, createTestDatabase, encodeBase58, facilitatorAnswers, startFakeFacilitator,
+  createFakeClock, createManualTimers, nearFacilitatorOff, createTestCertificate, createTestDatabase, encodeBase58, facilitatorAnswers, startFakeFacilitator,
   startFakeSolanaRpc, startFakeTempoRpc, trustTestCertificate, type FakeFacilitator, type FakeSolanaRpc, type FakeTempoRpc, type TestDatabase,
 } from '@anyfare/testing';
 
@@ -86,7 +86,7 @@ const metricsOf = async (app: WorkersServer): Promise<string> => {
 
 // Disabled facilitators and MPP: the startup checks have their own tests
 const quietStartup = Buffer.from(JSON.stringify({
-  facilitators: [{ name: 'cdp', url: 'https://api.cdp.coinbase.com/platform/v2/x402', networks: [base, solana], enabled: false }],
+  facilitators: [{ name: 'cdp', url: 'https://api.cdp.coinbase.com/platform/v2/x402', networks: [base, solana], enabled: false }, nearFacilitatorOff],
   mpp: { enabled: false },
 })).toString('base64');
 
@@ -254,7 +254,7 @@ describe('two workers on one database', () => {
 
   it('runs a job on one of them: the other finds its lock taken and skips', async () => {
     const withFacilitator = await loadPlatformConfig({
-      env: { ...exampleConfig, CONFIG: Buffer.from(JSON.stringify({ facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }] })).toString('base64') },
+      env: { ...exampleConfig, CONFIG: Buffer.from(JSON.stringify({ facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }, nearFacilitatorOff] })).toString('base64') },
     });
     // A payment left settling long enough ago, with its target leg, and a facilitator slow to settle it
     const clock = createFakeClock(fixtureTime(0, 9, 12, 0, 0, 0));
@@ -358,7 +358,7 @@ describe('the facilitators at startup', () => {
   // The facilitator at a fake, without auth: the settlement follow-up repeats settles through it
   const envFor = (facilitatorUrl: string) => ({
     ...exampleConfig,
-    CONFIG: Buffer.from(JSON.stringify({ facilitators: [{ name: 'cdp', url: facilitatorUrl, networks: [base, solana] }], mpp: { enabled: false } })).toString('base64'),
+    CONFIG: Buffer.from(JSON.stringify({ facilitators: [{ name: 'cdp', url: facilitatorUrl, networks: [base, solana] }, nearFacilitatorOff], mpp: { enabled: false } })).toString('base64'),
     DATABASE_URL: database.url.expose(),
     HOST: '127.0.0.1',
     METRICS_PORT: '0',
@@ -428,7 +428,7 @@ describe('two facilitators at startup, one of them down', () => {
   });
 
   const twoFacilitators = () => Buffer.from(JSON.stringify({
-    facilitators: [{ name: 'cdp', url: down.url, networks: [base] }, { name: 'backup', url: up.url, networks: [solana] }],
+    facilitators: [{ name: 'cdp', url: down.url, networks: [base] }, { name: 'backup', url: up.url, networks: [solana] }, nearFacilitatorOff],
     mpp: { enabled: false },
   })).toString('base64');
 
@@ -491,7 +491,7 @@ describe('the Tempo node at startup', () => {
   const envFor = (mpp: Record<string, unknown>) => ({
     ...exampleConfig,
     CONFIG: Buffer.from(JSON.stringify({
-      facilitators: [{ name: 'cdp', url: 'https://api.cdp.coinbase.com/platform/v2/x402', networks: [base, solana], enabled: false }],
+      facilitators: [{ name: 'cdp', url: 'https://api.cdp.coinbase.com/platform/v2/x402', networks: [base, solana], enabled: false }, nearFacilitatorOff],
       mpp,
     })).toString('base64'),
     DATABASE_URL: database.url.expose(),

@@ -43,6 +43,11 @@ assets:
     address: "0x20C000000000000000000000b9537d11c60E8b50"
     decimals: 6
     peg: usd
+  - name: near-usdc
+    network: near:mainnet
+    address: 17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1
+    decimals: 6
+    peg: usd
 
 # One facilitator per network. Auth names environment variables; their values are never in this file.
 facilitators:
@@ -53,6 +58,12 @@ facilitators:
       type: cdp
       apiKeyId: CDP_API_KEY_ID
       apiKeySecret: CDP_API_KEY_SECRET
+  - name: near
+    url: http://facilitator:8084
+    networks: [near:mainnet]
+    auth:
+      type: api-key
+      apiKey: FACILITATOR_SECRET
 
 # The Tempo charge. The recipient, our Tempo address, is added before the first deployment, with the
 # tempo-usdce asset's payTo. MPP is not offered to buyers until then.

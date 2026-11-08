@@ -44,6 +44,7 @@ describe('loadPlatformConfig', () => {
     expect(config.rateLimits.signup).toEqual({ requests: 10, windowSeconds: 3600 });
     expect(config.facilitators.map(facilitator => [facilitator.name, facilitator.url, facilitator.enabled])).toEqual([
       ['cdp', 'https://api.cdp.coinbase.com/platform/v2/x402', true],
+      ['near', 'http://127.0.0.1:8084', true],
     ]);
     expect(config.mpp).toMatchObject({ network: { id: 'eip155:42431' }, recipient: '0x2222222222222222222222222222222222222222', enabled: true, rpcUrl: undefined });
     expect(config.sizeLimits).toEqual({ requestBodyBytes: 1_048_576, bufferedResponseBytes: 10_485_760 });

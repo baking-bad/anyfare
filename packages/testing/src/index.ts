@@ -15,7 +15,7 @@ export { startFakeUpstream } from './upstream.js';
 export type { FakeUpstream, FakeUpstreamOptions, RecordedRequest, UpstreamHandler } from './upstream.js';
 export { createFakeResolver } from './dns.js';
 export type { FakeResolver } from './dns.js';
-export { defaultSolanaTransactionVersions, facilitatorAnswers, fakeTransaction, payerOf, startFakeFacilitator } from './facilitator.js';
+export { defaultSolanaTransactionVersions, facilitatorAnswers, fakeTransaction, nearFacilitatorOff, payerOf, startFakeFacilitator } from './facilitator.js';
 export type { FacilitatorAnswer, FacilitatorPath, FacilitatorRequest, FacilitatorScript, FakeFacilitator, FakeFacilitatorOptions } from './facilitator.js';
 export { associatedTokenAddress, decodeSolanaPayment, encodeBase58, startFakeSolanaRpc, tokenProgramAddress } from './solanaRpc.js';
 export type { FakeSolanaRpc, SolanaPayment } from './solanaRpc.js';

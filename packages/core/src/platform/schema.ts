@@ -56,7 +56,14 @@ export const platformConfigSchema: SchemaObject = {
       name: facilitatorName,
       url: httpUrl,
       networks: array(networkId, { minItems: 1, uniqueItems: true }),
-      auth: object({ type: constant('cdp'), apiKeyId: secretName, apiKeySecret: secretName }, ['type', 'apiKeyId', 'apiKeySecret']),
+      auth: {
+        type: 'object',
+        discriminator: { propertyName: 'type' },
+        oneOf: [
+          object({ type: constant('cdp'), apiKeyId: secretName, apiKeySecret: secretName }, ['type', 'apiKeyId', 'apiKeySecret']),
+          object({ type: constant('api-key'), apiKey: secretName }, ['type', 'apiKey']),
+        ],
+      },
       enabled: boolean,
     }, ['name', 'url', 'networks']), { minItems: 1 }),
     mpp: object({ network: networkId, recipient: addressText, enabled: boolean, rpcUrl: httpsUrl }, ['network']),

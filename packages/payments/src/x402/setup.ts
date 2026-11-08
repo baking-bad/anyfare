@@ -1,5 +1,5 @@
-import { withTimeout, type Clock, type MicroUsd, type NetworkId } from '@anyfare/common';
-import { findNetwork, type CdpAuth, type PlatformConfig } from '@anyfare/core';
+import { withTimeout, type Clock, type MicroUsd, type NetworkId, type Secret } from '@anyfare/common';
+import { findNetwork, type ApiKeyAuth, type CdpAuth, type PlatformConfig } from '@anyfare/core';
 import { x402ResourceServer } from '@x402/core/server';
 import type { Network, SchemeNetworkServer } from '@x402/core/types';
 import { findDefaultAsset } from '@x402/evm';
@@ -35,19 +35,30 @@ export interface FacilitatorsOptions {
   readonly config: PlatformConfig;
   // The CDP API key a facilitator's auth names: the caller reads its two secrets with readSecret
   readonly cdpApiKey: (auth: CdpAuth) => CdpApiKey;
+  // The static key an `api-key` auth names: the caller reads its secret with readSecret. Needed when
+  // an enabled facilitator uses that auth.
+  readonly facilitatorApiKey?: (auth: ApiKeyAuth) => Secret;
   readonly clock: Clock;
   // `/supported` and `/verify`. Default: platform config's connect timeout.
   readonly requestTimeoutMs?: number;
   readonly fetch?: typeof fetch;
 }
 
-/** The enabled facilitators of platform config, as HTTP clients. CDP signs each request. */
-export const createFacilitators = ({ config, cdpApiKey, clock, requestTimeoutMs = config.timeouts.connectMs, fetch }: FacilitatorsOptions): Facilitator[] =>
+const apiKeyOf = (name: string, auth: ApiKeyAuth, read: FacilitatorsOptions['facilitatorApiKey']): Secret => {
+  if (!read)
+    throw new Error(`The ${name} facilitator uses an API key (${auth.apiKey}), but no reader for it is set`);
+
+  return read(auth);
+};
+
+/** The enabled facilitators of platform config, as HTTP clients. CDP signs each request, an api-key auth sends its key. */
+export const createFacilitators = ({ config, cdpApiKey, facilitatorApiKey, clock, requestTimeoutMs = config.timeouts.connectMs, fetch }: FacilitatorsOptions): Facilitator[] =>
   config.facilitators.filter(facilitator => facilitator.enabled).map(facilitator => createFacilitator({
     name: facilitator.name,
     url: facilitator.url,
     networks: facilitator.networks,
-    signer: facilitator.auth ? createCdpRequestSigner({ apiKey: cdpApiKey(facilitator.auth), clock }) : undefined,
+    signer: facilitator.auth?.type === 'cdp' ? createCdpRequestSigner({ apiKey: cdpApiKey(facilitator.auth), clock }) : undefined,
+    ...facilitator.auth?.type === 'api-key' ? { apiKey: apiKeyOf(facilitator.name, facilitator.auth, facilitatorApiKey) } : {},
     requestTimeoutMs,
     settleTimeoutMs: config.timeouts.settleMs,
     ...(fetch ? { fetch } : {}),

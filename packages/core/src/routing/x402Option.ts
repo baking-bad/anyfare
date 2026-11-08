@@ -40,12 +40,12 @@ export const asExactX402Option = (requirement: unknown): ExactX402Option | undef
     : undefined;
 
 /**
- * The registry's asset for an option's network and asset address. Base58 addresses are case-sensitive,
+ * The registry's asset for an option's network and asset address. Base58 and NEAR addresses are case-sensitive,
  * EVM addresses aren't.
  */
 export const findOptionAsset = (config: Pick<PlatformConfig, 'assets'>, network: NetworkInfo, address: string): Asset | undefined =>
   config.assets.find(item => item.network.id === network.id
-    && (network.namespace === 'solana' ? item.address === address : item.address.toLowerCase() === address.toLowerCase()));
+    && (network.namespace === 'eip155' ? item.address.toLowerCase() === address.toLowerCase() : item.address === address));
 
 /**
  * Checks an x402 option of an asset of the registry against what the official clients sign: an

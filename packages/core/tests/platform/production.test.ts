@@ -33,6 +33,7 @@ const samples: Readonly<Record<string, string>> = {
   'base-usdc': '"0x1111111111111111111111111111111111111111"',
   'solana-usdc': '"11111111111111111111111111111111"',
   'tempo-usdce': '"0x2222222222222222222222222222222222222222"',
+  'near-usdc': 'pay.anyfare.testnet',
 };
 
 /** The config with a `payTo` added under each asset, after its `peg` line. */
@@ -55,6 +56,7 @@ describe('config/production.yaml', () => {
       ['base-usdc', 'eip155:8453', 6, undefined],
       ['solana-usdc', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', 6, undefined],
       ['tempo-usdce', 'eip155:4217', 6, undefined],
+      ['near-usdc', 'near:mainnet', 6, undefined],
     ]);
     expect(config.keyPrefixes).toEqual({ master: 'afm_live_', payment: 'af_live_' });
     expect(config.urls).toEqual({
@@ -71,7 +73,7 @@ describe('config/production.yaml', () => {
     expect(config.sizeLimits).toEqual({ requestBodyBytes: 1_048_576, bufferedResponseBytes: 10_485_760 });
   });
 
-  it('settles x402 through the CDP facilitator on both mainnets, with its key named by environment variable', async () => {
+  it('settles x402 through the CDP facilitator on both mainnets and our own on NEAR, with keys named by environment variable', async () => {
     const config = await loadText(text);
 
     expect(config.facilitators).toEqual([{
@@ -79,6 +81,12 @@ describe('config/production.yaml', () => {
       url: 'https://api.cdp.coinbase.com/platform/v2/x402',
       networks: ['eip155:8453', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'],
       auth: { type: 'cdp', apiKeyId: 'CDP_API_KEY_ID', apiKeySecret: 'CDP_API_KEY_SECRET' },
+      enabled: true,
+    }, {
+      name: 'near',
+      url: 'http://facilitator:8084',
+      networks: ['near:mainnet'],
+      auth: { type: 'api-key', apiKey: 'FACILITATOR_SECRET' },
       enabled: true,
     }]);
   });
@@ -89,7 +97,10 @@ describe('config/production.yaml', () => {
     expect(config.mpp).toMatchObject({ network: { id: 'eip155:4217', chain: 'tempo', testnet: false }, recipient: undefined, enabled: true, rpcUrl: undefined });
     expect(platformSummary(config).rails).toEqual({
       credits: true,
-      x402: [{ facilitator: 'cdp', networks: ['eip155:8453', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'] }],
+      x402: [
+        { facilitator: 'cdp', networks: ['eip155:8453', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'] },
+        { facilitator: 'near', networks: ['near:mainnet'] },
+      ],
       mpp: false,
     });
   });
@@ -126,6 +137,7 @@ describe('config/production.yaml', () => {
       '0x1111111111111111111111111111111111111111',
       '11111111111111111111111111111111',
       '0x2222222222222222222222222222222222222222',
+      'pay.anyfare.testnet',
     ]);
   });
 });

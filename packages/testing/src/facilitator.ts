@@ -32,6 +32,12 @@ export interface FakeFacilitator {
   close(): Promise<void>;
 }
 
+// Tests add this to their facilitator overrides, so the example config's NEAR asset has a facilitator,
+// disabled: nothing is checked or offered on NEAR.
+export const nearFacilitatorOff = {
+  name: 'near', url: 'http://127.0.0.1:8084', networks: ['near:testnet'], enabled: false, auth: { type: 'api-key', apiKey: 'FACILITATOR_SECRET' },
+} as const;
+
 // The Solana transaction message versions a facilitator of `@x402/svm` 2.30 advertises by default
 export const defaultSolanaTransactionVersions: readonly number[] = [0, 1];
 

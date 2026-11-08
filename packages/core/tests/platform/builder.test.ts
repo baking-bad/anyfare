@@ -39,13 +39,18 @@ describe('buildPlatformConfig', () => {
     const config = buildPlatformConfig(document());
 
     expect(config.environment).toBe('staging');
-    expect(config.assets.map(asset => asset.name)).toEqual(['base-usdc', 'solana-usdc', 'tempo-pathusd']);
+    expect(config.assets.map(asset => asset.name)).toEqual(['base-usdc', 'solana-usdc', 'tempo-pathusd', 'near-usdc']);
     expect(findAsset(config, 'tempo-pathusd')).toMatchObject({
       network: { id: 'eip155:42431', chain: 'tempo', testnet: true }, address: '0x20c0000000000000000000000000000000000000', decimals: 6, minPrice: 0n,
     });
     expect(config.ownHosts).toEqual(['anyfare.test', 'api.anyfare.test', 'pay.anyfare.test']);
     // Secrets by name only
     expect(findFacilitator(config, 'eip155:84532')?.auth).toEqual({ type: 'cdp', apiKeyId: 'CDP_API_KEY_ID', apiKeySecret: 'CDP_API_KEY_SECRET' });
+    expect(findFacilitator(config, 'near:testnet')).toMatchObject({ name: 'near', url: 'http://127.0.0.1:8084', auth: { type: 'api-key', apiKey: 'FACILITATOR_SECRET' } });
+    expect(findAsset(config, 'near-usdc')).toMatchObject({
+      network: { id: 'near:testnet', namespace: 'near', chain: 'near', testnet: true },
+      address: '3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af', decimals: 6, payTo: 'pay.anyfare.testnet',
+    });
     expect(findFacilitator(config, 'eip155:42431')).toBeUndefined();
     expect(config.mpp.network.chain).toBe('tempo');
     expect(config.routingFeeBps).toBe(0);
@@ -59,8 +64,8 @@ describe('buildPlatformConfig', () => {
     const notBoolean = loadExamplePlatformDocument() as MutableDocument;
     notBoolean.facilitators[0]!['enabled'] = 'no';
 
-    expect(buildPlatformConfig(unset as never).facilitators.map(facilitator => [facilitator.name, facilitator.enabled])).toEqual([['cdp', true]]);
-    expect(buildPlatformConfig(disabled as never).facilitators.map(facilitator => [facilitator.name, facilitator.enabled])).toEqual([['cdp', false]]);
+    expect(buildPlatformConfig(unset as never).facilitators.map(facilitator => [facilitator.name, facilitator.enabled])).toEqual([['cdp', true], ['near', true]]);
+    expect(buildPlatformConfig(disabled as never).facilitators.map(facilitator => [facilitator.name, facilitator.enabled])).toEqual([['cdp', false], ['near', true]]);
     expect(issues(() => assertValidPlatformConfigDocument(notBoolean)).map(issue => issue.path)).toEqual(['/facilitators/0/enabled']);
   });
 
@@ -169,8 +174,8 @@ describe('buildPlatformConfig', () => {
     expect(issues(() => buildPlatformConfig(value))).toEqual([
       { path: '/assets/0/address', message: 'is not a valid token address on Base Sepolia' },
       { path: '/assets/1/payTo', message: 'is not a valid address on Solana Devnet' },
-      { path: '/assets/3/name', message: 'duplicate asset name "base-usdc"' },
-      { path: '/assets/3/address', message: 'another asset already uses this token on the same network' },
+      { path: '/assets/4/name', message: 'duplicate asset name "base-usdc"' },
+      { path: '/assets/4/address', message: 'another asset already uses this token on the same network' },
     ]);
   });
 
@@ -235,9 +240,9 @@ describe('MPP', () => {
     assertValidPlatformConfigDocument(value);
 
     expect(issues(() => buildPlatformConfig(value))).toEqual([
-      { path: '/assets/4/network', message: 'Tempo is a mainnet; staging uses testnets' },
+      { path: '/assets/5/network', message: 'Tempo is a mainnet; staging uses testnets' },
       { path: '/assets/2/payTo', message: 'must be the MPP recipient (mpp.recipient): Tempo assets are paid through MPP' },
-      { path: '/assets/4/network', message: 'is a Tempo network other than mpp.network (eip155:42431). Tempo assets serve MPP, on its network only' },
+      { path: '/assets/5/network', message: 'is a Tempo network other than mpp.network (eip155:42431). Tempo assets serve MPP, on its network only' },
     ]);
   });
 });
@@ -255,6 +260,7 @@ describe('facilitators', () => {
       { path: '/facilitators/1/name', message: 'duplicate facilitator name "cdp"' },
       { path: '/facilitators/1/networks/0', message: 'facilitator "cdp" already serves this network' },
       { path: '/assets/1/network', message: 'no facilitator serves this network' },
+      { path: '/assets/3/network', message: 'no facilitator serves this network' },
     ]);
   });
 
@@ -286,10 +292,14 @@ describe('platformSummary', () => {
         { name: 'base-usdc', network: 'eip155:84532' },
         { name: 'solana-usdc', network: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1' },
         { name: 'tempo-pathusd', network: 'eip155:42431' },
+        { name: 'near-usdc', network: 'near:testnet' },
       ],
       rails: {
         credits: true,
-        x402: [{ facilitator: 'cdp', networks: ['eip155:84532', 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1'] }],
+        x402: [
+          { facilitator: 'cdp', networks: ['eip155:84532', 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1'] },
+          { facilitator: 'near', networks: ['near:testnet'] },
+        ],
         mpp: { network: 'eip155:42431' },
       },
       fees: { routingFeeBps: 0 },
@@ -302,7 +312,7 @@ describe('platformSummary', () => {
     value.facilitators[0]!['enabled'] = false;
     const summary = platformSummary(buildPlatformConfig(patch(value, { mpp: { enabled: false } }) as never));
 
-    expect(summary.rails).toEqual({ credits: true, x402: [], mpp: false });
+    expect(summary.rails).toEqual({ credits: true, x402: [{ facilitator: 'near', networks: ['near:testnet'] }], mpp: false });
   });
 });
 
@@ -321,7 +331,10 @@ describe('assertValidPlatformConfigDocument', () => {
     ['an unknown log level', { logger: { level: 'verbose' } }, '/logger/level', 'must be one of: "trace", "debug", "info", "warn", "error", "fatal"'],
     ['a missing signup rate limit', { rateLimits: { signup: undefined } }, '/rateLimits', 'missing required field "signup"'],
     ['a removed section', { feeBps: 100 }, '/feeBps', 'unknown field'],
-    ['a secret value instead of its name', { facilitators: [{ auth: { apiKeySecret: 'hunter2' } }] }, '/facilitators/0/auth/apiKeySecret', 'must name the environment variable that holds the secret, such as CDP_API_KEY_SECRET. Never put the value here'],
+    ['a secret value instead of its name', { facilitators: [{ name: 'x', url: 'https://x.example.com', networks: ['eip155:84532'], auth: { type: 'cdp', apiKeyId: 'CDP_API_KEY_ID', apiKeySecret: 'hunter2' } }] }, '/facilitators/0/auth/apiKeySecret', 'must name the environment variable that holds the secret, such as CDP_API_KEY_SECRET. Never put the value here'],
+    ['an API key value instead of its name', { facilitators: [{ name: 'x', url: 'https://x.example.com', networks: ['near:testnet'], auth: { type: 'api-key', apiKey: 'hunter2' } }] }, '/facilitators/0/auth/apiKey', 'must name the environment variable that holds the secret, such as CDP_API_KEY_SECRET. Never put the value here'],
+    ['an API key auth without its key', { facilitators: [{ name: 'x', url: 'https://x.example.com', networks: ['near:testnet'], auth: { type: 'api-key' } }] }, '/facilitators/0/auth', 'missing required field "apiKey"'],
+    ['an unknown auth type', { facilitators: [{ name: 'x', url: 'https://x.example.com', networks: ['near:testnet'], auth: { type: 'basic', apiKey: 'X' } }] }, '/facilitators/0/auth/type', 'must be one of: "cdp", "api-key"'],
     ['a routing fee above 100%', { routingFeeBps: 10_001 }, '/routingFeeBps', 'must be at most 10000'],
     ['a missing routing fee', { routingFeeBps: undefined }, '', 'missing required field "routingFeeBps"'],
     ['no facilitator', { facilitators: [] }, '/facilitators', 'must have at least 1 item'],

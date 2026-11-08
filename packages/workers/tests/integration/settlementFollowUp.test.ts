@@ -13,7 +13,7 @@ import {
   refusedReason, toMppSettlementRequest, type MppSettlementCheck,
 } from '@anyfare/payments';
 import {
-  createFakeClock, createTestDatabase, facilitatorAnswers, moderatoChainId, pathUsdAddress, startFakeFacilitator, startFakeTempoRpc,
+  createFakeClock, createTestDatabase, nearFacilitatorOff, facilitatorAnswers, moderatoChainId, pathUsdAddress, startFakeFacilitator, startFakeTempoRpc,
   type FakeFacilitator, type FakeTempoRpc, type TempoBroadcast, type TestDatabase,
 } from '@anyfare/testing';
 
@@ -43,7 +43,7 @@ beforeAll(async () => {
     env: {
       CONFIG_PATH: 'config/example.yaml',
       CONFIG: Buffer.from(JSON.stringify({
-        facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }],
+        facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }, nearFacilitatorOff],
       })).toString('base64'),
     },
   });

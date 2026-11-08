@@ -15,7 +15,7 @@ import { createAccountRepository, createLedger, createPaymentKeyRepository, type
 import { createFacilitators, initializeX402 } from '@anyfare/payments';
 import { createApp as createSigner } from '@anyfare/signer';
 import {
-  createFakeResolver, createTestDatabase, createTestRedis, encodeBase58, facilitatorAnswers, startFakeFacilitator, startFakeUpstream, type FakeFacilitator,
+  createFakeResolver, nearFacilitatorOff, createTestDatabase, createTestRedis, encodeBase58, facilitatorAnswers, startFakeFacilitator, startFakeUpstream, type FakeFacilitator,
   type FakeUpstream, type TestDatabase, type TestRedis,
 } from '@anyfare/testing';
 
@@ -120,7 +120,7 @@ beforeAll(async () => {
       CONFIG: Buffer.from(JSON.stringify({
         routingFeeBps: 1000,
         rateLimits: { signup: generous, paymentKey: generous, unpaidIp: generous },
-        facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }],
+        facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }, nearFacilitatorOff],
         mpp: { enabled: false },
         signer: { maxPerCall: '0.5', maxPerNetworkPerDay: '100' },
       })).toString('base64'),
@@ -358,7 +358,7 @@ describe('the proxy\'s lines carry no secret', () => {
 describe('the startup line', () => {
   const startEnv = async (overrides: Record<string, unknown>, env: Record<string, string> = {}) => {
     const document = await loadPlatformConfigDocument({ env: { CONFIG_PATH: 'config/example.yaml' } });
-    const merged = { ...document, facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }], ...overrides };
+    const merged = { ...document, facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }, nearFacilitatorOff], ...overrides };
 
     return {
       CONFIG: Buffer.from(JSON.stringify(merged)).toString('base64'),

@@ -25,7 +25,7 @@ import {
 import { createFacilitators, initializeMpp, initializeX402, type MppSetup, type X402Setup } from '@anyfare/payments';
 import { createApp as createSigner } from '@anyfare/signer';
 import {
-  createFakeResolver, createTestDatabase, createTestRedis, createTestTempoPayer, encodeBase58, startFakeFacilitator, startFakeTempoRpc, startFakeUpstream,
+  createFakeResolver, nearFacilitatorOff, createTestDatabase, createTestRedis, createTestTempoPayer, encodeBase58, startFakeFacilitator, startFakeTempoRpc, startFakeUpstream,
   type FakeFacilitator, type FakeTempoRpc, type FakeUpstream, type TestDatabase, type TestRedis,
 } from '@anyfare/testing';
 
@@ -150,7 +150,7 @@ beforeAll(async () => {
       CONFIG: Buffer.from(JSON.stringify({
         routingFeeBps: 0,
         rateLimits: { signup: generous, paymentKey: generous, unpaidIp: generous },
-        facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }],
+        facilitators: [{ name: 'cdp', url: facilitator.url, networks: [base, solana] }, nearFacilitatorOff],
         signer: { maxPerCall: '0.05', maxPerNetworkPerDay: '100' },
       })).toString('base64'),
     },

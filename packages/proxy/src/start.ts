@@ -51,6 +51,8 @@ export const startProxy = async ({ env, logger }: AppContext): Promise<RunningAp
         config,
         // The CDP API key, by the names platform config gives
         cdpApiKey: auth => ({ id: readSecret(auth.apiKeyId, env), secret: readSecret(auth.apiKeySecret, env) }),
+        // The static key an api-key auth names
+        facilitatorApiKey: auth => readSecret(auth.apiKey, env),
         clock: systemClock,
       }),
       timeoutMs: startupCheckTimeoutMs,

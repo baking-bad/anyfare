@@ -15,12 +15,13 @@ describe('the treasury', () => {
       ['pay_to', ['base-usdc']],
       ['pay_to', ['solana-usdc']],
       ['pay_to', ['tempo-pathusd']],
+      ['pay_to', ['near-usdc']],
     ]);
 
     const { payTo: _payTo, ...withoutPayTo } = findAsset(examplePlatform, 'base-usdc')!;
     const config = { ...examplePlatform, assets: [{ ...withoutPayTo, payTo: undefined }, ...examplePlatform.assets.slice(1)] };
 
-    expect(treasuryWallets(config).map(wallet => wallet.name)).toEqual(['payTo:solana-usdc', 'payTo:tempo-pathusd']);
+    expect(treasuryWallets(config).map(wallet => wallet.name)).toEqual(['payTo:solana-usdc', 'payTo:tempo-pathusd', 'payTo:near-usdc']);
   });
 
   it('lists the Signer\'s hot wallets from signer.wallets, each with its chain\'s assets: Base\'s, mpp.network\'s for Tempo, and Solana\'s', () => {

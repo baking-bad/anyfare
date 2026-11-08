@@ -51,6 +51,12 @@ assets:
     decimals: 6
     peg: usd
     payTo: "0x2222222222222222222222222222222222222222"
+  - name: near-usdc
+    network: near:testnet
+    address: 3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af
+    decimals: 6
+    peg: usd
+    payTo: pay.anyfare.testnet
 
 # One facilitator per network. Auth names environment variables; their values are never in this file.
 facilitators:
@@ -62,6 +68,12 @@ facilitators:
       apiKeyId: CDP_API_KEY_ID
       apiKeySecret: CDP_API_KEY_SECRET
     enabled: true               # Optional. Default: true. A disabled one isn't checked, and its networks aren't offered
+  - name: near
+    url: http://127.0.0.1:8084
+    networks: [near:testnet]
+    auth:                       # A static key, sent in the X-API-Key header
+      type: api-key
+      apiKey: FACILITATOR_SECRET
 
 # The Tempo charge. Tempo assets are paid through it, so they need no facilitator.
 mpp:

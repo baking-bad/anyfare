@@ -25,11 +25,17 @@ export interface CdpAuth {
   readonly apiKeySecret: SecretName;
 }
 
+export interface ApiKeyAuth {
+  readonly type: 'api-key';
+  // Its value is sent in the X-API-Key header
+  readonly apiKey: SecretName;
+}
+
 export interface Facilitator {
   readonly name: string;
   readonly url: string;
   readonly networks: readonly NetworkId[];
-  readonly auth: CdpAuth | undefined;
+  readonly auth: CdpAuth | ApiKeyAuth | undefined;
   // A disabled facilitator isn't checked at startup or for readiness, and its networks aren't offered
   readonly enabled: boolean;
 }

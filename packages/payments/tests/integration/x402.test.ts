@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { generateKeyPairSigner } from '@solana/kit';
 import { x402Client } from '@x402/core/client';
 import { decodePaymentRequiredHeader, decodePaymentResponseHeader, decodePaymentSignatureHeader, encodePaymentSignatureHeader } from '@x402/core/http';
-import type { PaymentRequired } from '@x402/core/types';
+import type { PaymentRequired, PaymentRequirements } from '@x402/core/types';
 import { ExactEvmScheme } from '@x402/evm/exact/client';
 import { ExactSvmScheme } from '@x402/svm/exact/client';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
@@ -28,6 +28,7 @@ import {
 
 const base = 'eip155:84532';
 const solana = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+const near = 'near:testnet';
 const baseUsdc = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
 const solanaUsdc = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 const basePayTo = '0x2222222222222222222222222222222222222222';
@@ -35,6 +36,8 @@ const solanaPayTo = encodeBase58(Uint8Array.from({ length: 32 }, (_, index) => i
 const feePayer = encodeBase58(Uint8Array.from({ length: 32 }, () => 7));
 const clock = { now: () => new Date() };
 const logger = createLogger({ level: 'silent' });
+const testApiKey = 'test-facilitator-secret-0123456789abcdef';
+const facilitatorKey = () => Secret.from(testApiKey);
 const noCdpKey = () => {
   throw new Error('No CDP auth here');
 };
@@ -45,12 +48,14 @@ let config: PlatformConfig;
 let setup: X402Setup;
 
 // The settle timeout is short, so a facilitator that holds its answer back times out
-const configWith = (url: string, overrides: Record<string, unknown> = {}) => loadPlatformConfig({
+const configWith = (url: string, { facilitators, ...overrides }: Record<string, unknown> = {}) => loadPlatformConfig({
   env: {
     CONFIG_PATH: 'config/example.yaml',
     CONFIG: Buffer.from(JSON.stringify({
+      // Every NEAR asset needs a facilitator: a test that names its own leaves ours disabled
       facilitators: [
-        { name: 'cdp', url, networks: [base, solana] },
+        ...(facilitators as readonly unknown[] | undefined) ?? [{ name: 'cdp', url, networks: [base, solana] }],
+        ...JSON.stringify(facilitators ?? []).includes(near) ? [] : [{ name: 'near', url, networks: [near], auth: { type: 'api-key', apiKey: 'FACILITATOR_SECRET' }, ...facilitators ? { enabled: false } : {} }],
       ],
       timeouts: { settleMs: 1_000 },
       ...overrides,
@@ -67,16 +72,16 @@ const withTestPayTo = (document: PlatformConfig): PlatformConfig => ({
 const setupFor = async (url: string): Promise<X402Setup> => {
   const document = withTestPayTo(await configWith(url));
 
-  return initializeX402({ config: document, facilitators: createFacilitators({ config: document, cdpApiKey: noCdpKey, clock }), timeoutMs: 5_000 });
+  return initializeX402({ config: document, facilitators: createFacilitators({ config: document, cdpApiKey: noCdpKey, facilitatorApiKey: facilitatorKey, clock }), timeoutMs: 5_000 });
 };
 
 beforeAll(async () => {
   [facilitator, rpc] = await Promise.all([
-    startFakeFacilitator({ networks: [base, solana], feePayer }),
+    startFakeFacilitator({ networks: [base, solana, near], feePayer }),
     startFakeSolanaRpc(),
   ]);
   config = withTestPayTo(await configWith(facilitator.url));
-  setup = await initializeX402({ config, facilitators: createFacilitators({ config, cdpApiKey: noCdpKey, clock }), timeoutMs: 5_000 });
+  setup = await initializeX402({ config, facilitators: createFacilitators({ config, cdpApiKey: noCdpKey, facilitatorApiKey: facilitatorKey, clock }), timeoutMs: 5_000 });
 });
 
 afterAll(async () => {
@@ -232,7 +237,7 @@ describe('the x402 challenge', () => {
 
   it('skips an asset whose minimum price is above the call\'s', async () => {
     const minimum = { ...config, assets: config.assets.map(asset => asset.name === 'solana-usdc' ? { ...asset, minPrice: 50_000n } : asset) };
-    const narrowed = await initializeX402({ config: minimum, facilitators: createFacilitators({ config: minimum, cdpApiKey: noCdpKey, clock }), timeoutMs: 5_000 });
+    const narrowed = await initializeX402({ config: minimum, facilitators: createFacilitators({ config: minimum, cdpApiKey: noCdpKey, facilitatorApiKey: facilitatorKey, clock }), timeoutMs: 5_000 });
     const { rail } = createPorts(narrowed);
 
     expect((await requiredOf(rail, quoteOf(1_000n))).accepts.map(option => option.network)).toEqual([base]);
@@ -266,7 +271,7 @@ describe('x402 payments through the facilitator', () => {
     ['both versions, the highest', undefined, 1],
     ['version 0 only', [0], 0],
   ] as const)('builds a Solana payment in a transaction version the facilitator advertised: %s', async (_case, transactionVersions, version) => {
-    const advertising = transactionVersions === undefined ? facilitator : await startFakeFacilitator({ networks: [base, solana], feePayer, transactionVersions });
+    const advertising = transactionVersions === undefined ? facilitator : await startFakeFacilitator({ networks: [base, solana, near], feePayer, transactionVersions });
     try {
       const { rail } = createPorts(advertising === facilitator ? setup : await setupFor(advertising.url));
       const quote = quoteOf();
@@ -758,7 +763,7 @@ describe('the facilitator client', () => {
     const before = facilitator.requests.length;
     try {
       const document = await configWith(`http://127.0.0.1:${(redirector.address() as AddressInfo).port}`);
-      const [client] = createFacilitators({ config: document, cdpApiKey: noCdpKey, clock });
+      const [client] = createFacilitators({ config: document, cdpApiKey: noCdpKey, facilitatorApiKey: facilitatorKey, clock });
 
       await expect(client!.getSupported()).rejects.toMatchObject({ code: 'facilitator_unavailable', reason: 'connection failed' });
       expect(facilitator.requests.length).toBe(before);
@@ -782,7 +787,7 @@ describe('the facilitator client', () => {
           { name: 'narrow', url: narrow.url, networks: [solana] },
         ],
       }));
-      const routed = await initializeX402({ config: document, facilitators: createFacilitators({ config: document, cdpApiKey: noCdpKey, clock }), timeoutMs: 5_000 });
+      const routed = await initializeX402({ config: document, facilitators: createFacilitators({ config: document, cdpApiKey: noCdpKey, facilitatorApiKey: facilitatorKey, clock }), timeoutMs: 5_000 });
       const { rail } = createPorts(routed);
       const quote = quoteOf();
       const required = await requiredOf(rail, quote);
@@ -884,7 +889,7 @@ describe('facilitators at startup', () => {
     try {
       const document = await configWith(lacking.url);
 
-      await expect(initializeX402({ config: document, facilitators: createFacilitators({ config: document, cdpApiKey: noCdpKey, clock }), timeoutMs: 2_000 }))
+      await expect(initializeX402({ config: document, facilitators: createFacilitators({ config: document, cdpApiKey: noCdpKey, facilitatorApiKey: facilitatorKey, clock }), timeoutMs: 2_000 }))
         .rejects.toThrow(`The cdp facilitator's /supported has ${problem} on ${solana}`);
     }
     finally {
@@ -898,7 +903,7 @@ describe('facilitators at startup', () => {
     try {
       const broken = await configWith(down.url);
 
-      await expect(initializeX402({ config: broken, facilitators: createFacilitators({ config: broken, cdpApiKey: noCdpKey, clock }), timeoutMs: 2_000 }))
+      await expect(initializeX402({ config: broken, facilitators: createFacilitators({ config: broken, cdpApiKey: noCdpKey, facilitatorApiKey: facilitatorKey, clock }), timeoutMs: 2_000 }))
         .rejects.toThrow('The cdp facilitator\'s /supported failed');
     }
     finally {
@@ -911,12 +916,51 @@ describe('facilitators at startup', () => {
     try {
       const both = await configWith(baseOnly.url);
 
-      await expect(initializeX402({ config: both, facilitators: createFacilitators({ config: both, cdpApiKey: noCdpKey, clock }), timeoutMs: 2_000 }))
+      await expect(initializeX402({ config: both, facilitators: createFacilitators({ config: both, cdpApiKey: noCdpKey, facilitatorApiKey: facilitatorKey, clock }), timeoutMs: 2_000 }))
         .rejects.toThrow(`The cdp facilitator's /supported doesn't list exact on ${solana}`);
     }
     finally {
       await baseOnly.close();
     }
+  });
+
+  it('sends the api-key auth\'s secret in X-API-Key on every call, and never in an error', async () => {
+    const keyed = await startFakeFacilitator({ networks: [near] });
+    try {
+      const withKey = await configWith(keyed.url, {
+        facilitators: [
+          { name: 'cdp', url: keyed.url, networks: [base, solana], enabled: false },
+          { name: 'near', url: keyed.url, networks: [near], auth: { type: 'api-key', apiKey: 'FACILITATOR_SECRET' } },
+        ],
+      });
+      const [client] = createFacilitators({ config: withKey, cdpApiKey: noCdpKey, facilitatorApiKey: auth => auth.apiKey === 'FACILITATOR_SECRET' ? Secret.from(testApiKey) : Secret.from('wrong'), clock });
+      const requirements: PaymentRequirements = { scheme: 'exact', network: near, asset: 'token', amount: '1', payTo: 'pay.anyfare.testnet', maxTimeoutSeconds: 60, extra: {} };
+
+      await client!.getSupported();
+      await client!.verify({ x402Version: 2, accepted: requirements, payload: {} }, requirements);
+      await client!.settle({ x402Version: 2, accepted: requirements, payload: {} }, requirements);
+
+      expect(keyed.requests.map(request => [request.path, request.headers['x-api-key'], request.headers.authorization])).toEqual([
+        ['/supported', testApiKey, undefined],
+        ['/verify', testApiKey, undefined],
+        ['/settle', testApiKey, undefined],
+      ]);
+
+      keyed.handle('/supported', () => ({ status: 401, body: { error: testApiKey } }));
+      const failure = await client!.getSupported().catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(FacilitatorUnavailableError);
+      expect(JSON.stringify(failure) + String((failure as Error).message)).not.toContain(testApiKey);
+    }
+    finally {
+      await keyed.close();
+    }
+  });
+
+  it('refuses to start a facilitator whose api-key reader is missing', async () => {
+    const withKey = await configWith('http://127.0.0.1:1');
+
+    expect(() => createFacilitators({ config: withKey, cdpApiKey: noCdpKey, clock })).toThrow(/uses an API key \(FACILITATOR_SECRET\)/);
   });
 
   it.each([

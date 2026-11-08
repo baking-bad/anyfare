@@ -36,11 +36,17 @@ export interface CdpAuthDocument {
   readonly apiKeySecret: string;
 }
 
+export interface ApiKeyAuthDocument {
+  readonly type: 'api-key';
+  // The name of the environment variable that holds the key, never the value
+  readonly apiKey: string;
+}
+
 export interface FacilitatorDocument {
   readonly name: string;
   readonly url: string;
   readonly networks: readonly string[];
-  readonly auth?: CdpAuthDocument;
+  readonly auth?: CdpAuthDocument | ApiKeyAuthDocument;
   // Default: true. A disabled facilitator isn't checked, and its networks aren't offered.
   readonly enabled?: boolean;
 }

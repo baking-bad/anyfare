@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { AnyfareError, isRecord } from '@anyfare/common';
+import { AnyfareError, isRecord, type Secret } from '@anyfare/common';
 import type { FacilitatorClient } from '@x402/core/server';
 import type { PaymentPayload, PaymentRequirements, SettleResponse, SupportedResponse, VerifyResponse } from '@x402/core/types';
 
@@ -54,6 +54,8 @@ export interface FacilitatorOptions {
   readonly networks: readonly string[];
   // CDP's bearer token per request, or none for a facilitator without auth
   readonly signer: CdpRequestSigner | undefined;
+  // Or a static key, sent in the X-API-Key header of every call. Never logged.
+  readonly apiKey?: Secret | undefined;
   // `/supported` and `/verify`
   readonly requestTimeoutMs: number;
   // `/settle`: `timeouts.settleMs` from platform config
@@ -150,7 +152,7 @@ const isSupportedResponse = (value: unknown): value is SupportedResponse =>
  * repeat reports that same transaction as failed: that is the final outcome.
  */
 export const createFacilitator = ({
-  name, url, networks, signer, requestTimeoutMs, settleTimeoutMs, fetch: send = fetch,
+  name, url, networks, signer, apiKey, requestTimeoutMs, settleTimeoutMs, fetch: send = fetch,
 }: FacilitatorOptions): Facilitator => {
   const base = url.replace(/\/+$/, '');
   // Pending settle answers, by a hash of the payment's payload
@@ -193,6 +195,7 @@ export const createFacilitator = ({
         headers: {
           'content-type': 'application/json',
           ...(signer ? { authorization: `Bearer ${signer(method, target)}` } : {}),
+          ...(apiKey ? { 'x-api-key': apiKey.expose() } : {}),
         },
         ...(payload === undefined ? {} : { body: JSON.stringify(payload, (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value) }),
         redirect: 'error',
