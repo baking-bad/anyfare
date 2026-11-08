@@ -27,6 +27,9 @@
     },
     {
       "path": "packages/workers"
+    },
+    {
+      "path": "packages/facilitator"
     }
   ]
 }

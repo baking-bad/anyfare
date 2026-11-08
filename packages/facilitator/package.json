@@ -1,0 +1,39 @@
+{
+  "name": "@anyfare/facilitator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "App: the x402 facilitator for NEAR",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "vitest run --root ../.. --project facilitator",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@anyfare/common": "0.1.0",
+    "@anyfare/core": "0.1.0",
+    "@near-js/crypto": "2.5.1",
+    "@near-js/providers": "2.5.1",
+    "@near-js/transactions": "2.5.1",
+    "@near-js/utils": "2.5.1",
+    "@prometheus-io/client": "^0.16.1",
+    "@x402/core": "2.30.0",
+    "@x402/near": "2.30.0",
+    "borsh": "1.0.0",
+    "fastify": "^5.12.8"
+  },
+  "devDependencies": {
+    "@anyfare/payments": "0.1.0",
+    "@anyfare/testing": "0.1.0"
+  }
+}
