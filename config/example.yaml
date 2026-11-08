@@ -27,6 +27,9 @@ keyPrefixes:
 paymentKeyDefaults:
   dailyBudget: "5"
 
+# The fee on top of a routed target's price, in basis points (0 to 10000)
+routingFeeBps: 0
+
 # Every token we pay APIs in or take payments in. payTo is our address that receives the asset from
 # buyers: without it the asset is not offered to buyers.
 assets:
@@ -49,11 +52,44 @@ assets:
     peg: usd
     payTo: "0x2222222222222222222222222222222222222222"
 
-# Sign-ups per client IP
+# One facilitator per network. Auth names environment variables; their values are never in this file.
+facilitators:
+  - name: cdp
+    url: https://api.cdp.coinbase.com/platform/v2/x402
+    networks: [eip155:84532, solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1]
+    auth:
+      type: cdp
+      apiKeyId: CDP_API_KEY_ID
+      apiKeySecret: CDP_API_KEY_SECRET
+    enabled: true               # Optional. Default: true. A disabled one isn't checked, and its networks aren't offered
+
+# The Tempo charge. Tempo assets are paid through it, so they need no facilitator.
+mpp:
+  network: eip155:42431
+  recipient: "0x2222222222222222222222222222222222222222"   # Optional. Without it MPP is not offered to buyers
+  enabled: true                 # Optional. Default: true. A disabled MPP isn't offered, and its RPC isn't checked
+  # rpcUrl: https://rpc.moderato.tempo.xyz   # Optional. HTTPS, without credentials. Default: the chain's public RPC
+
 rateLimits:
-  signup: { requests: 10, windowSeconds: 3600 }
+  paymentKey: { requests: 600, windowSeconds: 60 }
+  unpaidIp: { requests: 60, windowSeconds: 60 }
+  signup: { requests: 10, windowSeconds: 3600 }   # Per client IP
+  # documents: { requests: 120, windowSeconds: 60 }   # Optional. Public documents per client IP. Default: 120 a minute
 
 timeouts:
   connectMs: 5000
   requestMs: 30000
   settleMs: 30000
+
+sizeLimits:                     # Optional. These are the defaults
+  requestBodyBytes: 1048576
+  bufferedResponseBytes: 10485760
+
+signer:                         # Optional. What one routed call and one network can cost us
+  maxPerCall: "1"
+  maxPerNetworkPerDay: "100"
+  # maxPerNetworkPerHour: "10"  # Optional. No default: without it there is no hourly limit
+  # wallets:                    # Optional: the hot wallets' public addresses, for the balance monitor. Never their keys
+  #   base: "0x…"
+  #   tempo: "0x…"
+  #   solana: "…"               # In base58

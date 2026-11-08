@@ -5,9 +5,10 @@ import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { loadPlatformConfig } from '../../src/index.js';
+import { loadPlatformConfig, platformSummary } from '../../src/index.js';
 
-// config/production.yaml: mainnets only, with the receiving addresses still to be added
+// config/production.yaml: mainnets only, with the receiving addresses, the MPP recipient and the hot
+// wallets still to be added
 const productionConfigPath = fileURLToPath(new URL('../../../../config/production.yaml', import.meta.url));
 
 let directory: string;
@@ -62,6 +63,53 @@ describe('config/production.yaml', () => {
       pay: 'https://pay.anyfare.agents.bakingbad.dev',
     });
     expect(config.rateLimits.signup).toEqual({ requests: 200, windowSeconds: 3600 });
+    expect(config.rateLimits.paymentKey).toEqual({ requests: 600, windowSeconds: 60 });
+    expect(config.rateLimits.unpaidIp).toEqual({ requests: 60, windowSeconds: 60 });
+    expect(config.rateLimits.documents).toEqual({ requests: 600, windowSeconds: 60 });
+    expect(config.routingFeeBps).toBe(0);
+    expect(config.sizeLimits).toEqual({ requestBodyBytes: 1_048_576, bufferedResponseBytes: 10_485_760 });
+  });
+
+  it('settles x402 through the CDP facilitator on both mainnets, with its key named by environment variable', async () => {
+    const config = await loadText(text);
+
+    expect(config.facilitators).toEqual([{
+      name: 'cdp',
+      url: 'https://api.cdp.coinbase.com/platform/v2/x402',
+      networks: ['eip155:8453', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'],
+      auth: { type: 'cdp', apiKeyId: 'CDP_API_KEY_ID', apiKeySecret: 'CDP_API_KEY_SECRET' },
+      enabled: true,
+    }]);
+  });
+
+  it('has MPP on Tempo with no recipient yet, so it is not offered', async () => {
+    const config = await loadText(text);
+
+    expect(config.mpp).toMatchObject({ network: { id: 'eip155:4217', chain: 'tempo', testnet: false }, recipient: undefined, enabled: true, rpcUrl: undefined });
+    expect(platformSummary(config).rails).toEqual({
+      credits: true,
+      x402: [{ facilitator: 'cdp', networks: ['eip155:8453', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'] }],
+      mpp: false,
+    });
+  });
+
+  it('offers MPP once the recipient and the Tempo asset\'s payTo are added', async () => {
+    const recipient = '"0x2222222222222222222222222222222222222222"';
+    const config = await loadText(withPayTo(text, asset => samples[asset]!).replace('\nmpp:\n  network: eip155:4217\n', `\nmpp:\n  network: eip155:4217\n  recipient: ${recipient}\n`));
+
+    expect(config.mpp.recipient).toBe('0x2222222222222222222222222222222222222222');
+    expect(platformSummary(config).rails.mpp).toEqual({ network: 'eip155:4217' });
+  });
+
+  it('caps what one routed call and one network can cost us, and has no hot wallet yet', async () => {
+    const config = await loadText(text);
+
+    expect(config.signer).toEqual({
+      maxPerCall: 100_000n,
+      maxPerNetworkPerHour: 5_000_000n,
+      maxPerNetworkPerDay: 20_000_000n,
+      wallets: { base: undefined, tempo: undefined, solana: undefined },
+    });
   });
 
   it('refuses an unquoted 0x… address, which YAML reads as a number, and says to quote it', async () => {

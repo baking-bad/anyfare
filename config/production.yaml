@@ -22,6 +22,9 @@ keyPrefixes:
 paymentKeyDefaults:
   dailyBudget: "5"
 
+# The fee on top of a routed target's price, in basis points
+routingFeeBps: 0
+
 # The receiving addresses (payTo) are added before the first deployment. Quote them: YAML reads an
 # unquoted 0x… as a number. An asset without one is not offered to buyers.
 assets:
@@ -41,11 +44,37 @@ assets:
     decimals: 6
     peg: usd
 
-# Sign-ups per client IP. A hackathon venue shares one IP, so the limit is high.
+# One facilitator per network. Auth names environment variables; their values are never in this file.
+facilitators:
+  - name: cdp
+    url: https://api.cdp.coinbase.com/platform/v2/x402
+    networks: [eip155:8453, solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp]
+    auth:
+      type: cdp
+      apiKeyId: CDP_API_KEY_ID
+      apiKeySecret: CDP_API_KEY_SECRET
+
+# The Tempo charge. The recipient, our Tempo address, is added before the first deployment, with the
+# tempo-usdce asset's payTo. MPP is not offered to buyers until then.
+mpp:
+  network: eip155:4217
+
 rateLimits:
+  paymentKey: { requests: 600, windowSeconds: 60 }
+  unpaidIp: { requests: 60, windowSeconds: 60 }
+  # A hackathon venue shares one IP, so the sign-up limit is high.
   signup: { requests: 200, windowSeconds: 3600 }
+  # The website's server reads the public documents for every visitor, from one IP
+  documents: { requests: 600, windowSeconds: 60 }
 
 timeouts:
   connectMs: 5000
   requestMs: 30000
   settleMs: 30000
+
+# What one routed call and one network can cost us. The hot wallets' public addresses go in a `wallets`
+# section (base, tempo, solana), added before the first deployment. Never their keys.
+signer:
+  maxPerCall: "0.1"
+  maxPerNetworkPerHour: "5"
+  maxPerNetworkPerDay: "20"

@@ -29,19 +29,61 @@ export interface AssetDocument {
   readonly payTo?: string;
 }
 
+export interface CdpAuthDocument {
+  readonly type: 'cdp';
+  // The names of the environment variables that hold the key, never the values
+  readonly apiKeyId: string;
+  readonly apiKeySecret: string;
+}
+
+export interface FacilitatorDocument {
+  readonly name: string;
+  readonly url: string;
+  readonly networks: readonly string[];
+  readonly auth?: CdpAuthDocument;
+  // Default: true. A disabled facilitator isn't checked, and its networks aren't offered.
+  readonly enabled?: boolean;
+}
+
+export interface MppDocument {
+  readonly network: string;
+  // Our Tempo address that receives MPP payments. Without it MPP is not offered to buyers.
+  readonly recipient?: string;
+  // Default: true. A disabled MPP isn't offered, and its RPC isn't checked.
+  readonly enabled?: boolean;
+  // The Tempo RPC, without credentials. Default: the chain's public RPC.
+  readonly rpcUrl?: string;
+}
+
 export interface RateLimitDocument {
   readonly requests: number;
   readonly windowSeconds: number;
 }
 
 export interface RateLimitsDocument {
+  readonly paymentKey: RateLimitDocument;
+  readonly unpaidIp: RateLimitDocument;
   readonly signup: RateLimitDocument;
+  readonly documents?: RateLimitDocument;
 }
 
 export interface TimeoutsDocument {
   readonly connectMs?: number;
   readonly requestMs?: number;
   readonly settleMs?: number;
+}
+
+export interface SizeLimitsDocument {
+  readonly requestBodyBytes?: number;
+  readonly bufferedResponseBytes?: number;
+}
+
+export interface SignerLimitsDocument {
+  readonly maxPerCall?: string;
+  readonly maxPerNetworkPerHour?: string;
+  readonly maxPerNetworkPerDay?: string;
+  // The hot wallets' public addresses, for the balance monitor. Never their keys.
+  readonly wallets?: { readonly base?: string; readonly tempo?: string; readonly solana?: string };
 }
 
 export interface PlatformConfigDocument {
@@ -53,7 +95,13 @@ export interface PlatformConfigDocument {
   readonly ownHosts?: readonly string[];
   readonly keyPrefixes: KeyPrefixesDocument;
   readonly paymentKeyDefaults?: { readonly dailyBudget?: string };
+  // The fee on top of a routed target's price, in basis points
+  readonly routingFeeBps: number;
   readonly assets: readonly AssetDocument[];
+  readonly facilitators: readonly FacilitatorDocument[];
+  readonly mpp: MppDocument;
   readonly rateLimits: RateLimitsDocument;
   readonly timeouts?: TimeoutsDocument;
+  readonly sizeLimits?: SizeLimitsDocument;
+  readonly signer?: SignerLimitsDocument;
 }

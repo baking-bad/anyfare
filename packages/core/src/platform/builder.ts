@@ -1,5 +1,5 @@
 import {
-  deepFreeze, findUnsafeValue, getSafeErrorMessage, parseUsd, ValidationError, type MicroUsd, type ValuePath,
+  deepFreeze, findUnsafeValue, getSafeErrorMessage, parseUsd, ValidationError, type MicroUsd, type NetworkId, type ValuePath,
 } from '@anyfare/common';
 
 import { isValidAddress, isValidAssetAddress } from '../addresses.js';
@@ -87,7 +87,55 @@ export const checkPlatformConfig = (document: PlatformConfigDocument): readonly 
     checkAmount([...path, 'minPrice'], asset.minPrice);
   }
 
+  const facilitatorNames = new Set<string>();
+  const facilitatorByNetwork = new Map<string, string>();
+  for (const [index, facilitator] of document.facilitators.entries()) {
+    const path = ['facilitators', index];
+    if (facilitatorNames.has(facilitator.name))
+      add([...path, 'name'], `duplicate facilitator name ${JSON.stringify(facilitator.name)}`);
+    facilitatorNames.add(facilitator.name);
+
+    for (const [networkIndex, networkId] of facilitator.networks.entries()) {
+      checkNetwork([...path, 'networks', networkIndex], networkId);
+      const owner = facilitatorByNetwork.get(networkId);
+      if (owner !== undefined)
+        add([...path, 'networks', networkIndex], `facilitator ${JSON.stringify(owner)} already serves this network`);
+      else
+        facilitatorByNetwork.set(networkId, facilitator.name);
+    }
+  }
+
+  // A Tempo asset serves MPP, on its network and paid to its recipient, and needs no facilitator
+  for (const [index, asset] of document.assets.entries()) {
+    const path = ['assets', index];
+    const chain = findNetwork(asset.network)?.chain;
+    if (chain !== 'tempo') {
+      if (!facilitatorByNetwork.has(asset.network))
+        add([...path, 'network'], 'no facilitator serves this network');
+      continue;
+    }
+    if (asset.network !== document.mpp.network)
+      add([...path, 'network'], `is a Tempo network other than mpp.network (${document.mpp.network}). Tempo assets serve MPP, on its network only`);
+    else if (asset.payTo !== undefined && document.mpp.recipient !== undefined && asset.payTo.toLowerCase() !== document.mpp.recipient.toLowerCase())
+      add([...path, 'payTo'], 'must be the MPP recipient (mpp.recipient): Tempo assets are paid through MPP');
+  }
+
+  const mppNetwork = checkNetwork(['mpp', 'network'], document.mpp.network);
+  if (mppNetwork && mppNetwork.chain !== 'tempo')
+    add(['mpp', 'network'], 'must be a Tempo network');
+  if (mppNetwork && document.mpp.recipient !== undefined && !isValidAddress(mppNetwork, document.mpp.recipient))
+    add(['mpp', 'recipient'], `is not a valid address on ${mppNetwork.title}`);
+
   checkAmount(['paymentKeyDefaults', 'dailyBudget'], document.paymentKeyDefaults?.dailyBudget);
+  checkAmount(['signer', 'maxPerCall'], document.signer?.maxPerCall);
+  checkAmount(['signer', 'maxPerNetworkPerHour'], document.signer?.maxPerNetworkPerHour);
+  checkAmount(['signer', 'maxPerNetworkPerDay'], document.signer?.maxPerNetworkPerDay);
+  // The Signer's hot wallets, by their public addresses: EVM on Base and Tempo, base58 on Solana
+  for (const [chain, address] of Object.entries(document.signer?.wallets ?? {})) {
+    const network = supportedNetworks.find(item => item.chain === chain);
+    if (network && typeof address === 'string' && !isValidAddress(network, address))
+      add(['signer', 'wallets', chain], `is not a valid address on ${network.title}`);
+  }
 
   return drafts;
 };
@@ -120,6 +168,7 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
     minPrice: usd(asset.minPrice, platformDefaults.assetMinPrice),
     payTo: asset.payTo,
   }));
+  const { timeouts, sizeLimits, signer } = platformDefaults;
 
   return deepFreeze<PlatformConfig>({
     version: document.version,
@@ -129,11 +178,40 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
     ownHosts: [...ownHosts],
     keyPrefixes: { ...document.keyPrefixes },
     paymentKeyDefaults: { dailyBudget: usd(document.paymentKeyDefaults?.dailyBudget, platformDefaults.paymentKeyDailyBudget) },
+    routingFeeBps: document.routingFeeBps,
     assets,
-    rateLimits: { signup: { ...document.rateLimits.signup } },
-    timeouts: { ...platformDefaults.timeouts, ...document.timeouts },
+    facilitators: document.facilitators.map(facilitator => ({
+      name: facilitator.name,
+      url: facilitator.url,
+      networks: facilitator.networks.map(id => network(id).id),
+      auth: facilitator.auth ? { ...facilitator.auth } : undefined,
+      enabled: facilitator.enabled ?? true,
+    })),
+    mpp: {
+      network: network(document.mpp.network),
+      recipient: document.mpp.recipient,
+      enabled: document.mpp.enabled ?? true,
+      rpcUrl: document.mpp.rpcUrl,
+    },
+    rateLimits: {
+      paymentKey: { ...document.rateLimits.paymentKey },
+      unpaidIp: { ...document.rateLimits.unpaidIp },
+      signup: { ...document.rateLimits.signup },
+      documents: { ...document.rateLimits.documents ?? platformDefaults.documentsRateLimit },
+    },
+    timeouts: { ...timeouts, ...document.timeouts },
+    sizeLimits: { ...sizeLimits, ...document.sizeLimits },
+    signer: {
+      maxPerCall: usd(document.signer?.maxPerCall, signer.maxPerCall),
+      maxPerNetworkPerHour: document.signer?.maxPerNetworkPerHour === undefined ? undefined : parseUsd(document.signer.maxPerNetworkPerHour),
+      maxPerNetworkPerDay: usd(document.signer?.maxPerNetworkPerDay, signer.maxPerNetworkPerDay),
+      wallets: { base: document.signer?.wallets?.base, tempo: document.signer?.wallets?.tempo, solana: document.signer?.wallets?.solana },
+    },
   });
 };
 
 export const findAsset = (config: PlatformConfig, name: string): Asset | undefined =>
   config.assets.find(asset => asset.name === name);
+
+export const findFacilitator = (config: PlatformConfig, networkId: NetworkId) =>
+  config.facilitators.find(facilitator => facilitator.networks.includes(networkId));

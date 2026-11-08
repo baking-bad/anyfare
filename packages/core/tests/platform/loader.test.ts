@@ -42,15 +42,24 @@ describe('loadPlatformConfig', () => {
     expect(config.environment).toBe('staging');
     expect(config.keyPrefixes).toEqual({ master: 'afm_test_', payment: 'af_test_' });
     expect(config.rateLimits.signup).toEqual({ requests: 10, windowSeconds: 3600 });
+    expect(config.facilitators.map(facilitator => [facilitator.name, facilitator.url, facilitator.enabled])).toEqual([
+      ['cdp', 'https://api.cdp.coinbase.com/platform/v2/x402', true],
+    ]);
+    expect(config.mpp).toMatchObject({ network: { id: 'eip155:42431' }, recipient: '0x2222222222222222222222222222222222222222', enabled: true, rpcUrl: undefined });
+    expect(config.sizeLimits).toEqual({ requestBodyBytes: 1_048_576, bufferedResponseBytes: 10_485_760 });
+    expect(config.signer.maxPerCall).toBe(1_000_000n);
+    expect(config.signer.maxPerNetworkPerDay).toBe(100_000_000n);
   });
 
   it('merges files left to right, then CONFIG; lists replace and objects merge', async () => {
     await writeFile(path.join(directory, 'override.json'), JSON.stringify({ logger: { level: 'debug' }, rateLimits: { signup: { requests: 3 } } }));
-    const config = await load({ CONFIG_PATH: 'base.yaml, override.json', CONFIG: base64('timeouts:\n  connectMs: 1000\nassets:\n  - { name: base-usdc, network: "eip155:84532", address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", decimals: 6, peg: usd }\n') });
+    const config = await load({ CONFIG_PATH: 'base.yaml, override.json', CONFIG: base64('rateLimits:\n  unpaidIp: { requests: 5, windowSeconds: 1 }\ntimeouts:\n  connectMs: 1000\nassets:\n  - { name: base-usdc, network: "eip155:84532", address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", decimals: 6, peg: usd }\n') });
 
     expect(config.logger.level).toBe('debug');
     expect(config.rateLimits.signup).toEqual({ requests: 3, windowSeconds: 3600 });
     expect(config.timeouts.connectMs).toBe(1000);
+    expect(config.rateLimits.unpaidIp).toEqual({ requests: 5, windowSeconds: 1 });
+    expect(config.rateLimits.paymentKey).toEqual({ requests: 600, windowSeconds: 60 });
     expect(config.assets.map(asset => asset.name)).toEqual(['base-usdc']);
   });
 
@@ -127,6 +136,8 @@ describe('loadPlatformConfig', () => {
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).issues.map(issue => [issue.path, issue.source])).toEqual([
       ['/keyPrefixes/payment', 'CONFIG'],
+      // A mainnet in staging, and a Tempo network other than mpp.network
+      ['/assets/2/network', 'CONFIG'],
       ['/assets/2/network', 'CONFIG'],
     ]);
     expect((error as ValidationError).issues.every(issue => issue.line !== undefined)).toBe(true);
