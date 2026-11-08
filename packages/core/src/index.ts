@@ -1,5 +1,6 @@
 export * from './networks.js';
 export * from './addresses.js';
+export * from './solanaRpc.js';
 export { createDocumentLocator, fromPointer, toIssue, toIssues, toPointer } from './validation/issues.js';
 export type { IssueDraft, IssueLocation, IssueLocator } from './validation/issues.js';
 export * from './platform/index.js';
@@ -8,3 +9,5 @@ export * from './rateLimit.js';
 export * from './invalidation.js';
 export * from './accounts/index.js';
 export * from './ledger/index.js';
+export * from './treasury/index.js';
+export * from './routing/index.js';
