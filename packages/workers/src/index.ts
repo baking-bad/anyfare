@@ -1,3 +1,6 @@
+export { createApp } from './app.js';
+export type { WorkersDependencies, WorkersServer } from './app.js';
+export { balanceReadTimeoutMs, checkEachFacilitator, defaultMetricsPort, readEvmRpcUrls, startupCheckTimeoutMs, startWorkers } from './start.js';
 export { createHoldExpiry, holdExpiryIntervalMs, holdExpiryJobName, holdExpiryLockId, holdTtlMs, HoldExpiryFailedError } from './holdExpiry.js';
 export type { HoldExpiryOptions, HoldExpiryResult } from './holdExpiry.js';
 export { createScheduler } from './scheduler.js';
