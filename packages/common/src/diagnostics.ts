@@ -1,4 +1,5 @@
 import { AnyfareError } from './errors.js';
+import { OutboundHttpError } from './net/errors.js';
 
 /**
  * What a log line says about an error: its type, message, code, a few safe fields, and its cause
@@ -160,6 +161,97 @@ const serialize = (value: unknown, depth: number, seen: Set<unknown>, top: boole
 
 /** The logger's serializer for `error` and `err`. */
 export const serializeError = (value: unknown): SerializedError => serialize(value, 0, new Set(), true);
+
+// Transport codes: system errors, undici's, and TLS verification failures
+const transportCodePattern = /^(?:E[A-Z0-9_]{2,}|UND_ERR_[A-Z_]+|ERR_TLS_[A-Z_]+|ERR_SSL_[A-Z0-9_]+|[A-Z_]*CERT[A-Z_]*|UNABLE_TO_[A-Z_]+)$/;
+
+const chainOf = (error: unknown): unknown[] => {
+  const chain: unknown[] = [];
+  const queue: unknown[] = [error];
+  while (queue.length > 0 && chain.length < 12) {
+    const next = queue.shift();
+    if (!(next instanceof Error) || chain.includes(next))
+      continue;
+    chain.push(next);
+    queue.push(next.cause, ...(Array.isArray((next as ErrorLike)['errors']) ? (next as ErrorLike)['errors'] as unknown[] : []));
+  }
+
+  return chain;
+};
+
+/**
+ * Why an outbound call failed, as a code: the transport's own (`ECONNREFUSED`, `ETIMEDOUT`, a TLS
+ * error), else Outbound HTTP's (`blocked_address` for the address policy, `outbound_timeout`), else
+ * `timeout` or `aborted`. Undefined when nothing says.
+ */
+export const outboundErrorCode = (error: unknown): string | undefined => {
+  const chain = chainOf(error);
+  const transport = chain.map(item => (item as ErrorLike).code).filter((code): code is string => typeof code === 'string' && transportCodePattern.test(code)).at(-1);
+  if (transport !== undefined)
+    return transport;
+  const outbound = chain.find(item => item instanceof OutboundHttpError && item.code !== 'connection_failed') as OutboundHttpError | undefined;
+  if (outbound)
+    return outbound.code;
+  if (chain.some(item => (item as Error).name === 'TimeoutError'))
+    return 'timeout';
+  if (chain.some(item => (item as Error).name === 'AbortError'))
+    return 'aborted';
+
+  return chain.some(item => item instanceof OutboundHttpError) ? 'connection_failed' : undefined;
+};
+
+export interface OutboundCall {
+  readonly url: string | URL;
+  readonly method?: string;
+  // The answer's status, when there was one
+  readonly status?: number;
+  // The failure, when there was no answer
+  readonly error?: unknown;
+  readonly durationMs?: number;
+  // 1 for the first try, 2 for a retry, such as a routed call's paid retry
+  readonly attempt?: number;
+}
+
+/** The fields of an outbound call's log line: host, method, path without its query, status or error code, duration, attempt. */
+export const outboundFields = ({ url, method, status, error, durationMs, attempt }: OutboundCall): Record<string, string | number> => {
+  let host = 'unknown';
+  let path = '';
+  try {
+    const parsed = typeof url === 'string' ? new URL(url) : url;
+    host = parsed.host;
+    path = parsed.pathname;
+  }
+  catch {
+    // Not a URL: the host stays unknown
+  }
+  const code = error === undefined ? undefined : outboundErrorCode(error);
+
+  return {
+    host,
+    method: (method ?? 'GET').toUpperCase(),
+    path,
+    ...status === undefined ? {} : { status },
+    ...code === undefined ? {} : { code },
+    ...durationMs === undefined ? {} : { durationMs: Math.round(durationMs) },
+    ...attempt === undefined ? {} : { attempt },
+  };
+};
+
+// The headers an upstream or a target names its own request with
+const upstreamRequestIdHeaders = ['x-request-id', 'request-id', 'x-amzn-requestid', 'x-amz-request-id', 'x-correlation-id', 'cf-ray'];
+const upstreamRequestIdPattern = /^[A-Za-z0-9._:/+=-]{1,128}$/;
+
+/** The upstream's or target's own request ID, from its response headers, when it sends one. */
+export const upstreamRequestIdOf = (headers: Readonly<Record<string, string | readonly string[] | undefined>>): string | undefined => {
+  for (const name of upstreamRequestIdHeaders) {
+    const value = headers[name];
+    const first = typeof value === 'string' ? value : value?.[0];
+    if (first !== undefined && upstreamRequestIdPattern.test(first))
+      return first;
+  }
+
+  return undefined;
+};
 
 /** Milliseconds since `started`, a `performance.now()` reading, rounded to the millisecond. */
 export const elapsedMs = (started: number): number => Math.round(performance.now() - started);

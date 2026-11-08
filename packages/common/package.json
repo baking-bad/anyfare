@@ -23,6 +23,10 @@
     "@prometheus-io/client": "^0.16.1",
     "fastify": "^5.12.8",
     "pino": "^10.4.0",
+    "undici": "^8.11.2",
     "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@anyfare/testing": "0.1.0"
   }
 }

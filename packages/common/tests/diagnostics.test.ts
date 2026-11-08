@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { AnyfareError, createLogger, serializeError, TimeoutError } from '../src/index.js';
+import {
+  AnyfareError, BlockedAddressError, ConnectionFailedError, createLogger, OutboundTimeoutError, outboundErrorCode, outboundFields, serializeError,
+  TimeoutError, upstreamRequestIdOf,
+} from '../src/index.js';
 
 class InsufficientBalanceError extends AnyfareError {
   readonly code = 'insufficient_balance';
@@ -111,5 +114,32 @@ describe('the error serializer', () => {
 
     expect(lines[0]).toMatchObject({ error: { type: 'Error', message: 'unhandled', stack: expect.stringContaining('diagnostics.test.ts') } });
     expect(lines[1]).toMatchObject({ err: { code: 'insufficient_balance', message: 'no credits' } });
+  });
+});
+
+describe('outbound call fields', () => {
+  it('name the host, method, path without its query, status, duration, and attempt', () => {
+    expect(outboundFields({ url: 'https://api.example.com:8443/v1/pools?api_key=query-secret', method: 'post', status: 503, durationMs: 12.6, attempt: 2 })).toEqual({
+      host: 'api.example.com:8443', method: 'POST', path: '/v1/pools', status: 503, durationMs: 13, attempt: 2,
+    });
+  });
+
+  it.each([
+    ['ECONNREFUSED from deep in the causes', new ConnectionFailedError('a.example', { cause: new TypeError('fetch failed', { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) }) }), 'ECONNREFUSED'],
+    ['a TLS verification error', new ConnectionFailedError('a.example', { cause: Object.assign(new Error('expired'), { code: 'CERT_HAS_EXPIRED' }) }), 'CERT_HAS_EXPIRED'],
+    ['the address policy', new BlockedAddressError('a.example', '10.0.0.1', 'a private address'), 'blocked_address'],
+    ['Outbound HTTP\'s timeout', new OutboundTimeoutError('a.example', 'total', 30_000), 'outbound_timeout'],
+    ['an AbortSignal timeout', new Error('fetch failed', { cause: new DOMException('The operation timed out', 'TimeoutError') }), 'timeout'],
+    ['an ETIMEDOUT in an AggregateError', new AggregateError([Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })], 'all failed'), 'ETIMEDOUT'],
+  ])('say why a call failed: %s', (_case, error, code) => {
+    expect(outboundErrorCode(error)).toBe(code);
+    expect(outboundFields({ url: 'https://a.example/x', error })).toMatchObject({ code });
+  });
+
+  it('read an upstream\'s own request ID, when it sends a usable one', () => {
+    expect(upstreamRequestIdOf({ 'x-request-id': 'up-123' })).toBe('up-123');
+    expect(upstreamRequestIdOf({ 'cf-ray': '8a1b2c3d4e5f-AMS' })).toBe('8a1b2c3d4e5f-AMS');
+    expect(upstreamRequestIdOf({ 'x-request-id': 'has spaces and\nnewlines' })).toBeUndefined();
+    expect(upstreamRequestIdOf({})).toBeUndefined();
   });
 });
