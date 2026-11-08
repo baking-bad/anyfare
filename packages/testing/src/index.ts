@@ -11,3 +11,7 @@ export { createTestRedis, dropRedisConnections } from './redis.js';
 export type { TestRedis } from './redis.js';
 export { createTestCertificate, trustTestCertificate } from './certificate.js';
 export type { TestCertificate, TestCertificateOptions } from './certificate.js';
+export { startFakeUpstream } from './upstream.js';
+export type { FakeUpstream, FakeUpstreamOptions, RecordedRequest, UpstreamHandler } from './upstream.js';
+export { createFakeResolver } from './dns.js';
+export type { FakeResolver } from './dns.js';

@@ -1,113 +1,14 @@
-import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
-import { createServer } from 'node:https';
-import { isIP, type AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
-import type { TLSSocket } from 'node:tls';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createManualTimers, createTestCertificate, type ManualTimers } from '@anyfare/testing';
+import { createFakeResolver, createManualTimers, startFakeUpstream, type FakeResolver, type FakeUpstream, type ManualTimers } from '@anyfare/testing';
 
 import {
   AddressPolicyNotAllowedError, BlockedAddressError, ConnectionFailedError, createAddressPolicy, DnsLookupError, OutboundHttp,
   OutboundTimeoutError, OwnHostError, RedirectNotAllowedError, RequestTooLargeError, ResponseTooLargeError, UrlNotAllowedError,
-  type OutboundHttpOptions, type ResolvedAddress, type Resolver,
+  type OutboundHttpOptions,
 } from '../../src/index.js';
-
-interface RecordedRequest {
-  readonly method: string;
-  readonly path: string;
-  readonly headers: IncomingHttpHeaders;
-  readonly body: Buffer;
-  readonly servername: string | undefined;
-}
-
-interface FakeUpstream {
-  readonly port: number;
-  readonly ca: string;
-  readonly requests: readonly RecordedRequest[];
-  readonly connections: number;
-  url(hostname: string, path?: string): string;
-  handle(handler: (request: RecordedRequest, response: ServerResponse) => void): void;
-  close(): Promise<void>;
-}
-
-interface FakeResolver extends Resolver {
-  readonly lookups: readonly string[];
-  set(hostname: string, addresses: string | readonly string[]): void;
-}
-
-// An HTTPS server on 127.0.0.1 that records its requests, built from a generated test certificate
-const startFakeUpstream = async ({ hosts }: { readonly hosts: readonly string[] }): Promise<FakeUpstream> => {
-  const { cert, key } = createTestCertificate({ hosts });
-  const requests: RecordedRequest[] = [];
-  let handler: (request: RecordedRequest, response: ServerResponse) => void = (_request, response) => {
-    response.end('ok');
-  };
-  let connections = 0;
-
-  const server = createServer({ cert, key }, (request: IncomingMessage, response: ServerResponse) => {
-    const chunks: Buffer[] = [];
-    request.on('data', (chunk: Buffer) => chunks.push(chunk));
-    request.on('error', () => undefined);
-    request.on('end', () => {
-      const recorded: RecordedRequest = {
-        method: request.method ?? '',
-        path: request.url ?? '',
-        headers: request.headers,
-        body: Buffer.concat(chunks),
-        servername: (request.socket as TLSSocket).servername || undefined,
-      };
-      requests.push(recorded);
-      handler(recorded, response);
-    });
-  });
-  server.on('secureConnection', () => {
-    connections += 1;
-  });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as AddressInfo;
-
-  return {
-    port,
-    ca: cert,
-    requests,
-    get connections() {
-      return connections;
-    },
-    url: (hostname, path = '/') => `https://${hostname}:${port}${path}`,
-    handle: next => {
-      handler = next;
-    },
-    close: async () => {
-      server.closeAllConnections();
-      await new Promise<void>(resolve => server.close(() => resolve()));
-    },
-  };
-};
-
-// A resolver that answers from a table and records the names it was asked
-const createFakeResolver = (records: Readonly<Record<string, string | readonly string[]>>): FakeResolver => {
-  const table = new Map<string, readonly string[]>();
-  const lookups: string[] = [];
-  const set = (hostname: string, addresses: string | readonly string[]) =>
-    table.set(hostname.toLowerCase(), typeof addresses === 'string' ? [addresses] : addresses);
-  for (const [hostname, addresses] of Object.entries(records))
-    set(hostname, addresses);
-
-  return {
-    lookups,
-    set,
-    resolve: async hostname => {
-      lookups.push(hostname);
-      const addresses = table.get(hostname.toLowerCase());
-      if (!addresses)
-        throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), { code: 'ENOTFOUND' });
-
-      return addresses.map((address): ResolvedAddress => ({ address, family: isIP(address) === 6 ? 6 : 4 }));
-    },
-  };
-};
 
 // The fake upstream listens on 127.0.0.1; only these tests may reach loopback
 const loopbackPolicy = createAddressPolicy({ allow: ['127.0.0.0/8'] });
