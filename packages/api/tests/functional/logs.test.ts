@@ -39,10 +39,15 @@ afterAll(async () => {
 });
 
 let counter = 0;
-const call = async (method: string, path: string, { key, requestId = `api-logs-${++counter}` }: { key?: string; requestId?: string } = {}) => {
+const call = async (method: string, path: string, { key, body, requestId = `api-logs-${++counter}` }: { key?: string; body?: unknown; requestId?: string } = {}) => {
   const response = await fetch(`${url}${path}`, {
     method,
-    headers: { 'x-request-id': requestId, ...key === undefined ? {} : { authorization: `Bearer ${key}` } },
+    headers: {
+      'x-request-id': requestId,
+      ...key === undefined ? {} : { authorization: `Bearer ${key}` },
+      ...body === undefined ? {} : { 'content-type': 'application/json' },
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
 
   return { status: response.status, body: await response.json() as Record<string, any>, requestId };
@@ -67,6 +72,21 @@ describe('accounts and keys', () => {
     expect(lineOf(rotated.requestId, 'A master key was rotated')).toMatchObject({
       level: 30, accountId: before.body['id'], revokedKeyId: expect.stringMatching(/^key_/),
     });
+  });
+
+  it('logs payment keys created, changed, and revoked, with their IDs and the limits\' names, never the key', async () => {
+    const owner = await call('POST', '/v1/accounts');
+    const masterKey = owner.body['masterKey'] as string;
+    const created = await call('POST', '/v1/keys', { key: masterKey, body: { label: 'agent', dailyBudget: '2' } });
+    const keyId = created.body['id'] as string;
+    const changed = await call('PATCH', `/v1/keys/${keyId}`, { key: masterKey, body: { maxPrice: '0.01' } });
+    const revoked = await call('DELETE', `/v1/keys/${keyId}`, { key: masterKey });
+
+    expect(created.status).toBe(201);
+    expect(lineOf(created.requestId, 'A payment key was created')).toMatchObject({ level: 30, accountId: owner.body['id'], keyId, limits: ['label', 'dailyBudget'] });
+    expect(lineOf(changed.requestId, 'A payment key was changed')).toMatchObject({ level: 30, accountId: owner.body['id'], keyId, changed: ['maxPrice'] });
+    expect(lineOf(revoked.requestId, 'A payment key was revoked')).toMatchObject({ level: 30, accountId: owner.body['id'], keyId });
+    expect(JSON.stringify(lines)).not.toContain(created.body['key']);
   });
 
   it('logs a domain error\'s 4xx code on its request line, at info', async () => {

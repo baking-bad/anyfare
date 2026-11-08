@@ -3,14 +3,21 @@ import type { FastifyInstance } from 'fastify';
 import {
   createServer, randomIdGenerator, systemClock, type Clock, type IdGenerator, type Logger, type Server,
 } from '@anyfare/common';
-import { cryptoRandomSource, type ApiKeyRepository, type PlatformConfig, type RandomSource } from '@anyfare/core';
-import { createApiKeyRepository, createRedisRateLimiter, type Postgres, type Redis } from '@anyfare/db';
+import {
+  cryptoRandomSource, type ApiKeyRepository, type InvalidationBus, type PlatformConfig, type RandomSource,
+} from '@anyfare/core';
+import {
+  createApiKeyRepository, createRedisInvalidationBus, createRedisRateLimiter, type Postgres, type Redis,
+} from '@anyfare/db';
 
 import { createMasterKeyAuth, decorateAccount } from './accounts/auth.js';
 import { registerAccountRoutes } from './accounts/routes.js';
 import { createAccountService } from './accounts/service.js';
 import { createSignupLimit } from './accounts/signupLimit.js';
 import { errorStatuses } from './errors.js';
+import { registerKeyRoutes } from './keys/routes.js';
+import { createPaymentKeyService } from './keys/service.js';
+import { registerLedgerRoutes } from './ledger/routes.js';
 
 export interface ApiDependencies {
   readonly config: PlatformConfig;
@@ -29,6 +36,8 @@ export interface ApiDependencies {
   readonly trustProxy?: string;
   // Master key lookups. Default: the api_keys repository.
   readonly apiKeys?: Pick<ApiKeyRepository, 'findActiveByHash'>;
+  // Where key changes are announced. Default: the Redis channel.
+  readonly invalidation?: Pick<InvalidationBus, 'publish'>;
 }
 
 // A POST with `Content-Type: application/json` and no body has no body, rather than invalid JSON
@@ -56,6 +65,7 @@ export const createApp = ({
   requestIds,
   trustProxy,
   apiKeys = createApiKeyRepository({ db: postgres.db }),
+  invalidation = createRedisInvalidationBus({ redis, logger }),
 }: ApiDependencies): Server => {
   const server = createServer({
     logger,
@@ -78,6 +88,21 @@ export const createApp = ({
     authenticate,
     signupLimit: createSignupLimit({ limiter, limit: config.rateLimits.signup }),
   });
+  registerKeyRoutes(app, {
+    keys: createPaymentKeyService({
+      db: postgres.db,
+      clock,
+      ids,
+      random,
+      keyPrefixes: config.keyPrefixes,
+      defaultDailyBudget: config.paymentKeyDefaults.dailyBudget,
+      invalidation,
+      logger,
+    }),
+    authenticate,
+    clock,
+  });
+  registerLedgerRoutes(app, { db: postgres.db, clock, ids, authenticate });
 
   return server;
 };
