@@ -1,0 +1,28 @@
+{
+  "name": "@anyfare/payments",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Payment rails: credits and x402, and the combined 402",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "vitest run --root ../.. --project payments"
+  },
+  "dependencies": {
+    "@anyfare/common": "0.1.0",
+    "@anyfare/core": "0.1.0"
+  },
+  "devDependencies": {
+    "@anyfare/testing": "0.1.0"
+  }
+}

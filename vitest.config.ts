@@ -4,7 +4,7 @@ import { parseEnv } from 'node:util';
 
 import { configDefaults, defineConfig } from 'vitest/config';
 
-const packageNames = ['common', 'core', 'db', 'testing', 'api'];
+const packageNames = ['common', 'core', 'db', 'payments', 'testing', 'api'];
 const appNames = ['api'];
 
 const alias = Object.fromEntries(packageNames.map(name => [
