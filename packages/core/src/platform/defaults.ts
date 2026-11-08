@@ -15,4 +15,6 @@ export const platformDefaults = {
   signer: { maxPerCall: '1', maxPerNetworkPerDay: '100' },
   // Public documents, per client IP
   documentsRateLimit: { requests: 120, windowSeconds: 60 },
+  // Probes of routed targets, per client IP: ten a second
+  probeIpRateLimit: { requests: 600, windowSeconds: 60 },
 } as const;

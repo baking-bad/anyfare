@@ -75,6 +75,8 @@ export interface PlatformConfig {
     readonly signup: RateLimit;
     // Public documents per client IP
     readonly documents: RateLimit;
+    // Probes of routed targets per client IP: calls whose quote isn't cached, paid or not
+    readonly probeIp: RateLimit;
   };
   readonly timeouts: {
     readonly connectMs: number;

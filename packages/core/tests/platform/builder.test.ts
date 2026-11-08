@@ -29,7 +29,7 @@ const issues = (build: () => unknown): readonly { readonly path: string; readonl
 
 const minimalOptionalFields = {
   logger: undefined, ownHosts: undefined, paymentKeyDefaults: undefined, timeouts: undefined,
-  sizeLimits: undefined, signer: undefined, rateLimits: { documents: undefined },
+  sizeLimits: undefined, signer: undefined, rateLimits: { documents: undefined, probeIp: undefined },
 };
 
 type MutableDocument = { facilitators: Record<string, unknown>[] };
@@ -73,6 +73,7 @@ describe('buildPlatformConfig', () => {
     expect(findAsset(config, 'base-usdc')?.minPrice).toBe(0n);
     expect(config.sizeLimits).toEqual({ requestBodyBytes: 1_048_576, bufferedResponseBytes: 10_485_760 });
     expect(config.rateLimits.documents).toEqual({ requests: 120, windowSeconds: 60 });
+    expect(config.rateLimits.probeIp).toEqual({ requests: 600, windowSeconds: 60 });
     expect(config.signer).toEqual({
       maxPerCall: 1_000_000n, maxPerNetworkPerHour: undefined, maxPerNetworkPerDay: 100_000_000n,
       wallets: { base: undefined, tempo: undefined, solana: undefined },
@@ -81,12 +82,13 @@ describe('buildPlatformConfig', () => {
 
   it('takes the limits from the document when it sets them', () => {
     const config = buildPlatformConfig(document({
-      rateLimits: { documents: { requests: 5, windowSeconds: 10 } },
+      rateLimits: { documents: { requests: 5, windowSeconds: 10 }, probeIp: { requests: 50, windowSeconds: 30 } },
       sizeLimits: { requestBodyBytes: 100 },
       signer: { maxPerCall: '0.1', maxPerNetworkPerHour: '5', maxPerNetworkPerDay: '20' },
     }));
 
     expect(config.rateLimits.documents).toEqual({ requests: 5, windowSeconds: 10 });
+    expect(config.rateLimits.probeIp).toEqual({ requests: 50, windowSeconds: 30 });
     expect(config.rateLimits.paymentKey).toEqual({ requests: 600, windowSeconds: 60 });
     expect(config.sizeLimits).toEqual({ requestBodyBytes: 100, bufferedResponseBytes: 10_485_760 });
     expect(config.signer).toMatchObject({ maxPerCall: 100_000n, maxPerNetworkPerHour: 5_000_000n, maxPerNetworkPerDay: 20_000_000n });

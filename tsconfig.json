@@ -21,6 +21,9 @@
     },
     {
       "path": "packages/signer"
+    },
+    {
+      "path": "packages/proxy"
     }
   ]
 }

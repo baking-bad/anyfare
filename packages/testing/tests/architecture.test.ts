@@ -228,7 +228,7 @@ describe('architecture rules', () => {
   it('reads every package', () => {
     const packages = new Set(sources.map(file => file.path.split('/')[0]));
 
-    expect([...packages].sort()).toEqual(['api', 'common', 'core', 'db', 'payments', 'signer', 'testing']);
+    expect([...packages].sort()).toEqual(['api', 'common', 'core', 'db', 'payments', 'proxy', 'signer', 'testing']);
   });
 
   it('keeps every import within the dependency rules, and testing out of src', () => {

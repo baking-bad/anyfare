@@ -66,6 +66,7 @@ describe('config/production.yaml', () => {
     expect(config.rateLimits.paymentKey).toEqual({ requests: 600, windowSeconds: 60 });
     expect(config.rateLimits.unpaidIp).toEqual({ requests: 60, windowSeconds: 60 });
     expect(config.rateLimits.documents).toEqual({ requests: 600, windowSeconds: 60 });
+    expect(config.rateLimits.probeIp).toEqual({ requests: 600, windowSeconds: 60 });
     expect(config.routingFeeBps).toBe(0);
     expect(config.sizeLimits).toEqual({ requestBodyBytes: 1_048_576, bufferedResponseBytes: 10_485_760 });
   });

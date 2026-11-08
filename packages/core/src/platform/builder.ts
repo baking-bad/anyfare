@@ -198,6 +198,7 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
       unpaidIp: { ...document.rateLimits.unpaidIp },
       signup: { ...document.rateLimits.signup },
       documents: { ...document.rateLimits.documents ?? platformDefaults.documentsRateLimit },
+      probeIp: { ...document.rateLimits.probeIp ?? platformDefaults.probeIpRateLimit },
     },
     timeouts: { ...timeouts, ...document.timeouts },
     sizeLimits: { ...sizeLimits, ...document.sizeLimits },

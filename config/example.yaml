@@ -75,6 +75,7 @@ rateLimits:
   unpaidIp: { requests: 60, windowSeconds: 60 }
   signup: { requests: 10, windowSeconds: 3600 }   # Per client IP
   # documents: { requests: 120, windowSeconds: 60 }   # Optional. Public documents per client IP. Default: 120 a minute
+  # probeIp: { requests: 600, windowSeconds: 60 }   # Optional. Probes of routed targets per client IP, paid calls too. Default: 600 a minute
 
 timeouts:
   connectMs: 5000
