@@ -2,13 +2,16 @@ import { createKeyPairSignerFromBytes, getBase58Encoder, type KeyPairSigner } fr
 import { privateKeyToAccount } from 'viem/accounts';
 
 import {
-  formatUsd, InvalidEnvironmentError, readCommit, readHost, readLogLevel, readPort, readSecret, type AppContext, type AppEnvironment, type RunningApp,
-  type Secret,
+  formatUsd, InvalidEnvironmentError, readCommit, readHost, readLogLevel, readPort, readSecret, Secret, type AppContext, type AppEnvironment, type Logger,
+  type RunningApp,
 } from '@anyfare/common';
-import { loadPlatformConfig, platformSummary, readSolanaRpc, type PlatformConfig } from '@anyfare/core';
+import {
+  isValidAddress, loadPlatformConfig, nearNetworkOf, platformSummary, readNearRpc, readSolanaRpc, type NearRpc, type NetworkInfo, type PlatformConfig,
+} from '@anyfare/core';
 import { createPostgres, createRedis } from '@anyfare/db';
 
 import { createApp } from './app.js';
+import { nearPublicKeyOf, readNearAccessKey, type NearAccessKey } from './near.js';
 
 export const defaultPort = 8083;
 export const defaultMetricsPort = 9083;
@@ -119,6 +122,88 @@ export const readSolanaWallet = async (env: AppEnvironment, config: Pick<Platfor
   return wallet;
 };
 
+// A NEAR KeyPairString: `ed25519:` and base58
+const nearKeyPattern = /^ed25519:[1-9A-HJ-NP-Za-km-z]{32,128}$/;
+
+/** The NEAR hot wallet from the environment: its account, its key, the key's public key, and its network. */
+export interface NearWalletSetup {
+  readonly accountId: string;
+  readonly secretKey: Secret;
+  readonly publicKey: string;
+  readonly network: NetworkInfo;
+}
+
+/**
+ * The NEAR hot wallet: SIGNER_NEAR_ACCOUNT, and its full-access key from SIGNER_NEAR_KEY, `ed25519:` and
+ * base58. Both or neither: without them, nothing is paid on NEAR. Its network is the platform config's
+ * NEAR network, and its account must be `signer.wallets.near` when that's set, or the balance monitor
+ * watches another wallet. The key is taken out of the environment as it's read, and no error echoes it.
+ */
+export const readNearWallet = (env: AppEnvironment, config: Pick<PlatformConfig, 'assets' | 'signer'>): NearWalletSetup | undefined => {
+  const key = takeKey(env, 'SIGNER_NEAR_KEY');
+  const accountId = env['SIGNER_NEAR_ACCOUNT']?.trim() ?? '';
+  try {
+    if (!key && accountId === '')
+      return undefined;
+    if (!key || accountId === '')
+      throw new InvalidEnvironmentError('SIGNER_NEAR_ACCOUNT and SIGNER_NEAR_KEY must be set together, or not at all');
+    const network = nearNetworkOf(config);
+    if (!network)
+      throw new InvalidEnvironmentError('SIGNER_NEAR_KEY is set, but the platform config has no NEAR asset to pay in');
+    if (!isValidAddress(network, accountId))
+      throw new InvalidEnvironmentError('SIGNER_NEAR_ACCOUNT must be a NEAR account ID');
+    const configured = config.signer.wallets.near;
+    if (configured !== undefined && configured !== accountId)
+      throw new InvalidEnvironmentError(`SIGNER_NEAR_ACCOUNT, ${accountId}, isn't signer.wallets.near, ${configured}`);
+    let secretKey: Secret | undefined;
+    try {
+      const value = key.expose().trim();
+      if (!nearKeyPattern.test(value))
+        throw new Error('not a NEAR key');
+      secretKey = Secret.from(value);
+
+      return { accountId, secretKey, publicKey: nearPublicKeyOf(secretKey), network };
+    }
+    catch {
+      secretKey?.destroy();
+      throw new InvalidEnvironmentError('SIGNER_NEAR_KEY must be ed25519: and a base58 key');
+    }
+  }
+  finally {
+    key?.destroy();
+  }
+};
+
+/**
+ * The NEAR hot wallet, once, before the Signer listens: its key is a full-access key of its account.
+ * Otherwise it doesn't start. When the RPC doesn't answer, it warns and starts: a NEAR RPC outage
+ * mustn't stop Base, Solana, and Tempo payments. No message carries the key or the RPC's URL.
+ */
+export const checkNearWallet = async ({ wallet, rpc, budgetMs, logger }: {
+  readonly wallet: NearWalletSetup;
+  readonly rpc: NearRpc;
+  // How long the check may take, retry included
+  readonly budgetMs: number;
+  readonly logger: Logger;
+}): Promise<void> => {
+  const { accountId, publicKey, network } = wallet;
+  let accessKey: NearAccessKey;
+  try {
+    accessKey = await readNearAccessKey({ rpcUrl: rpc.url, accountId, publicKey, budgetMs });
+  }
+  catch {
+    logger.warn({ host: rpc.host }, 'The NEAR RPC didn\'t answer at startup: NEAR payments will be tried, and fail while it is down');
+
+    return;
+  }
+  if (accessKey.kind === 'no_account')
+    throw new InvalidEnvironmentError(`SIGNER_NEAR_ACCOUNT, ${accountId}, doesn't exist on ${network.id}`);
+  if (accessKey.kind === 'no_key')
+    throw new InvalidEnvironmentError(`SIGNER_NEAR_KEY isn't an access key of ${accountId} on ${network.id}`);
+  if (accessKey.permission !== 'FullAccess')
+    throw new InvalidEnvironmentError(`SIGNER_NEAR_KEY isn't a full-access key of ${accountId} on ${network.id}`);
+};
+
 /**
  * Wires the production dependencies from platform config and the environment, then listens. The hot
  * wallets' keys come from the stack's secrets. The spend counters use the Signer's own Redis ACL user,
@@ -137,12 +222,20 @@ export const startSigner = async ({ env, logger }: AppContext): Promise<RunningA
   const base = readWallet(env, 'SIGNER_BASE_KEY');
   const tempo = readWallet(env, 'SIGNER_TEMPO_KEY');
   const solana = await readSolanaWallet(env, config);
-  if (!base && !tempo && !solana)
-    logger.warn('The Signer has no wallet: SIGNER_BASE_KEY, SIGNER_TEMPO_KEY, and SIGNER_SOLANA_KEY are not set, so routed payments are refused');
+  const near = readNearWallet(env, config);
+  if (!base && !tempo && !solana && !near)
+    logger.warn('The Signer has no wallet: SIGNER_BASE_KEY, SIGNER_TEMPO_KEY, SIGNER_SOLANA_KEY, and SIGNER_NEAR_KEY are not set, so routed payments are refused');
   // Solana targets: SOLANA_RPC_URL, which may carry a key in its path. Only its host is logged.
   const solanaRpc = solana ? readSolanaRpc(env, config) : undefined;
   if (solanaRpc?.public)
     logger.warn({ host: solanaRpc.host }, 'SOLANA_RPC_URL is not set: the Signer builds Solana payments through the public RPC, which is rate limited');
+  // NEAR targets: NEAR_RPC_URLS's item for the network, which may carry a key. Only its host is logged.
+  const nearRpc = near ? readNearRpc(env, config) : undefined;
+  if (near && nearRpc) {
+    if (nearRpc.public)
+      logger.warn({ host: nearRpc.host }, `NEAR_RPC_URLS names no RPC for ${near.network.id}: the Signer builds NEAR payments through the x402 SDK's public RPC, which is rate limited`);
+    await checkNearWallet({ wallet: near, rpc: nearRpc, budgetMs: config.timeouts.connectMs, logger });
+  }
   const databaseUrl = readSecret('DATABASE_URL', env);
   const redisUrl = readSecret('REDIS_URL', env);
 
@@ -152,7 +245,11 @@ export const startSigner = async ({ env, logger }: AppContext): Promise<RunningA
     await Promise.all([postgres.close(), redis.close()]);
   };
   const server = createApp({
-    config, logger, postgres, redis, secret, wallets: { ...base ? { base } : {}, ...tempo ? { tempo } : {}, ...solana ? { solana } : {} },
+    config, logger, postgres, redis, secret,
+    wallets: {
+      ...base ? { base } : {}, ...tempo ? { tempo } : {}, ...solana ? { solana } : {},
+      ...near && nearRpc ? { near: { accountId: near.accountId, secretKey: near.secretKey, rpcUrl: nearRpc.url } } : {},
+    },
     ...solanaRpc ? { solanaRpcUrl: solanaRpc.url } : {},
   });
   let ports;
@@ -163,15 +260,16 @@ export const startSigner = async ({ env, logger }: AppContext): Promise<RunningA
     await closeConnections();
     throw error;
   }
-  // Once, what this Signer pays with. The wallets' public addresses, never their keys, and the Solana RPC's host only.
+  // Once, what this Signer pays with. The wallets' public addresses, never their keys, and the RPCs' hosts only.
   const { signer } = config;
   logger.info({
     app: 'signer',
     commit: readCommit(env) ?? null,
     logLevel: logger.level,
     environment: platformSummary(config).environment,
-    wallets: { base: base?.address ?? null, tempo: tempo?.address ?? null, solana: solana?.address ?? null },
+    wallets: { base: base?.address ?? null, tempo: tempo?.address ?? null, solana: solana?.address ?? null, near: near?.accountId ?? null },
     solanaRpc: solanaRpc?.host ?? null,
+    nearRpc: nearRpc?.host ?? null,
     limits: {
       maxPerCall: formatUsd(signer.maxPerCall),
       maxPerNetworkPerHour: signer.maxPerNetworkPerHour === undefined ? null : formatUsd(signer.maxPerNetworkPerHour),

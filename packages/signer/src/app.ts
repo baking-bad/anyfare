@@ -12,7 +12,8 @@ import {
 import type { PlatformConfig } from '@anyfare/core';
 import { createRoutingRepository, type Postgres, type Redis, type RoutingRepository } from '@anyfare/db';
 
-import { createSigner, SigningFailedError, SigningRefusedError, type SignRequest } from './sign.js';
+import { createRedisNearPayerStore, type NearPayerStore, type NearWallet } from './near.js';
+import { createSigner, PayerBusyError, SigningFailedError, SigningRefusedError, type SignRequest } from './sign.js';
 import { createRedisSpendLimits, type SpendLimits } from './spend.js';
 import { createTempoClient } from './tempo.js';
 
@@ -26,8 +27,8 @@ export interface SignerDependencies {
   readonly redis: Redis;
   // SIGNER_SECRET. Without it, every sign request is refused.
   readonly secret: Secret | undefined;
-  // The hot wallets
-  readonly wallets: { readonly base?: LocalAccount; readonly tempo?: LocalAccount; readonly solana?: ClientSvmSigner };
+  // The hot wallets. NEAR's carries its key in a Secret, and the RPC it reads the chain through.
+  readonly wallets: { readonly base?: LocalAccount; readonly tempo?: LocalAccount; readonly solana?: ClientSvmSigner; readonly near?: NearWallet };
   // The Tempo RPC for MPP targets. Default: mpp.rpcUrl, else the chain's public RPC.
   readonly tempoRpcUrl?: string;
   // The Solana RPC for Solana targets: SOLANA_RPC_URL, which may carry a key. Default: the SDK's public RPC.
@@ -38,13 +39,16 @@ export interface SignerDependencies {
   readonly requestIds?: IdGenerator;
   // Default: Redis counters with platform config's limits
   readonly spend?: SpendLimits;
+  // The NEAR hot wallet's lease and last nonces. Default: the Signer's Redis.
+  readonly nearStore?: NearPayerStore;
   // Where signatures are recorded. Default: the signatures table.
   readonly signatures?: Pick<RoutingRepository, 'recordSignature'>;
 }
 
 // Redis down: without its spend counters the Signer signs nothing, and says so as unavailable
+// A NEAR payment in flight from the hot wallet: 409 payer_busy, and the caller tries again in a moment.
 const errorStatuses = {
-  unauthorized: 401, invalid_request: 400, signing_refused: 422, signing_failed: 502, redis_not_ready: 503,
+  unauthorized: 401, invalid_request: 400, signing_refused: 422, payer_busy: 409, signing_failed: 502, redis_not_ready: 503,
 } as const satisfies ErrorStatusTable;
 
 class UnauthorizedError extends AnyfareError {
@@ -62,7 +66,7 @@ const signBodySchema = {
   required: ['quoteId', 'url', 'quotedPrice'],
   properties: {
     requestId: { type: 'string', maxLength: 128 },
-    quoteId: { type: 'string', minLength: 1, maxLength: 128 },
+    quoteId: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
     protocol: { type: 'string', enum: ['x402', 'mpp'] },
     x402Version: { type: 'integer', enum: [2] },
     requirement: { type: 'object' },
@@ -72,6 +76,15 @@ const signBodySchema = {
     quotedPrice: { type: 'string', pattern: '^\\d{1,20}$' },
   },
   additionalProperties: false,
+} as const;
+
+// `POST /internal/v1/quotes/:quoteId/release`: the proxy's quote ID, its payment ID
+const releaseParamsSchema = {
+  type: 'object',
+  required: ['quoteId'],
+  properties: {
+    quoteId: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+  },
 } as const;
 
 // A field as asked, for the log: a short string, or null
@@ -127,12 +140,14 @@ const signRequestOf = (body: SignBody, quotedPrice: MicroUsd): SignRequest => {
 };
 
 /**
- * The Signer, on the internal network only: `POST /internal/v1/sign` with the shared secret. Readiness
- * covers Postgres and Redis: without its spend counters, it signs nothing.
+ * The Signer, on the internal network only: `POST /internal/v1/sign` and
+ * `POST /internal/v1/quotes/:quoteId/release` with the shared secret. Readiness covers Postgres and
+ * Redis: without its spend counters, it signs nothing.
  */
 export const createApp = ({
   config, logger, postgres, redis, secret, wallets, tempoRpcUrl, solanaRpcUrl, clock = systemClock, ids = randomIdGenerator, requestIds,
   spend = createRedisSpendLimits({ redis, hourly: config.signer.maxPerNetworkPerHour, daily: config.signer.maxPerNetworkPerDay }),
+  nearStore = createRedisNearPayerStore({ redis }),
   signatures = createRoutingRepository({ db: postgres.db, clock }),
 }: SignerDependencies): Server => {
   const server = createServer({
@@ -161,7 +176,7 @@ export const createApp = ({
     ? createTempoClient({ network: config.mpp.network, url: tempoRpcUrl ?? config.mpp.rpcUrl, timeoutMs: config.timeouts.connectMs })
     : undefined;
   const signer = createSigner({
-    config, wallets, ...tempoClient ? { tempoClient } : {}, ...solanaRpcUrl ? { solanaRpcUrl } : {}, spend, signatures, clock, ids,
+    config, wallets, ...tempoClient ? { tempoClient } : {}, ...solanaRpcUrl ? { solanaRpcUrl } : {}, spend, nearStore, signatures, clock, ids,
     logger,
     onSigned: ({ network, amount, maxFee }) => {
       spent.inc({ network }, Number(amount) / 1_000_000);
@@ -205,6 +220,12 @@ export const createApp = ({
           ...asked, result: 'refused', reason: error.reason, message: error.message, ...error.spend, durationMs: Math.round(performance.now() - started),
         }, 'Refused to sign a routed payment');
       }
+      // Another NEAR payment from the hot wallet is in flight: nothing was reserved
+      else if (error instanceof PayerBusyError) {
+        request.log.info({
+          ...asked, result: 'busy', reason: error.code, message: error.message, durationMs: Math.round(performance.now() - started),
+        }, 'Refused to sign a routed payment');
+      }
       // The RPC's short message only: never a request, a transaction, or the RPC's URL
       else if (error instanceof SigningFailedError)
         request.log.warn({ ...asked, result: 'failed', reason: error.reason, durationMs: Math.round(performance.now() - started) }, 'Failed to sign a routed payment');
@@ -227,6 +248,21 @@ export const createApp = ({
       payTo: signed.payTo,
     };
   });
+
+  // The proxy is done with a payment: its NEAR lease, if it holds one, goes, and the next NEAR payment
+  // may be signed. Idempotent: always 204, and a payment on another chain never holds the lease. The
+  // proxy knows the quote ID even when the sign's answer never reached it.
+  server.app.post<{ Params: { quoteId: string } }>(
+    '/internal/v1/quotes/:quoteId/release',
+    { onRequest: authenticate, schema: { params: releaseParamsSchema } },
+    async (request, reply) => {
+      const { quoteId } = request.params;
+      const released = await signer.release(quoteId);
+      request.log.debug({ quoteId, released }, 'Released a quote\'s NEAR lease');
+
+      return reply.status(204).send();
+    },
+  );
 
   return server;
 };

@@ -97,7 +97,7 @@ const sign = async (body: Record<string, unknown>, at = url) => {
   const response = await fetch(`${at}/internal/v1/sign`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-signer-secret': secret, 'x-request-id': String(body['requestId'] ?? 'req-tempo') },
-    body: JSON.stringify({ requestId: 'req-tempo', quoteId: `pay_${Math.random()}`, url: resource, ...body }),
+    body: JSON.stringify({ requestId: 'req-tempo', quoteId: `pay_${crypto.randomUUID()}`, url: resource, ...body }),
   });
   const answer = await response.json() as Record<string, any>;
   if (typeof answer['header'] === 'string')

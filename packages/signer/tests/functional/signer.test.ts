@@ -72,7 +72,7 @@ const post = async (body: unknown, { key = secret as string | null, at = url } =
 };
 
 const signBody = (amount: string, quotedPrice = amount, overrides: Record<string, unknown> = {}) => ({
-  requestId: 'req-1', quoteId: `pay_${amount}_${Math.random()}`, x402Version: 2, requirement: option(amount, overrides), resource: { url: resource }, url: resource, quotedPrice,
+  requestId: 'req-1', quoteId: `pay_${amount}_${crypto.randomUUID()}`, x402Version: 2, requirement: option(amount, overrides), resource: { url: resource }, url: resource, quotedPrice,
 });
 
 const sign = async (amount: string, { quotedPrice = amount, overrides = {}, key = secret, at = url } = {} as { quotedPrice?: string; overrides?: Record<string, unknown>; key?: string; at?: string }) =>
@@ -137,6 +137,9 @@ describe('the sign request\'s body', () => {
 
   it.each([
     ['without quoteId', withoutQuote],
+    // A quote ID the release route couldn't name: a NEAR lease it holds could never be released
+    ['with a quoteId holding a dot', { ...signBody('1000'), quoteId: 'pay_0.5' }],
+    ['with a quoteId over 128 characters', { ...signBody('1000'), quoteId: `pay_${'a'.repeat(125)}` }],
     ['without url', withoutUrl],
     ['without quotedPrice', withoutPrice],
     ['with quotedPrice as a number', { ...signBody('1000'), quotedPrice: 1000 }],
@@ -219,7 +222,7 @@ describe('the Signer on Base', () => {
     ['maxTimeoutSeconds as the string "99"', { maxTimeoutSeconds: '99' }, 'invalid_timeout', 'The option\'s maxTimeoutSeconds isn\'t a whole number from 1 to 300'],
     ['maxTimeoutSeconds of 1e9', { maxTimeoutSeconds: 1e9 }, 'invalid_timeout', 'The option\'s maxTimeoutSeconds isn\'t a whole number from 1 to 300'],
     ['Permit2', { extra: { name: 'USDC', version: '2', assetTransferMethod: 'permit2' } }, 'transfer_method', 'The option asks for another transfer method than EIP-3009'],
-    ['no EIP-712 domain', { extra: {} }, 'invalid_option', 'The option asks for what the Signer doesn\'t sign: another payment flow, no EIP-712 domain, or Solana fields it can\'t build'],
+    ['no EIP-712 domain', { extra: {} }, 'invalid_option', 'The option asks for what the Signer doesn\'t sign: another payment flow, no EIP-712 domain, Solana fields it can\'t build, or a NEAR extra'],
     ['a payTo that isn\'t an address', { payTo: '0x2222' }, 'invalid_pay_to', 'The option\'s payTo isn\'t an address on its network'],
   ])('refuses %s before the spend limits count it', async (_name, overrides, reason, message) => {
     await startNew('day');
@@ -369,7 +372,7 @@ describe('the Signer\'s startup', () => {
 
     expect(startLines.filter(line => line['msg'] === 'Started')).toEqual([expect.objectContaining({
       level: 30, app: 'signer', commit: '0123456789abcdef0123456789abcdef01234567', logLevel: 'info', environment: 'staging',
-      wallets: { base: wallet.address, tempo: null, solana: null }, solanaRpc: null,
+      wallets: { base: wallet.address, tempo: null, solana: null, near: null }, solanaRpc: null, nearRpc: null,
       limits: { maxPerCall: '1', maxPerNetworkPerHour: null, maxPerNetworkPerDay: '100' }, ports: { port: expect.any(Number), metricsPort: expect.any(Number) },
     })]);
     expect(logger.level).toBe('warn');
@@ -386,7 +389,7 @@ describe('the Signer\'s startup', () => {
     await app.close();
 
     expect(startLines.find(line => line['level'] === 40)).toMatchObject({ msg: expect.stringMatching(/^The Signer has no wallet/) });
-    expect(startLines.find(line => line['msg'] === 'Started')).toMatchObject({ wallets: { base: null, tempo: null, solana: null } });
+    expect(startLines.find(line => line['msg'] === 'Started')).toMatchObject({ wallets: { base: null, tempo: null, solana: null, near: null } });
   });
 
   it('won\'t start without SIGNER_SECRET, or with one shorter than 32 characters, or with a Base key that isn\'t one', async () => {

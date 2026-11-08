@@ -120,7 +120,7 @@ const sign = async (requirement: Record<string, unknown>, { quotedPrice = String
   const response = await fetch(`${at}/internal/v1/sign`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-signer-secret': secret, 'x-request-id': requestId },
-    body: JSON.stringify({ requestId, quoteId: `pay_${Math.random()}`, x402Version: 2, requirement, resource: { url: resource }, url: resource, quotedPrice }),
+    body: JSON.stringify({ requestId, quoteId: `pay_${crypto.randomUUID()}`, x402Version: 2, requirement, resource: { url: resource }, url: resource, quotedPrice }),
   });
   const body = await response.json() as Record<string, any>;
   if (typeof body['header'] === 'string')
@@ -276,8 +276,8 @@ describe('the Signer\'s startup with a Solana wallet', () => {
     }
 
     expect(startLines.filter(line => line['msg'] === 'Started')).toEqual([
-      expect.objectContaining({ wallets: { base: null, tempo: null, solana: address }, solanaRpc: 'solana.rpc.test' }),
-      expect.objectContaining({ wallets: { base: null, tempo: null, solana: address }, solanaRpc: 'solana.rpc.test' }),
+      expect.objectContaining({ wallets: { base: null, tempo: null, solana: address, near: null }, solanaRpc: 'solana.rpc.test', nearRpc: null }),
+      expect.objectContaining({ wallets: { base: null, tempo: null, solana: address, near: null }, solanaRpc: 'solana.rpc.test', nearRpc: null }),
     ]);
     const logged = JSON.stringify(startLines);
     for (const value of [base58, array, rpcKey])

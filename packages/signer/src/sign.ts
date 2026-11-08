@@ -2,6 +2,7 @@ import { x402Client } from '@x402/core/client';
 import { encodePaymentSignatureHeader } from '@x402/core/http';
 import type { PaymentRequirements } from '@x402/core/types';
 import { ExactEvmScheme } from '@x402/evm/exact/client';
+import { ExactNearScheme } from '@x402/near/exact/client';
 import type { ClientSvmSigner } from '@x402/svm';
 import { ExactSvmScheme } from '@x402/svm/exact/client';
 import { Challenge } from 'mppx';
@@ -9,11 +10,12 @@ import type { Client, LocalAccount } from 'viem';
 
 import { AnyfareError, formatUsd, type Clock, type IdGenerator, type Logger, type LogSink, type MicroUsd, type Secret } from '@anyfare/common';
 import {
-  asExactX402Option, checkTempoCharge, checkX402Option, findNetwork, findOptionAsset, maxX402TimeoutSeconds, type PlatformConfig, type TempoChargeRefusal,
-  type X402OptionRefusal,
+  asExactX402Option, checkTempoCharge, checkX402Option, findNetwork, findOptionAsset, maxX402TimeoutSeconds, nearNetworkOf, type NetworkInfo, type PlatformConfig,
+  type TempoChargeRefusal, type X402OptionRefusal,
 } from '@anyfare/core';
-import type { RoutingRepository } from '@anyfare/db';
+import { RedisNotReadyError, type RoutingRepository } from '@anyfare/db';
 
+import { createNearPayer, nearLeaseMs, NearStoreError, type NearLease, type NearPayer, type NearPayerStore, type NearWallet } from './near.js';
 import type { SpendEntry, SpendLimits, SpendRefusal } from './spend.js';
 import { errorReason, maxFeeOf, signTempoCharge } from './tempo.js';
 
@@ -46,7 +48,20 @@ export class SigningRefusedError extends AnyfareError {
   }
 }
 
-/** The chain's RPC failed while the Signer built a transaction (Tempo, Solana): nothing was signed. The buyer pays nothing. */
+/**
+ * Another NEAR payment from the hot wallet is in flight. A delegate action signed later carries a higher
+ * nonce, and if it landed first the earlier one would fail, so the Signer signs one at a time. Nothing
+ * was reserved or signed.
+ */
+export class PayerBusyError extends AnyfareError {
+  readonly code = 'payer_busy';
+
+  constructor() {
+    super('A NEAR payment from the hot wallet is in flight: retry in a moment');
+  }
+}
+
+/** The chain's RPC failed while the Signer built a payment (Tempo, Solana, NEAR): nothing was signed. The buyer pays nothing. */
 export class SigningFailedError extends AnyfareError {
   readonly code = 'signing_failed';
   readonly reason: string;
@@ -96,18 +111,25 @@ export interface SignResult {
 export interface Signer {
   /** Signs, or throws SigningRefusedError. `log`: the request's logger, for the spend limit's alert. */
   sign(request: SignRequest, log?: LogSink): Promise<SignResult>;
+  /**
+   * Frees the NEAR hot wallet's lease when this quote's payment holds it, once it is settled or
+   * abandoned. Whether it did: a payment on another chain never holds it.
+   */
+  release(quoteId: string): Promise<boolean>;
 }
 
 export interface SignerOptions {
   readonly config: PlatformConfig;
-  // One hot wallet per chain: Base and Solana for x402 targets, and Tempo for MPP targets
-  readonly wallets: { readonly base?: LocalAccount; readonly tempo?: LocalAccount; readonly solana?: ClientSvmSigner };
+  // One hot wallet per chain: Base, Solana, and NEAR for x402 targets, and Tempo for MPP targets
+  readonly wallets: { readonly base?: LocalAccount; readonly tempo?: LocalAccount; readonly solana?: ClientSvmSigner; readonly near?: NearWallet };
   // The Tempo RPC of mpp.network, for MPP targets
   readonly tempoClient?: Client;
   // The Solana RPC the x402 client builds payments with: SOLANA_RPC_URL, which may carry a key in its path.
   // Undefined: the SDK's public RPC for the network.
   readonly solanaRpcUrl?: Secret;
   readonly spend: SpendLimits;
+  // The NEAR hot wallet's lease and last nonces. Needed with a NEAR wallet.
+  readonly nearStore?: NearPayerStore;
   readonly signatures: Pick<RoutingRepository, 'recordSignature'>;
   readonly clock: Clock;
   readonly ids: IdGenerator;
@@ -132,7 +154,7 @@ const mppRefusalMessages: Readonly<Record<TempoChargeRefusal, string>> = {
 
 const x402RefusalMessages: Readonly<Record<X402OptionRefusal, string>> = {
   not_exact: 'Only exact x402 options can be signed',
-  invalid_option: 'The option asks for what the Signer doesn\'t sign: another payment flow, no EIP-712 domain, or Solana fields it can\'t build',
+  invalid_option: 'The option asks for what the Signer doesn\'t sign: another payment flow, no EIP-712 domain, Solana fields it can\'t build, or a NEAR extra',
   invalid_pay_to: 'The option\'s payTo isn\'t an address on its network',
   invalid_timeout: `The option's maxTimeoutSeconds isn't a whole number from 1 to ${maxX402TimeoutSeconds}`,
   transfer_method: 'The option asks for another transfer method than EIP-3009',
@@ -141,30 +163,64 @@ const x402RefusalMessages: Readonly<Record<X402OptionRefusal, string>> = {
   invalid_amount: 'The option has no valid amount',
 };
 
+// A checked x402 option: its network, its price, and its timeout, how its payload is built, and what the record says was signed
+interface X402Payment {
+  readonly network: NetworkInfo;
+  readonly amount: MicroUsd;
+  readonly maxTimeoutSeconds: number;
+  readonly create: () => Promise<Parameters<typeof encodePaymentSignatureHeader>[0]>;
+  readonly signed: (payload: Parameters<typeof encodePaymentSignatureHeader>[0]) => Omit<SignResult, 'signatureId'>;
+}
+
+/** An error's reason without a URL, or the path and query of a secret RPC URL, which may hold its key. */
+const reasonWithout = (rpcUrl: Secret | undefined) => {
+  let parts: string[] = [];
+  try {
+    const url = rpcUrl && new URL(rpcUrl.expose());
+    parts = url ? [url.pathname.length > 1 ? url.pathname : '', url.search].filter(part => part !== '') : [];
+  }
+  catch {
+    parts = [];
+  }
+
+  return (error: unknown): string => parts.reduce((reason, part) => reason.split(part).join('<rpc>'), errorReason(error));
+};
+
 /**
  * Signs payments to routed targets: checks the network and asset against the registry, the option
  * against what the official client signs, the amount against the quote and the per-call maximum, and
  * the spend limits per network, in that order. Then it signs with the official client, x402's or
  * `mppx`'s, and records the signature. It never hand-rolls an authorization or a transaction. When the
- * client fails, nothing was signed, and the reservation goes back.
+ * client fails, nothing was signed, and the reservation goes back. On NEAR, one payment from the hot
+ * wallet is in flight at a time: it holds the payer's lease from before its reservation until the
+ * release, or until its delegate action can no longer run.
  */
-export const createSigner = ({ config, wallets, tempoClient, solanaRpcUrl, spend, signatures, clock, ids, logger, onSigned }: SignerOptions): Signer => {
+export const createSigner = ({
+  config, wallets, tempoClient, solanaRpcUrl, spend, nearStore, signatures, clock, ids, logger, onSigned,
+}: SignerOptions): Signer => {
   // One per Signer, so the SDK's cache of mint accounts lasts across payments
   const solanaScheme = wallets.solana && new ExactSvmScheme(wallets.solana, solanaRpcUrl ? { rpcUrl: solanaRpcUrl.expose() } : undefined);
   // An RPC error's reason without a URL, or SOLANA_RPC_URL's path, which may be its key
-  const solanaRpcPath = solanaRpcUrl && new URL(solanaRpcUrl.expose()).pathname;
-  const solanaReason = (error: unknown): string => {
-    const reason = errorReason(error);
+  const solanaReason = reasonWithout(solanaRpcUrl);
+  // The NEAR hot wallet pays on the config's NEAR network, through its RPC
+  if (wallets.near && !nearStore)
+    throw new Error('A NEAR wallet needs a store for its lease and nonces');
+  const nearNetwork = nearNetworkOf(config);
+  // Its chain reads end within the proxy's call timeout
+  const nearPayer: NearPayer | undefined = wallets.near && nearStore && createNearPayer({ wallet: wallets.near, store: nearStore, budgetMs: config.timeouts.connectMs });
+  const nearScheme = nearPayer && new ExactNearScheme(nearPayer);
+  const nearReason = reasonWithout(wallets.near?.rpcUrl);
 
-    return solanaRpcPath && solanaRpcPath.length > 1 ? reason.split(solanaRpcPath).join('<rpc>') : reason;
+  // The amount against the quote and the per-call maximum, without touching the limits
+  const checkPrice = (amount: MicroUsd, quotedPrice: MicroUsd): void => {
+    if (amount > quotedPrice)
+      refuse('The amount is above the quoted price', 'above_quote');
+    if (amount > config.signer.maxPerCall)
+      refuse('The amount is above the per-call maximum', 'above_max_per_call');
   };
 
-  // The amount against the quote and the per-call maximum, then the spend limits. Answers the reservation.
-  const checkAmount = async (network: string, amount: MicroUsd, quotedPrice: MicroUsd, log: LogSink): Promise<SpendEntry> => {
-    if (amount > quotedPrice)
-      return refuse('The amount is above the quoted price', 'above_quote');
-    if (amount > config.signer.maxPerCall)
-      return refuse('The amount is above the per-call maximum', 'above_max_per_call');
+  // The spend limits. Answers the reservation.
+  const reserve = async (network: string, amount: MicroUsd, log: LogSink): Promise<SpendEntry> => {
     const { refusal, hour, day, windows } = await spend.reserve({ network, amount });
     if (refusal) {
       // The window's total against its limit
@@ -193,6 +249,16 @@ export const createSigner = ({ config, wallets, tempoClient, solanaRpcUrl, spend
     }
   };
 
+  // No header left for this payment: the payer's lease goes. If it can't, it expires on its own.
+  const freeLease = async (store: NearPayerStore, lease: NearLease, log: LogSink): Promise<void> => {
+    try {
+      await store.releaseLease(lease);
+    }
+    catch (error) {
+      log.error({ accountId: lease.accountId, quoteId: lease.quoteId, error }, 'The Signer couldn\'t release the NEAR payer\'s lease: it expires on its own');
+    }
+  };
+
   const record = async (request: SignRequest, signed: Omit<SignResult, 'signatureId'>): Promise<SignResult> => {
     const signatureId = `sig_${ids.next()}`;
     await signatures.recordSignature({
@@ -205,6 +271,57 @@ export const createSigner = ({ config, wallets, tempoClient, solanaRpcUrl, spend
     return result;
   };
 
+  /**
+   * A NEAR payment, with the checks done: the payer's lease, then the reservation, then the chain's
+   * reads and the signature, then the record. The lease holds the proxy's quote ID, which the proxy
+   * knows even when the Signer's answer never reached it, so it can always release it.
+   */
+  const signNear = async (request: SignRequest, payer: NearPayer, store: NearPayerStore, payment: X402Payment, log: LogSink): Promise<SignResult> => {
+    const lease: NearLease = { accountId: payer.accountId, quoteId: request.quoteId };
+    let taken: boolean;
+    try {
+      taken = await store.takeLease(lease, nearLeaseMs(payment.maxTimeoutSeconds));
+    }
+    catch (error) {
+      // Redis may have set the lease before its reply was lost
+      await freeLease(store, lease, log);
+      throw error;
+    }
+    if (!taken)
+      throw new PayerBusyError();
+    let reservation: SpendEntry;
+    try {
+      reservation = await reserve(payment.network.id, payment.amount, log);
+    }
+    catch (error) {
+      await freeLease(store, lease, log);
+      throw error;
+    }
+    let payload;
+    try {
+      payload = await payment.create();
+    }
+    catch (error) {
+      await giveBack(reservation, log);
+      await freeLease(store, lease, log);
+      // Redis failed on the nonce: the Signer answers it as Redis being down, with its cause in the log
+      if (error instanceof NearStoreError) {
+        log.error({ network: payment.network.id, error }, 'The Signer\'s Redis failed on the NEAR nonce: nothing was signed');
+        throw error.cause instanceof RedisNotReadyError ? error.cause : new RedisNotReadyError();
+      }
+      // The client read the key's nonce and the final height from the RPC. Its error stays out: it may name the RPC.
+      throw new SigningFailedError('NEAR', nearReason(error));
+    }
+    try {
+      return await record(request, payment.signed(payload));
+    }
+    catch (error) {
+      // The header never left: the next payment may go. The reservation stays, as on every chain.
+      await freeLease(store, lease, log);
+      throw error;
+    }
+  };
+
   const signX402 = async (request: Extract<SignRequest, { protocol: 'x402' }>, log: LogSink): Promise<SignResult> => {
     const requirement = asExactX402Option(request.requirement);
     if (!requirement)
@@ -215,27 +332,45 @@ export const createSigner = ({ config, wallets, tempoClient, solanaRpcUrl, spend
     const asset = network && findOptionAsset(config, network, requirement.asset);
     if (!network || !asset)
       return refuse('The network and asset aren\'t in the registry', 'not_in_registry');
-    const scheme = network.chain === 'base' ? wallets.base && new ExactEvmScheme(wallets.base) : network.chain === 'solana' ? solanaScheme : undefined;
+    const scheme = network.chain === 'base'
+      ? wallets.base && new ExactEvmScheme(wallets.base)
+      : network.chain === 'solana' ? solanaScheme : network.chain === 'near' && network.id === nearNetwork?.id ? nearScheme : undefined;
     if (!scheme)
       return refuse(`The Signer holds no wallet on ${network.title}`, 'no_wallet');
+    // We never pay our own accounts on NEAR: the hot wallet, nor any account buyers pay on the network
+    if (network.chain === 'near' && (requirement['payTo'] === wallets.near?.accountId
+      || config.assets.some(item => item.network.id === network.id && item.payTo !== undefined && item.payTo === requirement['payTo'])))
+      return refuse('The option\'s payTo is one of our own accounts', 'invalid_pay_to');
     // The option against what the client signs, before the spend limits count it
-    const checked = checkX402Option(requirement, { asset, network, ourSolanaWallet: wallets.solana?.address });
+    const checked = checkX402Option(requirement, { asset, network, ourSolanaWallet: wallets.solana?.address, ourNearAccount: wallets.near?.accountId });
     if (checked.refusal !== undefined)
       return refuse(x402RefusalMessages[checked.refusal], checked.refusal);
     const { atomicAmount, price: amount } = checked;
-    const reservation = await checkAmount(network.id, amount, request.quotedPrice, log);
+    checkPrice(amount, request.quotedPrice);
 
     // The SDK's own spend controls are off: its default cap per payment and its list of assets. The
     // Signer's limits are checked above. The Solana client builds the highest transaction version the
     // option advertises in `extra.transactionVersions`, and version 0 when it advertises none.
     const client = new x402Client().setSpendControls(false).register(network.id as `${string}:${string}`, scheme);
-    let payload;
-    try {
-      payload = await client.createPaymentPayload({
+    const payment: X402Payment = {
+      network, amount, maxTimeoutSeconds: requirement['maxTimeoutSeconds'] as number,
+      create: () => client.createPaymentPayload({
         x402Version: request.x402Version,
         accepts: [requirement as unknown as PaymentRequirements],
         ...request.resource === undefined ? {} : { resource: request.resource },
-      } as Parameters<typeof client.createPaymentPayload>[0]);
+      } as Parameters<typeof client.createPaymentPayload>[0]),
+      signed: payload => ({
+        protocol: 'x402', header: encodePaymentSignatureHeader(payload), network: network.id, asset: asset.name, atomicAmount, amount,
+        payTo: String(requirement.payTo), maxFee: undefined,
+      }),
+    };
+    if (network.chain === 'near' && nearPayer && nearStore)
+      return signNear(request, nearPayer, nearStore, payment, log);
+
+    const reservation = await reserve(network.id, amount, log);
+    let payload;
+    try {
+      payload = await payment.create();
     }
     catch (error) {
       await giveBack(reservation, log);
@@ -245,10 +380,7 @@ export const createSigner = ({ config, wallets, tempoClient, solanaRpcUrl, spend
       throw error;
     }
 
-    return record(request, {
-      protocol: 'x402', header: encodePaymentSignatureHeader(payload), network: network.id, asset: asset.name, atomicAmount, amount,
-      payTo: String(requirement.payTo), maxFee: undefined,
-    });
+    return record(request, payment.signed(payload));
   };
 
   const signMpp = async (request: Extract<SignRequest, { protocol: 'mpp' }>, log: LogSink): Promise<SignResult> => {
@@ -274,7 +406,8 @@ export const createSigner = ({ config, wallets, tempoClient, solanaRpcUrl, spend
       if (expires <= clock.now().getTime())
         return refuse('The challenge has expired', 'expired');
     }
-    const reservation = await checkAmount(network.id, charge.price, request.quotedPrice, log);
+    checkPrice(charge.price, request.quotedPrice);
+    const reservation = await reserve(network.id, charge.price, log);
 
     let header: string;
     try {
@@ -297,5 +430,6 @@ export const createSigner = ({ config, wallets, tempoClient, solanaRpcUrl, spend
 
   return {
     sign: async (request, log = logger) => request.protocol === 'mpp' ? signMpp(request, log) : signX402(request, log),
+    release: async quoteId => wallets.near && nearStore ? nearStore.releaseLease({ accountId: wallets.near.accountId, quoteId }) : false,
   };
 };

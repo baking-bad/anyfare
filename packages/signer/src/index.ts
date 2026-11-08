@@ -1,8 +1,13 @@
 export { createApp } from './app.js';
 export type { SignerDependencies } from './app.js';
-export { defaultMetricsPort, defaultPort, startSigner } from './start.js';
+export { checkNearWallet, defaultMetricsPort, defaultPort, readNearWallet, startSigner } from './start.js';
+export type { NearWalletSetup } from './start.js';
 export { signerSecretHeader } from './app.js';
-export { createSigner, SigningFailedError, SigningRefusedError } from './sign.js';
+export { createSigner, PayerBusyError, SigningFailedError, SigningRefusedError } from './sign.js';
 export type { SigningRefusal, SignRequest, SignResult, Signer, SignerOptions, SpendWindow } from './sign.js';
 export { createRedisSpendLimits, spendKeyPrefix } from './spend.js';
 export type { SpendEntry, SpendLimits, SpendRefusal, SpendReservation, SpendWindowIds } from './spend.js';
+export {
+  createNearPayer, createRedisNearPayerStore, InvalidNearKeyError, nearKeyPrefix, nearLeaseMs, nearPublicKeyOf, NearRpcError, NearStoreError, readNearAccessKey,
+} from './near.js';
+export type { NearAccessKey, NearLease, NearPayer, NearPayerStore, NearWallet } from './near.js';

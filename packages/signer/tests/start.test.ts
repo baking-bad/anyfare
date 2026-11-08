@@ -5,9 +5,9 @@ import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { describe, expect, it } from 'vitest';
 
 import { loadPlatformConfig } from '@anyfare/core';
-import { encodeBase58 } from '@anyfare/testing';
+import { encodeBase58, generateNearKey } from '@anyfare/testing';
 
-import { readSolanaWallet, readWallet } from '../src/start.js';
+import { readNearWallet, readSolanaWallet, readWallet } from '../src/start.js';
 
 const config = await loadPlatformConfig({ env: { CONFIG_PATH: 'config/example.yaml' } });
 
@@ -60,5 +60,75 @@ describe('reading the hot wallets\' keys', () => {
 
     await expect(readSolanaWallet(env, config)).rejects.toThrow(/^SIGNER_SOLANA_KEY must be a 64-byte Solana secret key/);
     expect(env['SIGNER_SOLANA_KEY']).toBeUndefined();
+  });
+});
+
+describe('reading the NEAR hot wallet', () => {
+  const key = generateNearKey();
+  const failureOf = (env: Record<string, string | undefined>, using = config): Error | undefined => {
+    try {
+      readNearWallet(env, using);
+    }
+    catch (error) {
+      return error as Error;
+    }
+
+    return undefined;
+  };
+
+  it('takes SIGNER_NEAR_KEY out of the environment once it has read it, on the config\'s NEAR network', () => {
+    const env: Record<string, string | undefined> = { SIGNER_NEAR_ACCOUNT: 'hot.anyfare.testnet', SIGNER_NEAR_KEY: key.secretKey, OTHER: 'stays' };
+
+    const wallet = readNearWallet(env, config);
+
+    expect(wallet).toMatchObject({ accountId: 'hot.anyfare.testnet', publicKey: key.publicKey, network: { id: 'near:testnet' } });
+    expect(wallet?.secretKey.expose()).toBe(key.secretKey);
+    expect(JSON.stringify(wallet)).not.toContain(key.secretKey.slice('ed25519:'.length));
+    expect(env).toEqual({ SIGNER_NEAR_ACCOUNT: 'hot.anyfare.testnet', OTHER: 'stays' });
+  });
+
+  it('reads no wallet when neither variable is set', () => {
+    expect(readNearWallet({}, config)).toBeUndefined();
+    expect(readNearWallet({ SIGNER_NEAR_ACCOUNT: ' ', SIGNER_NEAR_KEY: '' }, config)).toBeUndefined();
+  });
+
+  it.each([
+    ['only the account', { SIGNER_NEAR_ACCOUNT: 'hot.anyfare.testnet', SIGNER_NEAR_KEY: '' }],
+    ['only the key', { SIGNER_NEAR_KEY: generateNearKey().secretKey }],
+  ])('refuses %s', (_name, env) => {
+    expect(failureOf(env)?.message).toBe('SIGNER_NEAR_ACCOUNT and SIGNER_NEAR_KEY must be set together, or not at all');
+  });
+
+  it.each(['ed25519:abc', 'secp256k1:abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ123456789', 'ed25519:0OIl0OIl0OIl0OIl0OIl0OIl0OIl0OIl0OIl', key.secretKey.slice('ed25519:'.length)])(
+    'refuses a key that isn\'t ed25519: and base58, without echoing it, and takes it out of the environment: %s',
+    invalid => {
+      const env: Record<string, string | undefined> = { SIGNER_NEAR_ACCOUNT: 'hot.anyfare.testnet', SIGNER_NEAR_KEY: invalid };
+      const failure = failureOf(env);
+
+      expect(failure?.message).toBe('SIGNER_NEAR_KEY must be ed25519: and a base58 key');
+      expect(failure?.message).not.toContain(invalid);
+      expect('SIGNER_NEAR_KEY' in env).toBe(false);
+    },
+  );
+
+  it('refuses an account that isn\'t a NEAR account ID', () => {
+    expect(failureOf({ SIGNER_NEAR_ACCOUNT: 'Hot Wallet', SIGNER_NEAR_KEY: key.secretKey })?.message).toBe('SIGNER_NEAR_ACCOUNT must be a NEAR account ID');
+  });
+
+  it('refuses an account that isn\'t signer.wallets.near, naming both', async () => {
+    const named = await loadPlatformConfig({
+      env: { CONFIG_PATH: 'config/example.yaml', CONFIG: Buffer.from(JSON.stringify({ signer: { wallets: { near: 'pay.anyfare.testnet' } } })).toString('base64') },
+    });
+
+    expect(failureOf({ SIGNER_NEAR_ACCOUNT: 'hot.anyfare.testnet', SIGNER_NEAR_KEY: key.secretKey }, named)?.message)
+      .toBe('SIGNER_NEAR_ACCOUNT, hot.anyfare.testnet, isn\'t signer.wallets.near, pay.anyfare.testnet');
+    expect(readNearWallet({ SIGNER_NEAR_ACCOUNT: 'pay.anyfare.testnet', SIGNER_NEAR_KEY: key.secretKey }, named)?.accountId).toBe('pay.anyfare.testnet');
+  });
+
+  it('refuses a NEAR key when the config has no NEAR asset', () => {
+    const withoutNear = { ...config, assets: config.assets.filter(asset => asset.network.namespace !== 'near') };
+
+    expect(failureOf({ SIGNER_NEAR_ACCOUNT: 'hot.anyfare.testnet', SIGNER_NEAR_KEY: key.secretKey }, withoutNear)?.message)
+      .toBe('SIGNER_NEAR_KEY is set, but the platform config has no NEAR asset to pay in');
   });
 });
