@@ -173,6 +173,7 @@ describe('POST /internal/v1/accounts/{id}/credits', () => {
       clock,
       ids: randomIdGenerator,
       secret: Secret.from(internalSecret),
+      assetNames: new Set(),
       auditLog: () => ({ append: async () => { throw new Error('the audit log is down'); } }),
     });
     const reference = nextReference();
