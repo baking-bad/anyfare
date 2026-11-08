@@ -1,0 +1,59 @@
+# The staging-shaped platform config, for local development and tests.
+#
+# Loaded from CONFIG_PATH: one file, or several separated by commas, merged left to right (objects merge
+# by key, lists replace). CONFIG, base64 of YAML or JSON, merges last.
+#
+# Every address here is a placeholder. Quote addresses: YAML reads an unquoted 0x… as a number.
+version: 1
+environment: staging
+
+logger:
+  level: info
+
+urls:
+  website: https://anyfare.test
+  api: https://api.anyfare.test
+  pay: https://pay.anyfare.test
+
+# Extra hosts and IP addresses we own. The hosts of urls are always included.
+ownHosts: []
+
+# The first characters of a key tell its kind
+keyPrefixes:
+  master: afm_test_
+  payment: af_test_
+
+# What a new payment key gets unless the account says otherwise
+paymentKeyDefaults:
+  dailyBudget: "5"
+
+# Every token we pay APIs in or take payments in. payTo is our address that receives the asset from
+# buyers: without it the asset is not offered to buyers.
+assets:
+  - name: base-usdc
+    network: eip155:84532
+    address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+    decimals: 6
+    peg: usd
+    payTo: "0x1111111111111111111111111111111111111111"
+  - name: solana-usdc
+    network: solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1
+    address: 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
+    decimals: 6
+    peg: usd
+    payTo: "11111111111111111111111111111111"
+  - name: tempo-pathusd
+    network: eip155:42431
+    address: "0x20c0000000000000000000000000000000000000"
+    decimals: 6
+    peg: usd
+    payTo: "0x2222222222222222222222222222222222222222"
+
+# Sign-ups per client IP
+rateLimits:
+  signup: { requests: 10, windowSeconds: 3600 }
+
+timeouts:
+  connectMs: 5000
+  requestMs: 30000
+  settleMs: 30000

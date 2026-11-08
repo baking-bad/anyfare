@@ -1,0 +1,51 @@
+# The production platform config: mainnets only. Loaded the same way as example.yaml: CONFIG_PATH,
+# several files merged left to right, CONFIG last.
+version: 1
+environment: production
+
+logger:
+  level: info
+
+urls:
+  website: https://anyfare.agents.bakingbad.dev
+  api: https://api.anyfare.agents.bakingbad.dev
+  pay: https://pay.anyfare.agents.bakingbad.dev
+
+# Extra hosts and IP addresses we own. The hosts of urls are always included.
+ownHosts: []
+
+# The first characters of a key tell its kind
+keyPrefixes:
+  master: afm_live_
+  payment: af_live_
+
+paymentKeyDefaults:
+  dailyBudget: "5"
+
+# The receiving addresses (payTo) are added before the first deployment. Quote them: YAML reads an
+# unquoted 0x… as a number. An asset without one is not offered to buyers.
+assets:
+  - name: base-usdc
+    network: eip155:8453
+    address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    decimals: 6
+    peg: usd
+  - name: solana-usdc
+    network: solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp
+    address: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+    decimals: 6
+    peg: usd
+  - name: tempo-usdce
+    network: eip155:4217
+    address: "0x20C000000000000000000000b9537d11c60E8b50"
+    decimals: 6
+    peg: usd
+
+# Sign-ups per client IP. A hackathon venue shares one IP, so the limit is high.
+rateLimits:
+  signup: { requests: 200, windowSeconds: 3600 }
+
+timeouts:
+  connectMs: 5000
+  requestMs: 30000
+  settleMs: 30000

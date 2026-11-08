@@ -19,6 +19,7 @@
     "test": "vitest run --root ../.. --project core"
   },
   "dependencies": {
-    "@anyfare/common": "0.1.0"
+    "@anyfare/common": "0.1.0",
+    "ajv": "^8.20.0"
   }
 }
