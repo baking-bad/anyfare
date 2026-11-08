@@ -2,3 +2,10 @@ export { createHoldExpiry, holdExpiryIntervalMs, holdExpiryJobName, holdExpiryLo
 export type { HoldExpiryOptions, HoldExpiryResult } from './holdExpiry.js';
 export { createScheduler } from './scheduler.js';
 export type { Job, JobOutcome, JobRunResult, Scheduler, SchedulerOptions } from './scheduler.js';
+export {
+  createSettlementFollowUp, presubmissionRefusals, SettlementFollowUpError, settlementFollowUpIntervalMs, settlementFollowUpJobName, settlementFollowUpLockId,
+  settlingGraceMs,
+} from './settlementFollowUp.js';
+export type { SettlementFollowUpOptions, SettlementFollowUpResult } from './settlementFollowUp.js';
+export { createRoutingLossMetrics, createRoutingLosses, RoutingLossesFailedError, routingLossesIntervalMs, routingLossesJobName, routingLossesLockId } from './routingLosses.js';
+export type { RoutingLossMetrics, RoutingLossesOptions, RoutingLossesResult } from './routingLosses.js';

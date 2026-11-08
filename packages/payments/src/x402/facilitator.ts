@@ -107,6 +107,12 @@ const readAnswer = async (response: Response): Promise<unknown> => {
 // 4xx answers that say nothing about the payment: our auth, a timeout, or a rate limit
 const notRefusals = new Set([401, 403, 408, 429]);
 
+/**
+ * The reason for a 4xx that carries no verify or settle answer, such as CDP's 400 or 409 in its own
+ * error format, or a gateway's 404: `refused_<status>`. It says the facilitator refused, not why.
+ */
+export const refusedReason = (status: number): string => `refused_${status}`;
+
 // How long a pending settle answer is kept for the same payment's next settle
 const pendingAnswerMs = 2 * 60_000;
 
@@ -133,7 +139,8 @@ const isSupportedResponse = (value: unknown): value is SupportedResponse =>
 /**
  * A facilitator over HTTP: `GET /supported`, `POST /verify`, `POST /settle`, with the body the x402
  * SDK's client sends. A `4xx` that carries a verify or settle answer is that answer. Any other `4xx`
- * on verify or settle refuses the payment, as CDP's `400` for a malformed one does. A `401`, `403`,
+ * on verify or settle refuses the payment, as CDP's `400` for a malformed one does, with the reason
+ * `refused_<status>`. A `401`, `403`,
  * `408`, `429` or `5xx`, whatever its body, a timeout, a failed connection, a redirect, an answer over
  * 1 MiB, or one that isn't an answer throw FacilitatorUnavailableError.
  *
@@ -170,8 +177,8 @@ export const createFacilitator = ({
     payload: unknown,
     timeoutMs: number,
     accept: (value: unknown) => value is TAnswer,
-    // The answer to a request the facilitator refused, such as CDP's 400 for a malformed payload
-    refused?: () => TAnswer,
+    // The answer to a request the facilitator refused, such as CDP's 400 for a malformed payload, by its status
+    refused?: (status: number) => TAnswer,
     network?: string,
   ): Promise<TAnswer> => {
     const target = new URL(`${base}${path}`);
@@ -204,7 +211,7 @@ export const createFacilitator = ({
       return answer;
     // Any other 4xx refuses the payment
     if (!ours && refused && response.status >= 400 && response.status < 500)
-      return refused();
+      return refused(response.status);
 
     const errorReason = reasonOf(answer);
     throw new FacilitatorUnavailableError(name, `${path} answered ${response.status}`, failure({ status: response.status, ...errorReason === undefined ? {} : { errorReason } }));
@@ -219,16 +226,16 @@ export const createFacilitator = ({
     },
     verify: (paymentPayload: PaymentPayload, paymentRequirements: PaymentRequirements) =>
       call('POST', '/verify', { x402Version: paymentPayload.x402Version, paymentPayload, paymentRequirements }, requestTimeoutMs, isVerifyResponse,
-        () => ({ isValid: false, invalidReason: 'invalid_payload' }), paymentRequirements.network),
+        status => ({ isValid: false, invalidReason: refusedReason(status) }), paymentRequirements.network),
     settle: async (paymentPayload: PaymentPayload, paymentRequirements: PaymentRequirements) => {
       const key = pendingKey(paymentPayload);
       // Kept by the previous settle of this payment, and used once
       const kept = takePending(key);
       let answer: SettleResponse;
       try {
-        // Refused before anything was submitted: a failed settlement, not an unknown one
+        // A refused settle failed. Whether an earlier settle of the same payment landed, this answer can't tell.
         answer = await call('POST', '/settle', { x402Version: paymentPayload.x402Version, paymentPayload, paymentRequirements }, settleTimeoutMs, isSettleResponse,
-          () => ({ success: false, errorReason: 'invalid_payload', transaction: '', network: paymentRequirements.network }), paymentRequirements.network);
+          status => ({ success: false, errorReason: refusedReason(status), transaction: '', network: paymentRequirements.network }), paymentRequirements.network);
       }
       catch (error) {
         if (kept)

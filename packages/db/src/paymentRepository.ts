@@ -63,8 +63,23 @@ export interface PaymentRepository {
     readonly limit: number;
     readonly after?: { readonly createdAt: Date; readonly id: string };
   }): Promise<readonly Payment[]>;
-  /** Payments still `settling`, oldest first, with their settle requests. `after` is the last of the previous page. */
-  listSettling(input: { readonly limit: number; readonly after?: { readonly createdAt: Date; readonly id: string } }): Promise<readonly SettlingPayment[]>;
+  /**
+   * Payments still `settling`, oldest first, with their settle requests. `after` is the last of the
+   * previous page. With `updatedBefore`, only those last updated before it, so a payment whose
+   * finalize may still be running is left to it.
+   */
+  listSettling(input: {
+    readonly limit: number;
+    readonly after?: { readonly createdAt: Date; readonly id: string };
+    readonly updatedBefore?: Date;
+  }): Promise<readonly SettlingPayment[]>;
+  /**
+   * Claims a `settling` payment for one follow-up: moves its `updated_at` to now, only while it is
+   * still `settling` and last updated at `seenUpdatedAt`, as listed. Of two follow-ups that listed the
+   * same row, one claims it; the other gets false. The new time keeps it off the lists that filter
+   * by `updatedBefore` until it ages again.
+   */
+  claimSettling(input: { readonly paymentId: string; readonly seenUpdatedAt: Date }): Promise<boolean>;
 }
 
 const optional = <TValue>(value: TValue | null): TValue | undefined => value ?? undefined;
@@ -204,16 +219,25 @@ export const createPaymentRepository = ({ db, clock }: PaymentRepositoryOptions)
 
       return rows.map(toPayment);
     },
-    listSettling: async ({ limit, after }) => {
+    listSettling: async ({ limit, after, updatedBefore }) => {
       const rows = await db.select().from(payments)
         .where(and(
           eq(payments.status, 'settling'),
+          updatedBefore && lt(payments.updatedAt, updatedBefore),
           after && or(gt(payments.createdAt, after.createdAt), and(eq(payments.createdAt, after.createdAt), gt(payments.id, after.id))),
         ))
         .orderBy(asc(payments.createdAt), asc(payments.id))
         .limit(limit);
 
       return rows.map(row => ({ payment: toPayment(row), settlementRequest: row.settlementRequest ?? undefined }));
+    },
+    claimSettling: async ({ paymentId, seenUpdatedAt }) => {
+      const claimed = await db.update(payments)
+        .set({ updatedAt: clock.now() })
+        .where(and(eq(payments.id, paymentId), eq(payments.status, 'settling'), eq(payments.updatedAt, seenUpdatedAt)))
+        .returning({ id: payments.id });
+
+      return claimed.length > 0;
     },
   };
 };

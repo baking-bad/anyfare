@@ -524,6 +524,61 @@ describe('settling payments', () => {
     const { rows } = await database.db.execute<{ request: unknown }>(sql`select settlement_request as request from payments where id = ${settling[0]!}`);
     expect(rows[0]?.request).toBeNull();
   });
+
+  it('lists only settling payments last updated before updatedBefore, so a finalize still running is left alone', async () => {
+    const payments = createPaymentRepository({ db: database.db, clock });
+    const settle = async (): Promise<string> => {
+      const created = await payments.create({ ...onChainPayment(10_000n), status: 'verified' });
+      await payments.changeStatus({ paymentId: created.id, to: 'settling', settlementRequest: { id: created.id } });
+
+      return created.id;
+    };
+    clock.set(fixtureTime(0, 9, 13, 0, 0, 0));
+    const idle = await settle();
+    const touched = await settle();
+    clock.set(fixtureTime(0, 9, 13, 1, 0, 0));
+    const recent = await settle();
+    // Settling again, to record what its settlement learned: the update time moves with it
+    clock.set(fixtureTime(0, 9, 13, 2, 0, 0));
+    await payments.changeStatus({ paymentId: touched, to: 'settling', transactionHash: '0x2' });
+    const updatedBefore = new Date(fixtureTime(0, 9, 13, 1, 0, 0));
+
+    const listed = await payments.listSettling({ limit: 100, updatedBefore });
+    const ids = listed.map(item => item.payment.id);
+
+    expect(ids).toContain(idle);
+    // Updated at updatedBefore itself, or after it
+    expect(ids).not.toContain(recent);
+    expect(ids).not.toContain(touched);
+    expect(listed.every(item => item.payment.updatedAt < updatedBefore)).toBe(true);
+    expect(listed.find(item => item.payment.id === idle)?.settlementRequest).toEqual({ id: idle });
+    // Without it, every settling payment
+    expect((await payments.listSettling({ limit: 100 })).map(item => item.payment.id)).toEqual(expect.arrayContaining([idle, touched, recent]));
+  });
+
+  it('claims a settling payment once for the time it was listed at, and moves that time to now', async () => {
+    const payments = createPaymentRepository({ db: database.db, clock });
+    clock.set(fixtureTime(0, 9, 14, 0, 0, 0));
+    const created = await payments.create({ ...onChainPayment(10_000n), status: 'verified' });
+    const listed = await payments.changeStatus({ paymentId: created.id, to: 'settling', settlementRequest: { id: created.id } });
+    const verified = await payments.create({ ...onChainPayment(10_000n), status: 'verified' });
+    clock.set(fixtureTime(0, 9, 14, 5, 0, 0));
+
+    const claims = await Promise.all([
+      payments.claimSettling({ paymentId: listed.id, seenUpdatedAt: listed.updatedAt }),
+      payments.claimSettling({ paymentId: listed.id, seenUpdatedAt: listed.updatedAt }),
+    ]);
+
+    expect(claims.sort()).toEqual([false, true]);
+    expect(await payments.find(listed.id)).toMatchObject({ status: 'settling', updatedAt: new Date(fixtureTime(0, 9, 14, 5, 0, 0)) });
+    // Listed before the claim, so no longer the row's time
+    expect(await payments.claimSettling({ paymentId: listed.id, seenUpdatedAt: listed.updatedAt })).toBe(false);
+    // Only a settling payment
+    expect(await payments.claimSettling({ paymentId: verified.id, seenUpdatedAt: verified.updatedAt })).toBe(false);
+    expect(await payments.claimSettling({ paymentId: 'pay_missing', seenUpdatedAt: listed.updatedAt })).toBe(false);
+    // Claimed now, it ages again from now
+    expect((await payments.listSettling({ limit: 100, updatedBefore: new Date(fixtureTime(0, 9, 14, 5, 0, 0)) })).map(item => item.payment.id)).not.toContain(listed.id);
+  });
 });
 
 describe('holds', () => {

@@ -371,7 +371,16 @@ describe('x402 payments through the facilitator', () => {
     const quote = quoteOf();
     facilitator.handle('/verify', () => ({ status: 400, body: { errorType: 'invalid_request', errorMessage: '\'paymentPayload\' is invalid' } }));
 
-    await expect(rail.authorize(paidCredential(rail, await pay(await requiredOf(rail, quote), base)), quote)).rejects.toThrow('The facilitator rejected the payment: invalid_payload');
+    await expect(rail.authorize(paidCredential(rail, await pay(await requiredOf(rail, quote), base)), quote)).rejects.toMatchObject({
+      message: 'The facilitator rejected the payment: refused_400', reason: 'refused_400',
+    });
+  });
+
+  it.each([400, 404, 409])('answers a /settle refused with a plain %i as a failed settlement, refused_<status>: the status, never a reason it didn\'t give', async status => {
+    const { rail, authorization } = await authorized();
+    facilitator.handle('/settle', () => ({ status, body: { errorType: 'invalid_request', errorMessage: 'refused' } }));
+
+    await expect(rail.finalize(authorization)).rejects.toMatchObject({ code: 'settlement_failed', outcome: 'failed', reason: `refused_${status}` });
   });
 
   it.each([
