@@ -109,3 +109,12 @@ export class CreditReferenceConflictError extends AnyfareError {
     super('This reference was already used for another credit: another account or amount');
   }
 }
+
+/** A hold reused a payment's ID for another buyer, key or amount: payment IDs are idempotency keys. */
+export class HoldReferenceConflictError extends AnyfareError {
+  readonly code = 'idempotency_conflict';
+
+  constructor() {
+    super('This payment was already held for another buyer, key or amount');
+  }
+}

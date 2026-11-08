@@ -1,12 +1,12 @@
-import { fixtureTime } from '@anyfare/testing';
+import { fixtureDay, fixtureTime } from '@anyfare/testing';
 
 import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { parseUsd, Secret } from '@anyfare/common';
 import {
-  CreditReferenceConflictError, hashApiKey, InvalidPaymentStatusChangeError, PaymentFinalizedError, type HoldInput, type NewPayment,
-  type PaymentStatus,
+  CreditReferenceConflictError, hashApiKey, HoldReferenceConflictError, InvalidPaymentStatusChangeError, PaymentFinalizedError, utcDay,
+  type HoldInput, type NewPayment, type PaymentStatus,
 } from '@anyfare/core';
 import { createFakeClock, createFakeIdGenerator, createTestDatabase, type FakeClock, type TestDatabase } from '@anyfare/testing';
 
@@ -21,6 +21,7 @@ let counter = 0;
 const ids = createFakeIdGenerator();
 // The tests run at noon UTC on the 9th; the expired holds go back to the morning of the 8th
 const noon = fixtureTime(0, 9, 12, 0, 0, 0);
+const today = fixtureDay(0, 9);
 
 beforeAll(async () => {
   database = await createTestDatabase();
@@ -69,7 +70,12 @@ interface Buyer {
   readonly keyId: string;
 }
 
-const newBuyer = async (credit: string, limits: { dailyBudget?: string; allowance?: string } = {}): Promise<Buyer> => {
+interface Limits {
+  readonly dailyBudget?: string;
+  readonly allowance?: string;
+}
+
+const newBuyer = async (credit: string, limits: Limits = {}): Promise<Buyer> => {
   const accountId = await newAccount();
   const keyId = await newKey(accountId, {
     ...(limits.dailyBudget === undefined ? {} : { dailyBudget: usd(limits.dailyBudget) }),
@@ -120,6 +126,22 @@ const onChainPayment = (amount: bigint, changes: Partial<NewPayment> = {}): NewP
     ...changes,
   };
 };
+
+const holdInput = (buyer: Buyer, amount: bigint, limits: Limits = {}): HoldInput => ({
+  payment: payment(buyer, amount),
+  dailyBudget: usd(limits.dailyBudget ?? '5'),
+  allowance: limits.allowance === undefined ? undefined : usd(limits.allowance),
+});
+
+const hold = (buyer: Buyer, amount: bigint, limits: Limits = {}) => ledger.hold(holdInput(buyer, amount, limits));
+
+// The entries a payment moved, by operation, smallest amount first
+const movements = async (reference: string) => (await database.db.execute<{ operation: string; ledger_account_id: string; amount: string }>(sql`
+  select t.operation, e.ledger_account_id, e.amount::text as amount
+  from ledger_transactions t join ledger_entries e on e.transaction_id = t.id
+  where t.reference = ${reference}
+  order by t.created_at, t.operation, e.amount
+`)).rows;
 
 // The ledger transactions with this reference, by operation
 const transactionsFor = async (reference: string) => (await database.db.execute<{ operation: string }>(sql`
@@ -329,8 +351,8 @@ describe('amounts', () => {
     const columns = (await database.db.execute<{ column: string; data_type: string }>(sql`
       select table_name || '.' || column_name as column, data_type from information_schema.columns
       where (table_name, column_name) in (
-        ('ledger_entries', 'amount'), ('balances', 'balance'), ('payments', 'amount'), ('payments', 'fee'),
-        ('api_keys', 'allowance'), ('api_keys', 'daily_budget'), ('api_keys', 'max_price')
+        ('ledger_entries', 'amount'), ('balances', 'balance'), ('payments', 'amount'), ('payments', 'fee'), ('key_daily_spend', 'spent'),
+        ('key_total_spend', 'spent'), ('api_keys', 'allowance'), ('api_keys', 'daily_budget'), ('api_keys', 'max_price')
       )
     `)).rows;
     const accountId = await newAccount();
@@ -338,7 +360,7 @@ describe('amounts', () => {
 
     await ledger.credit({ accountId, amount, reference: `large-${accountId}` });
 
-    expect(columns).toHaveLength(7);
+    expect(columns).toHaveLength(9);
     expect(columns.filter(column => column.data_type !== 'bigint')).toEqual([]);
     expect(await ledger.balance(accountId)).toEqual({ available: amount, held: 0n });
   });
@@ -472,5 +494,254 @@ describe('settling payments', () => {
     expect((await payments.listSettling({ limit: 100 })).map(item => item.payment.id)).toEqual(settling.slice(1));
     const { rows } = await database.db.execute<{ request: unknown }>(sql`select settlement_request as request from payments where id = ${settling[0]!}`);
     expect(rows[0]?.request).toBeNull();
+  });
+});
+
+describe('holds', () => {
+  it('moves the price from available to held, counts it on the key, and records the payment as held, in one transaction', async () => {
+    const buyer = await newBuyer('1');
+
+    const result = await hold(buyer, usd('0.25'));
+
+    expect(result).toMatchObject({
+      ok: true,
+      payment: { status: 'held', rail: 'credits', amount: usd('0.25'), keyId: buyer.keyId, buyerAccountId: buyer.accountId, createdAt: clock.now() },
+    });
+    const paymentId = result.ok ? result.payment.id : '';
+    expect(await createPaymentRepository({ db: database.db, clock }).find(paymentId)).toEqual(result.ok && result.payment);
+    expect(await movements(paymentId)).toEqual([
+      { operation: 'hold', ledger_account_id: ledgerAccountIds.available(buyer.accountId), amount: '-250000' },
+      { operation: 'hold', ledger_account_id: ledgerAccountIds.held(buyer.accountId), amount: '250000' },
+    ]);
+    expect(await ledger.balance(buyer.accountId)).toEqual({ available: usd('0.75'), held: usd('0.25') });
+    expect(await ledger.keySpend([buyer.keyId], today)).toEqual(new Map([[buyer.keyId, { today: usd('0.25'), total: usd('0.25') }]]));
+  });
+
+  it.each([
+    ['the balance', '0.10', {}, 'insufficient_balance'],
+    ['the daily budget', '10', { dailyBudget: '0.10' }, 'key_budget_exceeded'],
+    ['the allowance', '10', { allowance: '0.10' }, 'key_allowance_exceeded'],
+  ] as const)('refuses a hold over %s, and leaves no movement, no spend and no payment row', async (_case, credit, limits: Limits, refusal) => {
+    const buyer = await newBuyer(credit, limits);
+    const input = holdInput(buyer, usd('0.25'), limits);
+
+    const result = await ledger.hold(input);
+
+    expect(result).toEqual({ ok: false, refusal });
+    expect(await ledger.balance(buyer.accountId)).toEqual({ available: usd(credit), held: 0n });
+    expect(await ledger.keySpend([buyer.keyId], today)).toEqual(new Map());
+    expect(await transactionsFor(input.payment.id)).toEqual([]);
+    expect(await movements(input.payment.id)).toEqual([]);
+    expect(await createPaymentRepository({ db: database.db, clock }).find(input.payment.id)).toBeUndefined();
+  });
+
+  it('refuses an account that was never credited as short of funds', async () => {
+    const buyer = await newBuyer('0');
+
+    expect(await hold(buyer, 1n)).toEqual({ ok: false, refusal: 'insufficient_balance' });
+    expect(await ledger.keySpend([buyer.keyId], today)).toEqual(new Map());
+  });
+
+  it('returns the first hold when the same payment is held again', async () => {
+    const buyer = await newBuyer('1');
+    const input = holdInput(buyer, usd('0.25'));
+
+    const first = await ledger.hold(input);
+    clock.advance(1_000);
+    const again = await ledger.hold(input);
+
+    expect(again).toEqual(first);
+    expect(await ledger.balance(buyer.accountId)).toEqual({ available: usd('0.75'), held: usd('0.25') });
+    expect(await ledger.keySpend([buyer.keyId], today)).toEqual(new Map([[buyer.keyId, { today: usd('0.25'), total: usd('0.25') }]]));
+  });
+
+  it('holds a payment once when 10 holds of it run concurrently, and returns the same payment to each', async () => {
+    const buyer = await newBuyer('1');
+    const input = holdInput(buyer, usd('0.25'));
+
+    const results = await Promise.all(Array.from({ length: 10 }, () => ledger.hold(input)));
+
+    expect(results[0]).toMatchObject({ ok: true, payment: { id: input.payment.id, status: 'held' } });
+    expect(results).toEqual(Array.from({ length: 10 }, () => results[0]));
+    expect(await ledger.balance(buyer.accountId)).toEqual({ available: usd('0.75'), held: usd('0.25') });
+    expect(await ledger.keySpend([buyer.keyId], today)).toEqual(new Map([[buyer.keyId, { today: usd('0.25'), total: usd('0.25') }]]));
+    expect(await transactionsFor(input.payment.id)).toEqual(['hold']);
+  });
+
+  it('refuses a replay of a hold with another buyer, key or amount, and moves nothing', async () => {
+    const [buyer, other] = [await newBuyer('1'), await newBuyer('1')];
+    const otherKey = await newKey(buyer.accountId);
+    const input = holdInput(buyer, usd('0.25'));
+    const first = await ledger.hold(input);
+    const replays: readonly HoldInput[] = [
+      { ...input, payment: { ...input.payment, amount: usd('0.5') } },
+      { ...input, payment: { ...input.payment, keyId: otherKey } },
+      { ...input, payment: { ...input.payment, buyerAccountId: other.accountId, keyId: other.keyId } },
+    ];
+
+    for (const replay of replays)
+      expect(await thrown(ledger.hold(replay))).toBeInstanceOf(HoldReferenceConflictError);
+
+    expect(await createPaymentRepository({ db: database.db, clock }).find(input.payment.id)).toEqual(first.ok && first.payment);
+    expect(await ledger.balance(buyer.accountId)).toEqual({ available: usd('0.75'), held: usd('0.25') });
+    expect(await ledger.balance(other.accountId)).toEqual({ available: usd('1'), held: 0n });
+    expect(await ledger.keySpend([buyer.keyId, otherKey, other.keyId], today))
+      .toEqual(new Map([[buyer.keyId, { today: usd('0.25'), total: usd('0.25') }]]));
+    expect(await movements(input.payment.id)).toHaveLength(2);
+  });
+
+  it('starts each key\'s daily budget again at midnight UTC', async () => {
+    const buyer = await newBuyer('10', { dailyBudget: '0.20' });
+    clock.set(fixtureTime(0, 9, 23, 59, 59, 0));
+    const late = await hold(buyer, usd('0.20'), { dailyBudget: '0.20' });
+    const over = await hold(buyer, usd('0.10'), { dailyBudget: '0.20' });
+
+    clock.set(fixtureTime(0, 10, 0, 0, 0, 0));
+    const nextDay = await hold(buyer, usd('0.20'), { dailyBudget: '0.20' });
+    // A release gives the spend back to the day it was counted on
+    await ledger.release({ paymentId: late.ok ? late.payment.id : '' });
+
+    expect([late.ok, over.ok, nextDay.ok]).toEqual([true, false, true]);
+    expect(over).toEqual({ ok: false, refusal: 'key_budget_exceeded' });
+    expect(await ledger.keySpend([buyer.keyId], fixtureDay(0, 9))).toEqual(new Map([[buyer.keyId, { today: 0n, total: usd('0.20') }]]));
+    expect(await ledger.keySpend([buyer.keyId], fixtureDay(0, 10))).toEqual(new Map([[buyer.keyId, { today: usd('0.20'), total: usd('0.20') }]]));
+  });
+
+  it('counts a hold just before midnight UTC on the day of the payment\'s createdAt, so a release after midnight gives it back cleanly', async () => {
+    const buyer = await newBuyer('10', { dailyBudget: '1' });
+    // Every read moves the clock by 1 ms: a hold that read it twice would straddle midnight
+    let now = new Date(fixtureTime(0, 9, 23, 59, 59, 999)).getTime();
+    const ticking = createLedger({ db: database.db, clock: { now: () => new Date(now++) }, ids });
+    const late = await ticking.hold({ payment: payment(buyer, usd('0.5')), dailyBudget: usd('1'), allowance: undefined });
+    // The next day's spend is smaller than the late hold
+    clock.set(fixtureTime(0, 10, 0, 0, 1, 0));
+    await hold(buyer, usd('0.1'), { dailyBudget: '1' });
+
+    const released = await ledger.release({ paymentId: late.ok ? late.payment.id : '' });
+
+    expect(late.ok && late.payment.createdAt).toEqual(new Date(fixtureTime(0, 9, 23, 59, 59, 999)));
+    expect(released.payment.status).toBe('released');
+    expect(await ledger.keySpend([buyer.keyId], fixtureDay(0, 9))).toEqual(new Map([[buyer.keyId, { today: 0n, total: usd('0.1') }]]));
+    expect(await ledger.keySpend([buyer.keyId], fixtureDay(0, 10))).toEqual(new Map([[buyer.keyId, { today: usd('0.1'), total: usd('0.1') }]]));
+  });
+
+  it.each([
+    ['the balance', '0.05', {}, 'insufficient_balance'],
+    ['the daily budget', '10', { dailyBudget: '0.05' }, 'key_budget_exceeded'],
+    ['the allowance', '10', { allowance: '0.05' }, 'key_allowance_exceeded'],
+  ] as const)('lets exactly 5 of 20 concurrent $0.01 holds through %s of $0.05, with no deadlock', async (_case, credit, limits: Limits, refusal) => {
+    const buyer = await newBuyer(credit, limits);
+
+    const results = await Promise.all(Array.from({ length: 20 }, () => hold(buyer, usd('0.01'), limits)));
+
+    expect(results.filter(result => result.ok)).toHaveLength(5);
+    expect(results.filter(result => !result.ok)).toEqual(Array.from({ length: 15 }, () => ({ ok: false, refusal })));
+    const { available, held } = await ledger.balance(buyer.accountId);
+    expect(held).toBe(usd('0.05'));
+    expect(available).toBe(usd(credit) - usd('0.05'));
+    expect(available >= 0n).toBe(true);
+    expect(await ledger.keySpend([buyer.keyId], today)).toEqual(new Map([[buyer.keyId, { today: usd('0.05'), total: usd('0.05') }]]));
+    expect(await negativeBalances()).toEqual([]);
+    expect(await unbalancedTransactions()).toEqual([]);
+  });
+});
+
+describe('releases', () => {
+  it('gives a held payment back once, with the key\'s spend, when a release runs twice or concurrently', async () => {
+    const buyer = await newBuyer('1');
+    const held = await hold(buyer, usd('0.5'));
+    const paymentId = held.ok ? held.payment.id : '';
+
+    const [first, second] = await Promise.all([ledger.release({ paymentId }), ledger.release({ paymentId })]);
+    const again = await ledger.release({ paymentId });
+
+    expect([first.payment.status, second.payment.status, again.payment.status]).toEqual(['released', 'released', 'released']);
+    expect(await ledger.balance(buyer.accountId)).toEqual({ available: usd('1'), held: 0n });
+    expect(await ledger.keySpend([buyer.keyId], today)).toEqual(new Map([[buyer.keyId, { today: 0n, total: 0n }]]));
+    expect((await movements(paymentId)).map(row => row.operation)).toEqual(['hold', 'hold', 'release', 'release']);
+    expect(await unbalancedTransactions()).toEqual([]);
+  });
+
+  it('refuses to release a payment that isn\'t held', async () => {
+    const payments = createPaymentRepository({ db: database.db, clock });
+    const captured = await payments.create({ ...payment(await newBuyer('0'), 1n), status: 'held' });
+    await payments.changeStatus({ paymentId: captured.id, to: 'captured' });
+    const verified = await payments.create({ ...onChainPayment(1n), status: 'verified' });
+
+    for (const paymentId of [captured.id, verified.id, 'pay_missing'])
+      expect(await thrown(ledger.release({ paymentId }))).toBeInstanceOf(InvalidPaymentStatusChangeError);
+    expect((await payments.find(captured.id))?.status).toBe('captured');
+    expect((await payments.find(verified.id))?.status).toBe('verified');
+  });
+
+  it('refuses a credits payment created as held without a hold, and moves nothing', async () => {
+    const buyer = await newBuyer('1');
+    const payments = createPaymentRepository({ db: database.db, clock });
+    const created = await payments.create({ ...payment(buyer, usd('0.25')), status: 'held' });
+
+    const error = await thrown(ledger.release({ paymentId: created.id }));
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/has no hold/);
+    expect((await payments.find(created.id))?.status).toBe('held');
+    expect(await ledger.balance(buyer.accountId)).toEqual({ available: usd('1'), held: 0n });
+    expect(await ledger.keySpend([buyer.keyId], today)).toEqual(new Map());
+    expect(await transactionsFor(created.id)).toEqual([]);
+  });
+
+  it('throws for a payment released outside the ledger, and leaves the balances as they were', async () => {
+    const buyer = await newBuyer('1');
+    const held = await hold(buyer, usd('0.25'));
+    const paymentId = held.ok ? held.payment.id : '';
+    await createPaymentRepository({ db: database.db, clock }).changeStatus({ paymentId, to: 'released' });
+
+    const error = await thrown(ledger.release({ paymentId }));
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/released outside the ledger/);
+    expect(await ledger.balance(buyer.accountId)).toEqual({ available: usd('0.75'), held: usd('0.25') });
+    expect(await ledger.keySpend([buyer.keyId], today)).toEqual(new Map([[buyer.keyId, { today: usd('0.25'), total: usd('0.25') }]]));
+    expect(await transactionsFor(paymentId)).toEqual(['hold']);
+  });
+});
+
+describe('concurrent holds, releases and credits', () => {
+  it('keeps every balance equal to its entries, none below zero, and each key\'s spend equal to its open holds, over two UTC days', async () => {
+    const limits: Limits = { dailyBudget: '0.08', allowance: '0.15' };
+    const buyers = [await newBuyer('0.10', limits), await newBuyer('0.10', limits), await newBuyer('0.10', limits)];
+    const days = [fixtureDay(0, 9), fixtureDay(0, 10)];
+    // A ledger a second before midnight UTC, and one a second after
+    const ledgers = [fixtureTime(0, 9, 23, 59, 59, 0), fixtureTime(0, 10, 0, 0, 1, 0)]
+      .map(moment => createLedger({ db: database.db, clock: { now: () => new Date(moment) }, ids }));
+    const ledgerOf = (round: number) => ledgers[round % 2]!;
+
+    const rounds = buyers.flatMap(buyer => Array.from({ length: 20 }, async (_, round) => {
+      const held = await ledgerOf(round).hold(holdInput(buyer, usd('0.01'), limits));
+      // Every third hold is released, on the other day
+      if (held.ok && round % 3 === 0)
+        await ledgerOf(round + 1).release({ paymentId: held.payment.id });
+    }));
+    const credits = buyers.flatMap(buyer => Array.from({ length: 5 }, (_, index) =>
+      ledgerOf(index).credit({ accountId: buyer.accountId, amount: usd('0.02'), reference: `mixed-${buyer.accountId}-${index}` })));
+    await Promise.all([...rounds, ...credits]);
+
+    const drifted = (await database.db.execute(sql`
+      select b.ledger_account_id, b.balance::text as balance, coalesce(sum(e.amount), 0)::text as entries
+      from balances b left join ledger_entries e on e.ledger_account_id = b.ledger_account_id
+      group by b.ledger_account_id, b.balance
+      having b.balance <> coalesce(sum(e.amount), 0)
+    `)).rows;
+    expect(drifted).toEqual([]);
+    expect(await negativeBalances()).toEqual([]);
+    expect(await unbalancedTransactions()).toEqual([]);
+    const payments = createPaymentRepository({ db: database.db, clock });
+    for (const buyer of buyers) {
+      const open = (await payments.listForBuyer({ buyerAccountId: buyer.accountId, limit: 100 })).payments.filter(item => item.status === 'held');
+      const openOn = (day: string) => open.filter(item => utcDay(item.createdAt) === day).reduce((sum, item) => sum + item.amount, 0n);
+      const total = days.reduce((sum, day) => sum + openOn(day), 0n);
+      for (const day of days)
+        expect((await ledger.keySpend([buyer.keyId], day)).get(buyer.keyId) ?? { today: 0n, total: 0n }).toEqual({ today: openOn(day), total });
+      expect(await ledger.balance(buyer.accountId)).toEqual({ available: usd('0.20') - total, held: total });
+    }
   });
 });

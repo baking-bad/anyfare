@@ -1,5 +1,7 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, check, customType, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import {
+  bigint, boolean, check, customType, date, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex,
+} from 'drizzle-orm/pg-core';
 
 import type { BillingDecision, JsonObject, PaymentStatus, RailName } from '@anyfare/core';
 
@@ -109,4 +111,22 @@ export const payments = pgTable('payments', {
   check('payments_rail_status_check', sql`(${table.rail} = 'credits') = (${table.status} in ('held', 'captured', 'released'))`),
   // A credits payment is paid from a buyer's balance, with one of the buyer's payment keys
   check('payments_credits_buyer_check', sql`${table.rail} <> 'credits' or (${table.buyerAccountId} is not null and ${table.keyId} is not null)`),
+]);
+
+/** A key's spend per UTC day. A hold adds, a release gives back. */
+export const keyDailySpend = pgTable('key_daily_spend', {
+  keyId: text('key_id').notNull().references(() => apiKeys.id),
+  day: date('day', { mode: 'string' }).notNull(),
+  spent: bigint('spent', { mode: 'bigint' }).notNull(),
+}, table => [
+  primaryKey({ name: 'key_daily_spend_pkey', columns: [table.keyId, table.day] }),
+  check('key_daily_spend_spent_check', sql`${table.spent} >= 0`),
+]);
+
+/** A key's spend over its life, for its allowance. A hold adds, a release gives back. */
+export const keyTotalSpend = pgTable('key_total_spend', {
+  keyId: text('key_id').primaryKey().references(() => apiKeys.id),
+  spent: bigint('spent', { mode: 'bigint' }).notNull(),
+}, table => [
+  check('key_total_spend_spent_check', sql`${table.spent} >= 0`),
 ]);
