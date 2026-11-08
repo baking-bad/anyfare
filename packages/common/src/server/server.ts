@@ -13,6 +13,9 @@ import { createRequestIdGenerator, requestIdHeader } from './requestId.js';
 import { recordErrorCode, RequestLogController } from './requestLog.js';
 
 const defaultBodyLimit = 1_048_576;
+// How long `close` lets requests in flight finish before it closes their connections: well under the
+// 30 s an app's shutdown has in all, so the app's pools close too
+const defaultCloseGraceMs = 20_000;
 
 // Fastify's own Ajv options, which suit a query string: `?limit=5` becomes the number 5
 const lenientAjvOptions = { coerceTypes: 'array', removeAdditional: true, useDefaults: true, allErrors: false } as const;
@@ -38,6 +41,8 @@ interface BaseOptions {
   // The proxies in front, such as Traefik, whose X-Forwarded-For `request.ip` follows: addresses and
   // CIDR ranges, comma-separated. Default: none, so `request.ip` is the peer address.
   readonly trustProxy?: string;
+  // How long `close` lets requests in flight finish before it closes their connections. Default: 20 s.
+  readonly closeGraceMs?: number;
 }
 
 interface FastifyOptions extends BaseOptions {
@@ -68,11 +73,11 @@ export interface Server {
   readonly metrics: MetricsServer;
   /** Starts both listeners and returns their ports. Port 0 picks a free one. */
   listen(options: ListenOptions): Promise<ServerAddresses>;
-  /** Stops accepting, waits for in-flight requests, then closes the metrics listener. */
+  /** Stops accepting, waits for in-flight requests (`closeGraceMs` at most), then closes the metrics listener. */
   close(): Promise<void>;
 }
 
-export type MetricsServerOptions = Pick<ServerOptions, 'logger' | 'readinessChecks' | 'readinessTimeoutMs'> & {
+export type MetricsServerOptions = Pick<ServerOptions, 'logger' | 'readinessChecks' | 'readinessTimeoutMs' | 'closeGraceMs'> & {
   // Also serve `/_/health` and `/_/ready`, for an app with no public listener. Default: false.
   readonly health?: boolean;
 };
@@ -86,12 +91,47 @@ export interface MetricsServer {
   close(): Promise<void>;
 }
 
+/**
+ * How a listener closes: it takes no new connection, and closes its idle keep-alive connections at
+ * once, as Node's `close` does. A connection whose request is in flight closes once its response is
+ * sent, which says `Connection: close`: left open, it would idle for the keep-alive timeout, 72 s,
+ * and `close` would wait on it. A connection still open `graceMs` after `close` began is closed then.
+ */
+const closeConnectionsOnClose = (app: FastifyInstance, graceMs: number): void => {
+  let closing = false;
+  let grace: NodeJS.Timeout | undefined;
+  app.addHook('preClose', async () => {
+    closing = true;
+    grace = setTimeout(() => {
+      app.server.getConnections((_error, count) => {
+        if (count > 0)
+          app.log.warn({ connections: count, graceMs }, 'Closed the connections still open at the end of the shutdown grace');
+      });
+      app.server.closeAllConnections();
+    }, graceMs);
+    grace.unref();
+  });
+  app.addHook('onSend', async (_request, reply, payload) => {
+    if (closing)
+      reply.header('connection', 'close');
+
+    return payload;
+  });
+  // A response whose headers went out before `close` began
+  app.addHook('onResponse', async () => {
+    if (closing)
+      app.server.closeIdleConnections();
+  });
+  app.addHook('onClose', async () => clearTimeout(grace));
+};
+
 const createFastify = ({
   logger,
   errorStatuses = {},
   bodyLimit = defaultBodyLimit,
   requestIds = randomIdGenerator,
   trustProxy,
+  closeGraceMs = defaultCloseGraceMs,
   requestLogging,
 }: FastifyOptions): FastifyInstance => {
   const app = fastify({
@@ -108,6 +148,7 @@ const createFastify = ({
     genReqId: createRequestIdGenerator(requestIds),
   });
   setValidators(app);
+  closeConnectionsOnClose(app, closeGraceMs);
   app.setErrorHandler(createErrorHandler(errorStatuses));
   app.setNotFoundHandler(async (request, reply) => {
     recordErrorCode(request, notFoundResponse.body.error.code);
@@ -128,9 +169,10 @@ export const createMetricsServer = ({
   logger,
   readinessChecks = [],
   readinessTimeoutMs,
+  closeGraceMs,
   health = false,
 }: MetricsServerOptions): MetricsServer => {
-  const app = createFastify({ logger, requestLogging: false });
+  const app = createFastify({ logger, requestLogging: false, ...closeGraceMs === undefined ? {} : { closeGraceMs } });
   const registry = createMetricsRegistry();
   registerMetricsRoute(app, registry);
   if (health)
@@ -151,11 +193,12 @@ export const createMetricsServer = ({
  * - the error envelope, with statuses from the app's table, and `404 not_found` for unknown routes;
  * - no automatic HEAD routes;
  * - `/_/health` and `/_/ready`;
- * - request count and latency on the metrics listener.
+ * - request count and latency on the metrics listener;
+ * - a `close` that waits for requests in flight, `closeGraceMs` at most, never for idle connections.
  */
 export const createServer = ({ readinessChecks = [], readinessTimeoutMs, ...options }: ServerOptions): Server => {
   const app = createFastify({ ...options, requestLogging: true });
-  const metrics = createMetricsServer({ logger: options.logger });
+  const metrics = createMetricsServer({ logger: options.logger, ...options.closeGraceMs === undefined ? {} : { closeGraceMs: options.closeGraceMs } });
 
   app.addHook('onRequest', async (request, reply) => {
     reply.header(requestIdHeader, request.id);

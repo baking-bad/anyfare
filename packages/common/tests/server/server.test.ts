@@ -1,4 +1,4 @@
-import { request as httpRequest } from 'node:http';
+import { Agent, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import { createServer as createNetServer, type AddressInfo } from 'node:net';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -42,6 +42,24 @@ const get = (port: number, path: string) => new Promise<{ status: number; body: 
   request.on('error', reject);
   request.end();
 });
+
+// A GET through a keep-alive agent, which keeps the connection open after the response, as our clients do
+const keptAlive = (agent: Agent, port: number, path: string) => new Promise<{ status: number; headers: IncomingHttpHeaders; body: string }>((resolve, reject) => {
+  const request = httpRequest({ host: '127.0.0.1', port, path, agent }, response => {
+    let body = '';
+    response.setEncoding('utf8');
+    response.on('data', (chunk: string) => {
+      body += chunk;
+    });
+    response.on('end', () => resolve({ status: response.statusCode ?? 0, headers: response.headers, body }));
+  });
+  request.on('error', reject);
+  request.end();
+});
+
+// The open connections of a keep-alive agent, idle or busy
+const socketsOf = (agent: Agent): number =>
+  [...Object.values(agent.sockets), ...Object.values(agent.freeSockets)].reduce((count, sockets) => count + (sockets?.length ?? 0), 0);
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => server.close()));
@@ -445,5 +463,91 @@ describe('graceful shutdown', () => {
     await stopping;
     expect(exit).toHaveBeenCalledWith(0);
     await expect(get(metricsPort, '/metrics')).rejects.toMatchObject({ code: 'ECONNREFUSED' });
+  });
+
+  it('closes idle keep-alive connections at once, on both listeners', async () => {
+    const server = buildServer();
+    const { port, metricsPort } = await listen(server);
+    const agent = new Agent({ keepAlive: true });
+    try {
+      expect((await keptAlive(agent, port, '/_/health')).headers.connection).toBe('keep-alive');
+      expect((await keptAlive(agent, metricsPort, '/metrics')).status).toBe(200);
+      expect(socketsOf(agent)).toBe(2);
+      const started = performance.now();
+
+      await server.close();
+
+      expect(performance.now() - started).toBeLessThan(1_000);
+      await vi.waitFor(() => expect(socketsOf(agent)).toBe(0));
+    }
+    finally {
+      agent.destroy();
+    }
+  });
+
+  it('closes a keep-alive connection once its in-flight request is answered, instead of waiting out the keep-alive timeout', async () => {
+    const server = buildServer();
+    let release: () => void = () => undefined;
+    const entered = vi.fn();
+    server.app.get('/slow', async () => {
+      entered();
+      await new Promise<void>(resolve => {
+        release = resolve;
+      });
+
+      return { finished: true };
+    });
+    const { port } = await listen(server);
+    const agent = new Agent({ keepAlive: true });
+    try {
+      const inFlight = keptAlive(agent, port, '/slow');
+      await vi.waitFor(() => expect(entered).toHaveBeenCalled());
+      let closed = false;
+      const closing = server.close().then(() => {
+        closed = true;
+      });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(closed).toBe(false);
+
+      release();
+      const started = performance.now();
+
+      expect(await inFlight).toMatchObject({ status: 200, headers: { connection: 'close' }, body: '{"finished":true}' });
+      await closing;
+      expect(performance.now() - started).toBeLessThan(1_000);
+      await vi.waitFor(() => expect(socketsOf(agent)).toBe(0));
+    }
+    finally {
+      release();
+      agent.destroy();
+    }
+  });
+
+  it('closes the connections still open at the end of the grace, and says so', async () => {
+    const { logger, lines } = captureLogs();
+    const server = buildServer({ logger, closeGraceMs: 200 });
+    const entered = vi.fn();
+    server.app.get('/stuck', async () => {
+      entered();
+      await new Promise(() => undefined);
+    });
+    const { port } = await listen(server);
+    const agent = new Agent({ keepAlive: true });
+    try {
+      const stuck = keptAlive(agent, port, '/stuck');
+      await vi.waitFor(() => expect(entered).toHaveBeenCalled());
+      const started = performance.now();
+
+      await server.close();
+
+      expect(performance.now() - started).toBeGreaterThanOrEqual(190);
+      expect(performance.now() - started).toBeLessThan(1_000);
+      await expect(stuck).rejects.toMatchObject({ code: 'ECONNRESET' });
+      expect(lines.find(line => line['msg'] === 'Closed the connections still open at the end of the shutdown grace'))
+        .toMatchObject({ level: 40, connections: 1, graceMs: 200 });
+    }
+    finally {
+      agent.destroy();
+    }
   });
 });

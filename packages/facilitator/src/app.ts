@@ -432,6 +432,8 @@ export const createApp = ({
     logger,
     errorStatuses,
     bodyLimit: maxBodyBytes,
+    // At close, every settle in flight answers by its deadline: its connection gets that long
+    closeGraceMs: answerMs,
     readinessChecks: [
       { name: 'near-rpc', check: signal => checkRpc(rpcUrl, signal) },
       { name: 'near-relayer', check: checkRelayer },
@@ -747,7 +749,8 @@ export const createApp = ({
     ...server,
     /**
      * Takes no more settles, cancels those not signed yet, gives those that have signed their first
-     * send (`sendMs` at most), then stops the relayer's polls, and waits for every request's answer.
+     * send (`sendMs` at most), then stops the relayer's polls, and waits for every request's answer,
+     * a settle's answer deadline at most.
      */
     close: async () => {
       closing = true;
