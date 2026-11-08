@@ -4,8 +4,8 @@ import { parseEnv } from 'node:util';
 
 import { configDefaults, defineConfig } from 'vitest/config';
 
-const packageNames = ['common', 'core', 'db', 'payments', 'testing', 'api', 'signer', 'proxy'];
-const appNames = ['api', 'signer', 'proxy'];
+const packageNames = ['common', 'core', 'db', 'payments', 'testing', 'api', 'signer', 'proxy', 'workers'];
+const appNames = ['api', 'signer', 'proxy', 'workers'];
 
 const alias = Object.fromEntries(packageNames.map(name => [
   `@anyfare/${name}`,

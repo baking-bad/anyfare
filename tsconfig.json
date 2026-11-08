@@ -24,6 +24,9 @@
     },
     {
       "path": "packages/proxy"
+    },
+    {
+      "path": "packages/workers"
     }
   ]
 }
