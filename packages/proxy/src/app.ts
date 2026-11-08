@@ -12,7 +12,7 @@ import {
   createCreditsRail, createMppRail, createX402Rail, detectMpp, detectX402, type ClaimStore, type MppSetup, type PaymentRail, type X402Setup,
 } from '@anyfare/payments';
 
-import { errorStatuses } from './errors.js';
+import { errorStatuses, RetryLaterError } from './errors.js';
 import { createProxyMetrics } from './metrics.js';
 import { createKeyCache, type KeyCacheSettings } from './payments/keyCache.js';
 import { createProxyLimits } from './payments/limits.js';
@@ -108,9 +108,9 @@ const registerResponseHeaders = (app: FastifyInstance): void => {
 
     return undefined;
   });
-  // Headers that belong to an error: Retry-After on 429, the scheme on 401
+  // Headers that belong to an error: Retry-After on 429 and on a 503 worth retrying soon, the scheme on 401
   app.addHook('onError', async (_request, reply, error) => {
-    if (error instanceof RateLimitedError)
+    if (error instanceof RateLimitedError || error instanceof RetryLaterError)
       reply.header('retry-after', String(error.retryAfterSeconds));
     else if (error instanceof AnyfareError && keyErrorCodes.has(error.code))
       reply.header('www-authenticate', 'Bearer');

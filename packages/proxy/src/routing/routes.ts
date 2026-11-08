@@ -14,7 +14,7 @@ import {
   targetReceipt, UnsupportedPaymentError, x402Refusals, type ChosenOption, type RoutingTarget, type TargetChallenge,
 } from '@anyfare/payments';
 
-import { ResponseTooLargeError, UpstreamUnavailableError } from '../errors.js';
+import { NearPaymentInFlightError, ResponseTooLargeError, UpstreamUnavailableError } from '../errors.js';
 import type { ProxyMetrics } from '../metrics.js';
 import type { PaidCall, PaymentStep } from '../payments/step.js';
 import { routedRequestHeaders, routedResponseHeaders } from './headers.js';
@@ -411,6 +411,22 @@ export const createRouting = ({
       await abortBuyer(undefined);
       throw new UpstreamUnavailableError();
     }
+    // On NEAR the Signer pays one payment at a time: from the sign on, the hot wallet's lease holds this
+    // payment's ID until it is released, or expires minutes later. Once the Signer was asked to sign, it
+    // is released exactly once, whatever the Signer answered: when the target's answer arrives, since an
+    // x402 target settles before it answers, or when the payment is dropped, since the Signer may have
+    // signed after we gave up. A release that holds nothing does nothing. It's fired, never waited for:
+    // a failure is the client's warn line, and the lease expires on its own.
+    const holdsLease = quoted.protocol === 'x402' && quoted.network.startsWith('near:');
+    let released = false;
+    const releaseOnce = (): void => {
+      if (!holdsLease || released)
+        return;
+      released = true;
+      void signer.release(paymentId, { requestId: request.id, log }).catch((error: unknown) => {
+        log.warn({ paymentId, error }, 'The Signer didn\'t release the NEAR payment\'s lease: it expires on its own');
+      });
+    };
     let signed;
     try {
       const option = quoted.protocol === 'x402'
@@ -419,15 +435,23 @@ export const createRouting = ({
       signed = await signer.sign({ requestId: request.id, quoteId: paymentId, ...option, url: target.url, quotedPrice: quoted.price });
     }
     catch (error) {
+      releaseOnce();
       await abortBuyer(undefined);
       if (error instanceof SignerUnavailableError) {
-        metrics.routing('signer_refused');
         // The Signer's refusal reason from 422 signing_refused, or why it couldn't be reached
         const { failure } = error;
-        log.warn({
+        const fields = {
           ...leg, signer: failure, ...failure?.code === undefined ? {} : { code: failure.code }, ...failure?.reason === undefined ? {} : { reason: failure.reason },
           ...error.cause === undefined ? {} : { error: error.cause },
-        }, 'The Signer didn\'t sign a routed payment');
+        };
+        // Another NEAR payment is in flight: expected under load, and the buyer may try again in a moment
+        if (failure?.status === 409 && failure.code === 'payer_busy') {
+          metrics.routing('signer_busy');
+          log.info(fields, 'The Signer is paying another NEAR payment: nothing was paid, and the buyer may retry');
+          throw new NearPaymentInFlightError();
+        }
+        metrics.routing('signer_refused');
+        log.warn(fields, 'The Signer didn\'t sign a routed payment');
         throw new UpstreamUnavailableError();
       }
       throw error;
@@ -442,6 +466,7 @@ export const createRouting = ({
     }
     catch (error) {
       // Nothing was sent: the signed payment is dropped, and the buyer pays nothing
+      releaseOnce();
       await abortBuyer(undefined);
       throw error;
     }
@@ -453,6 +478,7 @@ export const createRouting = ({
       ? config.timeouts.requestMs
       : Math.min(config.timeouts.requestMs, deadlineMs - clock.now().getTime() - settleMarginMs);
     if (timeoutMs <= 0) {
+      releaseOnce();
       log.warn({ ...signedLeg, targetLeg: 'failed', reason: 'payment_expiring' }, 'The buyer\'s payment expires too soon to call the target: nothing was sent');
       await updateLeg(paymentId, { status: 'failed' }, log);
       await abortBuyer(undefined);
@@ -467,6 +493,7 @@ export const createRouting = ({
       response = await send(target, request.method, { ...headers, [paymentHeader]: signed.header }, body, log, 2, timeoutMs);
     }
     catch (error) {
+      releaseOnce();
       // Nothing sent: the target never saw our payment. Anything else, such as a timeout or a reset, may
       // have reached it: the leg stays unknown. The buyer isn't charged either way.
       const targetLeg = sentNothing(error) ? 'failed' : 'unknown';
@@ -477,6 +504,9 @@ export const createRouting = ({
       await abortBuyer(undefined);
       throw error;
     }
+    // The target's answer has arrived, whatever its status, and its body isn't read yet: an x402 target
+    // settled our payment, if it did, before it answered
+    releaseOnce();
     const latencyMs = Math.round(performance.now() - started);
     const targetRequestId = upstreamRequestIdOf(response.headers);
     const answered = {

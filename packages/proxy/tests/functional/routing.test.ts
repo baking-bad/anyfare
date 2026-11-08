@@ -32,7 +32,7 @@ import {
 
 import { createApp, type ProxyDependencies, type ProxyServer } from '../../src/app.js';
 import { settleMarginMs } from '../../src/routing/routes.js';
-import { createSignerClient } from '../../src/routing/support.js';
+import { createSignerClient, type SignerClient } from '../../src/routing/support.js';
 
 const base = 'eip155:84532';
 const solana = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
@@ -407,6 +407,35 @@ describe('a routed call paid with a payment key', () => {
     const [registration] = internalApi.registrations.filter(item => (item.body as { path: string }).path === '/v1/registered');
     expect(registration!.body).toEqual({ host: at('api.target.test'), path: '/v1/registered', quote: '0.0011' });
     expect(registration!.headers).toMatchObject({ 'x-internal-secret': internalSecret, 'x-internal-caller': 'proxy', 'x-request-id': 'register-1' });
+  });
+
+  it('asks the Signer for no release, paid or not: a payment on Base holds no NEAR lease', async () => {
+    const paying = await buyer();
+    const client = createSignerClient({ url: signerUrl, secret: Secret.from(signerSecret), timeoutMs: 5_000 });
+    const signs: string[] = [];
+    const releases: string[] = [];
+    const counting: SignerClient = {
+      sign: async input => {
+        signs.push(input.quoteId);
+
+        return client.sign(input);
+      },
+      release: async (quoteId, context) => {
+        releases.push(quoteId);
+        await client.release(quoteId, context);
+      },
+    };
+
+    await withProxy({ signer: counting }, async url => {
+      const headers = { authorization: `Bearer ${paying.key}` };
+      // Paid, refused by the Signer, and failed by the target after it was paid
+      expect((await fetch(`${url}/${at('api.target.test')}/v1/no-release`, { headers })).status).toBe(200);
+      expect(await errorOf(await fetch(`${url}/${at('api.target.test')}/v1/expensive`, { headers }))).toEqual([503, 'upstream_unavailable']);
+      expect(await errorOf(await fetch(`${url}/${at('api.target.test')}/v1/failing`, { headers }))).toEqual([503, 'upstream_unavailable']);
+    });
+
+    expect(signs).toHaveLength(3);
+    expect(releases).toEqual([]);
   });
 
   it('refuses a revoked key at once after its key event, though the key cache held it', async () => {

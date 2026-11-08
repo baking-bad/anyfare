@@ -3,7 +3,7 @@ export type { ProxyDependencies, ProxyServer } from './app.js';
 export { defaultMetricsPort, defaultPort, startProxy, startupCheckTimeoutMs } from './start.js';
 export { createRouting, quoteTtlSeconds, settleMarginMs } from './routing/routes.js';
 export type { Routing, RoutingOptions } from './routing/routes.js';
-export { errorStatuses, KeyRequiredError, ResponseTooLargeError, UpstreamUnavailableError } from './errors.js';
+export { errorStatuses, KeyRequiredError, NearPaymentInFlightError, ResponseTooLargeError, RetryLaterError, UpstreamUnavailableError } from './errors.js';
 export { createProxyMetrics } from './metrics.js';
 export type { PaymentOutcome, ProxyMetrics, RoutingOutcome } from './metrics.js';
 export { createKeyCache } from './payments/keyCache.js';
@@ -22,6 +22,8 @@ export {
 export type { RoutingLinkOptions } from './routing/headers.js';
 export {
   createEndpointRegistrar, createOptOutCheck, createSignerClient, internalSecretHeader, isOwnHost, optOutBodyLimit, optOutPath, optOutTimeoutMs,
-  optOutTtlSeconds, ownDomainsOf, routedEndpointsPath, signerSecretHeader, SignerUnavailableError, signPath,
+  optOutTtlSeconds, ownDomainsOf, releasePath, routedEndpointsPath, signerSecretHeader, SignerUnavailableError, signPath,
 } from './routing/support.js';
-export type { EndpointRegistrar, OptOutCheck, SignedPayment, SignerClient, SignerFailure, SignInput, X402Requirement } from './routing/support.js';
+export type {
+  EndpointRegistrar, OptOutCheck, ReleaseContext, SignedPayment, SignerClient, SignerFailure, SignInput, X402Requirement,
+} from './routing/support.js';

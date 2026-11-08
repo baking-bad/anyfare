@@ -34,7 +34,8 @@ export const errorStatuses = {
   upstream_unavailable: 503,
   // A facilitator didn't answer a verify: nothing was paid
   facilitator_unavailable: 503,
-  // MPP: the Tempo RPC or the replay store couldn't check the credential: nothing was paid
+  // MPP: the Tempo RPC or the replay store couldn't check the credential. A routed call to a NEAR target
+  // while another NEAR payment is in flight. Nothing was paid.
   payment_unavailable: 503,
   // Redis is down, such as for an x402 payment's claim: nothing was paid
   redis_not_ready: 503,
@@ -67,5 +68,23 @@ export class UpstreamUnavailableError extends AnyfareError {
 
   constructor(options?: ErrorOptions) {
     super('The upstream is unavailable', options);
+  }
+}
+
+/** An answer the caller may try again after `retryAfterSeconds`: it carries `Retry-After`. */
+export abstract class RetryLaterError extends AnyfareError {
+  abstract readonly retryAfterSeconds: number;
+}
+
+/**
+ * The Signer pays one NEAR payment at a time, and another is in flight. The buyer pays nothing, and may
+ * try again in a moment.
+ */
+export class NearPaymentInFlightError extends RetryLaterError {
+  readonly code = 'payment_unavailable';
+  readonly retryAfterSeconds = 2;
+
+  constructor() {
+    super('A payment on NEAR is in flight: retry in a moment');
   }
 }

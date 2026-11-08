@@ -218,8 +218,8 @@ export type ChosenOption = {
   readonly bindsBody: boolean;
 });
 
-// The chains the Signer holds wallets on, by protocol: x402 on Base and Solana, MPP on Tempo.
-export const routableChains = { x402: ['base', 'solana'], mpp: ['tempo'] } as const;
+// The chains the Signer holds wallets on, by protocol: x402 on Base, Solana, and NEAR, MPP on Tempo.
+export const routableChains = { x402: ['base', 'solana', 'near'], mpp: ['tempo'] } as const;
 
 /**
  * Why the platform won't pay a Solana x402 option: the target's facilitator must pay the
@@ -277,7 +277,8 @@ export const mppRefusals = (challenge: TargetChallenge, config: PlatformConfig, 
 export type X402Refusal = X402OptionRefusal | 'not_in_registry';
 
 // A v2 option of any JSON shape: the option when the platform pays it, else why not. The same checks as
-// the Signer's, so a quote is never refused when it signs.
+// the Signer's, so a quote is never refused when it signs: on NEAR, never one of our own accounts, the
+// hot wallet nor the payTo of any asset buyers pay on the network.
 const x402Option = (requirement: unknown, config: PlatformConfig): { readonly option: ChosenOption; readonly refusal?: undefined } | { readonly option?: undefined; readonly refusal: X402Refusal } => {
   const exact = asExactX402Option(requirement);
   if (!exact)
@@ -286,7 +287,9 @@ const x402Option = (requirement: unknown, config: PlatformConfig): { readonly op
   const asset = network && (routableChains.x402 as readonly string[]).includes(network.chain) ? findOptionAsset(config, network, exact.asset) : undefined;
   if (!network || !asset)
     return { refusal: 'not_in_registry' };
-  const checked = checkX402Option(exact, { asset, network, ourSolanaWallet: config.signer.wallets?.solana });
+  if (network.chain === 'near' && config.assets.some(item => item.network.id === network.id && item.payTo !== undefined && item.payTo === exact['payTo']))
+    return { refusal: 'invalid_pay_to' };
+  const checked = checkX402Option(exact, { asset, network, ourSolanaWallet: config.signer.wallets?.solana, ourNearAccount: config.signer.wallets?.near });
   if (checked.refusal !== undefined)
     return { refusal: checked.refusal };
 
@@ -301,17 +304,19 @@ export const x402Refusals = (challenge: TargetChallenge, config: PlatformConfig)
     return refusal === undefined ? [] : [refusal];
   });
 
-// On a tie: x402 on Base, then x402 on Solana, then MPP. Nothing moves until the target settles an x402
-// payment, and its transaction costs us no fee.
-const tieOrder = (option: ChosenOption): number => option.protocol === 'mpp' ? 2 : option.asset.network.chain === 'solana' ? 1 : 0;
+// On a tie: x402 on Base, then on Solana, then on NEAR, then MPP. Nothing moves until the target settles
+// an x402 payment, and its transaction costs us no fee. NEAR comes after the others: the Signer pays one
+// NEAR payment at a time.
+const tieOrder = (option: ChosenOption): number =>
+  option.protocol === 'mpp' ? 3 : option.asset.network.chain === 'near' ? 2 : option.asset.network.chain === 'solana' ? 1 : 0;
 
 /**
  * Picks the cheapest option the platform pays, skipping every option the Signer would refuse. On a tie,
- * x402 on Base, then on Solana, then MPP.
- * - x402: a version 2 challenge's `exact` option on Base or Solana, in an asset of the registry pegged
- *   to USD, that core's `checkX402Option` takes: a decimal string `amount`, a payTo of the network, at
- *   most 5 minutes to settle, an EIP-3009 authorization on Base, and on Solana a fee payer that isn't
- *   our wallet;
+ * x402 on Base, then on Solana, then on NEAR, then MPP.
+ * - x402: a version 2 challenge's `exact` option on Base, Solana, or NEAR, in an asset of the registry
+ *   pegged to USD, that core's `checkX402Option` takes: a decimal string `amount`, a payTo of the
+ *   network, at most 5 minutes to settle, an EIP-3009 authorization on Base, on Solana a fee payer that
+ *   isn't our wallet, and on NEAR a payTo that isn't one of our accounts and no `extra`;
  * - MPP: a Tempo charge on `mpp.network` in pull mode, without splits or a machine-token route, in an
  *   asset of the registry on that network, with an expiry, if any, that is a date still to come.
  */

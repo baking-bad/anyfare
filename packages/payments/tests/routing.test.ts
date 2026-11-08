@@ -283,6 +283,56 @@ describe('choosing the target\'s option and the quote', () => {
     });
   });
 
+  describe('x402 targets on NEAR', () => {
+    const nearUsdc = config.assets.find(asset => asset.name === 'near-usdc')!;
+    // Made-up accounts: our hot wallet, here apart from the payTo buyers pay, and the target's
+    const hotWallet = 'hot.anyfare.testnet';
+    const theirPayTo = 'count.merchant.testnet';
+    const withAccount = { ...config, signer: { ...config.signer, wallets: { ...config.signer.wallets, near: hotWallet } } };
+    const onNear = (amount: string, overrides: Record<string, unknown> = {}) => ({
+      scheme: 'exact', network: nearUsdc.network.id, amount, asset: nearUsdc.address, payTo: theirPayTo, maxTimeoutSeconds: 300, extra: {}, ...overrides,
+    });
+
+    it('pays USDC on NEAR at its price, as it pays Base and Solana', () => {
+      expect(chooseOption(parsed([onNear('1000')]), withAccount, now)).toMatchObject({ protocol: 'x402', asset: { name: 'near-usdc' }, atomicAmount: 1000n, price: 1000n });
+      expect(chooseOption(parsed([onNear('1000', { extra: undefined })]), withAccount, now)).toMatchObject({ asset: { name: 'near-usdc' } });
+    });
+
+    it('pays no NEAR option to our hot wallet or the payTo buyers pay, asking for more than the transfer, or on another network, and says why', () => {
+      const challenge = parsed([
+        onNear('1000', { payTo: hotWallet }), onNear('1001', { payTo: nearUsdc.payTo }), onNear('1002', { extra: { memo: 'invoice-7' } }),
+        onNear('1003', { network: 'near:mainnet' }),
+      ]);
+
+      expect(chooseOption(challenge, withAccount, now)).toBeUndefined();
+      expect(x402Refusals(challenge, withAccount)).toEqual(['invalid_pay_to', 'invalid_pay_to', 'invalid_option', 'not_in_registry']);
+    });
+
+    it('refuses an option paying the payTo buyers pay though the config names no NEAR account, as the Signer does, and quotes any other account', () => {
+      const ours = parsed([onNear('1000', { payTo: nearUsdc.payTo })]);
+
+      expect(config.signer.wallets.near).toBeUndefined();
+      expect(nearUsdc.payTo).toBe('pay.anyfare.testnet');
+      expect(chooseOption(ours, config, now)).toBeUndefined();
+      expect(x402Refusals(ours, config)).toEqual(['invalid_pay_to']);
+      expect(chooseOption(parsed([onNear('1000', { payTo: 'someone-else.testnet' })]), config, now)).toMatchObject({ asset: { name: 'near-usdc' } });
+    });
+
+    it('chooses Base, then Solana, then NEAR, then MPP on Tempo at the same price, and a cheaper NEAR option over all', () => {
+      const solanaUsdc = config.assets.find(asset => asset.name === 'solana-usdc')!;
+      const onSolana = {
+        scheme: 'exact', network: solanaUsdc.network.id, amount: '2000', asset: solanaUsdc.address, payTo: encodeBase58(Uint8Array.from({ length: 32 }, (_, index) => index + 1)),
+        maxTimeoutSeconds: 60, extra: { feePayer: encodeBase58(Uint8Array.from({ length: 32 }, () => 8)) },
+      };
+      const withMpp = (accepts: unknown[]) => parseTargetChallenge({ ...header(accepts), 'www-authenticate': mppChallenge('2000') })!;
+
+      expect(chooseOption(withMpp([onNear('2000'), onSolana, plain]), withAccount, now)).toMatchObject({ asset: { name: 'base-usdc' } });
+      expect(chooseOption(withMpp([onNear('2000'), onSolana]), withAccount, now)).toMatchObject({ asset: { name: 'solana-usdc' } });
+      expect(chooseOption(withMpp([onNear('2000')]), withAccount, now)).toMatchObject({ protocol: 'x402', asset: { name: 'near-usdc' } });
+      expect(chooseOption(withMpp([onNear('1999'), onSolana, plain]), withAccount, now)).toMatchObject({ asset: { name: 'near-usdc' }, price: 1999n });
+    });
+  });
+
   it('pays no MPP challenge in push mode only, with splits, in another currency, on another chain, or expired, and says why', () => {
     const challenge = parseTargetChallenge({
       'www-authenticate': [

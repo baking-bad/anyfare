@@ -106,6 +106,7 @@ const shiftingAfterSigning = (client: SignerClient): SignerClient => ({
 
     return signed;
   },
+  release: (quoteId, context) => client.release(quoteId, context),
 });
 
 /** The target's MPP server: `mppx`'s Tempo charge in pull mode, checked against the fake Tempo RPC. */

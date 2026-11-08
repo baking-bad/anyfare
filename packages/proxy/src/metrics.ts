@@ -15,10 +15,12 @@ export type PaymentOutcome =
  * - paid: the target took our payment and answered 2xx, so the buyer is charged;
  * - refused_host, not_payable, unsupported: the link was refused before any payment;
  * - signer_refused: the Signer didn't sign, or couldn't be reached;
+ * - signer_busy: the Signer was paying another NEAR payment, so the buyer may retry in a moment;
  * - target_refused: the target refused our payment on the paid retry;
  * - loss: the target kept our payment while the buyer wasn't charged.
  */
-export type RoutingOutcome = 'quoted' | 'paid' | 'refused_host' | 'not_payable' | 'unsupported' | 'signer_refused' | 'target_refused' | 'loss';
+export type RoutingOutcome =
+  | 'quoted' | 'paid' | 'refused_host' | 'not_payable' | 'unsupported' | 'signer_refused' | 'signer_busy' | 'target_refused' | 'loss';
 
 export interface ProxyMetrics {
   keyCacheLookup(result: 'hit' | 'miss'): void;
@@ -75,7 +77,7 @@ export const createProxyMetrics = (registry: Registry): ProxyMetrics => {
   });
   const routing = new Counter({
     name: 'proxy_routing_total',
-    help: 'Routed calls by outcome: quoted, paid, refused_host, not_payable, unsupported, signer_refused, target_refused, loss',
+    help: 'Routed calls by outcome: quoted, paid, refused_host, not_payable, unsupported, signer_refused, signer_busy, target_refused, loss',
     labelNames: ['outcome'] as const,
     registers: [registry],
   });

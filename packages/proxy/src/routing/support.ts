@@ -35,6 +35,8 @@ export class SignerUnavailableError extends Error {
 
 export const signPath = '/internal/v1/sign';
 export const signerSecretHeader = 'x-signer-secret';
+/** The Signer's release of a quote's NEAR lease. The quote ID is the proxy's payment ID. */
+export const releasePath = (quoteId: string): string => `/internal/v1/quotes/${encodeURIComponent(quoteId)}/release`;
 
 // The Signer's error envelope: its code and reason, never anything else of the body
 const refusalOf = async (response: Response): Promise<{ readonly code?: string; readonly reason?: string }> => {
@@ -79,8 +81,19 @@ export type SignInput = {
   readonly challenge: string;
 });
 
+/** Who asks the Signer for a release: the routed call's request ID, and its logger for a failure. */
+export interface ReleaseContext {
+  readonly requestId: string;
+  readonly log: LogSink;
+}
+
 export interface SignerClient {
   sign(input: SignInput): Promise<SignedPayment>;
+  /**
+   * Frees the NEAR hot wallet's lease when this quote's payment holds it. Never throws: a failure is a
+   * warn line, and the lease expires on its own.
+   */
+  release(quoteId: string, context: ReleaseContext): Promise<void>;
 }
 
 const decimalPattern = /^\d{1,40}$/;
@@ -101,9 +114,17 @@ const signedPaymentOf = (body: unknown): SignedPayment | undefined => {
   };
 };
 
+// What a line says about a Signer call: its host and path, never the secret
+const signerFailureOf = (target: string, started: number, extra: Pick<SignerFailure, 'status' | 'code' | 'reason'>): SignerFailure => {
+  const { host, path } = outboundFields({ url: target, method: 'POST' });
+
+  return { host: String(host), method: 'POST', path: String(path), ...extra, durationMs: Math.round(performance.now() - started) };
+};
+
 /**
- * The Signer's internal API, `POST /internal/v1/sign`, with its shared secret and the routed call's
- * request ID. Only x402 version 2 is signed. Any failure is SignerUnavailableError.
+ * The Signer's internal API, `POST /internal/v1/sign` and `POST /internal/v1/quotes/:quoteId/release`,
+ * with its shared secret and the routed call's request ID, each within `timeoutMs`. Only x402 version 2
+ * is signed. Any failure to sign is SignerUnavailableError; a release never fails.
  */
 export const createSignerClient = ({ url, secret, timeoutMs, fetch = globalThis.fetch }: {
   readonly url: string;
@@ -114,11 +135,7 @@ export const createSignerClient = ({ url, secret, timeoutMs, fetch = globalThis.
   sign: async input => {
     const target = `${url.replace(/\/+$/, '')}${signPath}`;
     const started = performance.now();
-    const failure = (extra: Pick<SignerFailure, 'status' | 'code' | 'reason'>): SignerFailure => {
-      const { host, path } = outboundFields({ url: target, method: 'POST' });
-
-      return { host: String(host), method: 'POST', path: String(path), ...extra, durationMs: Math.round(performance.now() - started) };
-    };
+    const failure = (extra: Pick<SignerFailure, 'status' | 'code' | 'reason'>): SignerFailure => signerFailureOf(target, started, extra);
     const body = input.protocol === 'x402'
       ? { ...input, x402Version: 2, quotedPrice: input.quotedPrice.toString() }
       : { ...input, quotedPrice: input.quotedPrice.toString() };
@@ -152,6 +169,35 @@ export const createSignerClient = ({ url, secret, timeoutMs, fetch = globalThis.
       throw new SignerUnavailableError('The Signer\'s answer isn\'t a signed payment', { failure: failure({ status: response.status, code: 'invalid_answer' }) });
 
     return signed;
+  },
+  // 204 is the only answer that released: anything else, or none, is a warn line. The lease expires on
+  // its own, so the buyer's call never fails for it.
+  release: async (quoteId, { requestId, log }) => {
+    const target = `${url.replace(/\/+$/, '')}${releasePath(quoteId)}`;
+    const started = performance.now();
+    const failed = (failure: SignerFailure, error?: unknown): void => {
+      log.warn({
+        quoteId, signer: failure, ...failure.code === undefined ? {} : { code: failure.code }, ...failure.reason === undefined ? {} : { reason: failure.reason },
+        ...error === undefined ? {} : { error },
+      }, 'The Signer didn\'t release the NEAR payment\'s lease: it expires on its own');
+    };
+    try {
+      const response = await fetch(target, {
+        method: 'POST',
+        headers: { [signerSecretHeader]: secret.expose(), 'x-request-id': requestId },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (response.status === 204) {
+        await response.body?.cancel().catch(() => undefined);
+        return;
+      }
+      const refusal = await refusalOf(response);
+      failed(signerFailureOf(target, started, { status: response.status, ...refusal }));
+    }
+    catch (error) {
+      const code = outboundErrorCode(error);
+      failed(signerFailureOf(target, started, code === undefined ? {} : { code }), error);
+    }
   },
 });
 

@@ -92,6 +92,73 @@ describe('the Signer client', () => {
   });
 });
 
+describe('the Signer client\'s release', () => {
+  const lines: Record<string, unknown>[] = [];
+  const log = createLogger({}, { write: (line: string) => lines.push(JSON.parse(line) as Record<string, unknown>) });
+  const released = 'The Signer didn\'t release the NEAR payment\'s lease: it expires on its own';
+  const release = (fetch: typeof globalThis.fetch) => signerAt(fetch).release('pay_7', { requestId: 'req-release-1', log });
+
+  it('posts the quote\'s release with the shared secret and the request ID, and takes a 204 quietly', async () => {
+    lines.length = 0;
+    const sent: { url: string; method: string | undefined; headers: Record<string, string>; body: unknown; signal: boolean }[] = [];
+
+    await expect(release(async (url, init) => {
+      sent.push({ url: String(url), method: init?.method, headers: init?.headers as Record<string, string>, body: init?.body, signal: init?.signal instanceof AbortSignal });
+
+      return new Response(null, { status: 204 });
+    })).resolves.toBeUndefined();
+
+    expect(sent).toEqual([{
+      url: 'http://signer.internal:8083/internal/v1/quotes/pay_7/release', method: 'POST',
+      headers: { 'x-signer-secret': signerSecret, 'x-request-id': 'req-release-1' }, body: undefined, signal: true,
+    }]);
+    expect(lines).toEqual([]);
+  });
+
+  it('never throws on another answer: a warn line with the Signer\'s status, code and reason, never the secret or the rest of the body', async () => {
+    lines.length = 0;
+
+    await expect(release(async () => Response.json({ error: { code: 'redis_not_ready', message: 'Redis is not ready' }, leaked: 'body-secret' }, { status: 503 })))
+      .resolves.toBeUndefined();
+
+    expect(lines).toEqual([expect.objectContaining({
+      level: 40, msg: released, quoteId: 'pay_7', code: 'redis_not_ready', reason: 'Redis is not ready',
+      signer: {
+        host: 'signer.internal:8083', method: 'POST', path: '/internal/v1/quotes/pay_7/release', status: 503, code: 'redis_not_ready', reason: 'Redis is not ready',
+        durationMs: expect.any(Number),
+      },
+    })]);
+    expect(JSON.stringify(lines)).not.toContain('body-secret');
+    expect(JSON.stringify(lines)).not.toContain(signerSecret);
+  });
+
+  it('never throws when the Signer doesn\'t answer: a warn line with the transport\'s code', async () => {
+    lines.length = 0;
+
+    await expect(release(async () => {
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED 10.0.1.4:8083'), { code: 'ECONNREFUSED' }) });
+    })).resolves.toBeUndefined();
+
+    expect(lines).toEqual([expect.objectContaining({
+      level: 40, msg: released, quoteId: 'pay_7', code: 'ECONNREFUSED',
+      signer: { host: 'signer.internal:8083', method: 'POST', path: '/internal/v1/quotes/pay_7/release', code: 'ECONNREFUSED', durationMs: expect.any(Number) },
+    })]);
+    expect(JSON.stringify(lines)).not.toContain(signerSecret);
+  });
+
+  it('gives up within the client\'s timeout, without throwing', async () => {
+    lines.length = 0;
+    const started = performance.now();
+
+    await expect(release(async (_url, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason as Error));
+    }))).resolves.toBeUndefined();
+
+    expect(performance.now() - started).toBeLessThan(3_000);
+    expect(lines).toEqual([expect.objectContaining({ level: 40, msg: released, signer: expect.objectContaining({ path: '/internal/v1/quotes/pay_7/release' }) })]);
+  });
+});
+
 describe('the routed endpoint registrar', () => {
   it('sends the routed call\'s request ID to the internal API, and logs a failed registration with its status, never the shared secret', async () => {
     const lines: Record<string, unknown>[] = [];
