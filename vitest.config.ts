@@ -4,8 +4,8 @@ import { parseEnv } from 'node:util';
 
 import { configDefaults, defineConfig } from 'vitest/config';
 
-const packageNames = ['common', 'core', 'db', 'testing'];
-const appNames: string[] = [];
+const packageNames = ['common', 'core', 'db', 'testing', 'api'];
+const appNames = ['api'];
 
 const alias = Object.fromEntries(packageNames.map(name => [
   `@anyfare/${name}`,
@@ -45,7 +45,7 @@ export default defineConfig({
     projects: [
       ...packageNames.map(unitProject),
       ...packageNames.map(name => levelProject(name, 'integration')),
-      ...[...packageNames, ...appNames].map(name => levelProject(name, 'functional')),
+      ...[...new Set([...packageNames, ...appNames])].map(name => levelProject(name, 'functional')),
     ],
   },
 });

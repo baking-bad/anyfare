@@ -1,0 +1,31 @@
+{
+  "name": "@anyfare/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Platform API: accounts, keys, balances",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "vitest run --root ../.. --project api",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@anyfare/common": "0.1.0",
+    "@anyfare/core": "0.1.0",
+    "@anyfare/db": "0.1.0",
+    "fastify": "^5.12.5"
+  },
+  "devDependencies": {
+    "@anyfare/testing": "0.1.0"
+  }
+}
