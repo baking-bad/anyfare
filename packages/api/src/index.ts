@@ -1,7 +1,7 @@
 export { createApp } from './app.js';
-export type { ApiDependencies } from './app.js';
+export type { ApiAddresses, ApiDependencies, ApiListenOptions, ApiServer } from './app.js';
 export { errorStatuses, InvalidRequestError, NotFoundError } from './errors.js';
-export { defaultMetricsPort, defaultPort, startApi } from './start.js';
+export { defaultInternalPort, defaultMetricsPort, defaultPort, startApi } from './start.js';
 export { authenticatedAccount, createMasterKeyAuth, decorateAccount } from './accounts/auth.js';
 export type { AuthenticatedAccount, MasterKeyAuthOptions } from './accounts/auth.js';
 export { accountIdPrefix, createAccountService, keyIdPrefix } from './accounts/service.js';
@@ -17,3 +17,6 @@ export { registerKeyRoutes } from './keys/routes.js';
 export type { KeyRoutesOptions } from './keys/routes.js';
 export { registerLedgerRoutes } from './ledger/routes.js';
 export type { LedgerRoutesOptions } from './ledger/routes.js';
+export { createInternalAuth, internalCallerHeader, internalSecretHeader, registerInternalRoutes } from './internal/routes.js';
+export type { InternalRoutesOptions } from './internal/routes.js';
+export { internalSecretVariable, minimumInternalSecretLength, readInternalSecret } from './internal/secret.js';

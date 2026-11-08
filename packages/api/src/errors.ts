@@ -10,6 +10,8 @@ export const errorStatuses = {
   wrong_key_type: 401,
   rate_limited: 429,
   not_found: 404,
+  // A credit's reference reused for another account or amount
+  idempotency_conflict: 409,
 } as const satisfies ErrorStatusTable;
 
 /** A request the route can't take: the message says what's wrong, never quoting a value it carried. */

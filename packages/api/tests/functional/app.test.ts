@@ -245,3 +245,41 @@ describe('startup', () => {
     });
   });
 });
+
+describe('the internal API secret', () => {
+  const env = () => ({
+    ...exampleConfig,
+    DATABASE_URL: database.url.expose(),
+    REDIS_URL: redis.url.expose(),
+    HOST: '127.0.0.1',
+    PORT: '0',
+    METRICS_PORT: '0',
+    INTERNAL_PORT: '0',
+  });
+
+  it.each([
+    ['unset', undefined, 'Secret INTERNAL_API_SECRET is not set'],
+    ['shorter than 32 characters', 'too-short', 'INTERNAL_API_SECRET must be at least 32 characters'],
+  ])('exits with 1 when it is %s, without logging it', async (_case, value, message) => {
+    const { logger, lines } = captureLogs();
+    const exit = vi.fn();
+
+    await runApp({ name: 'api', start: startApi, logger, exit, env: { ...env(), INTERNAL_API_SECRET: value } });
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(lines.find(line => line['msg'] === 'Failed to start')).toMatchObject({ error: { message } });
+    if (value)
+      expect(JSON.stringify(lines)).not.toContain(value);
+  });
+
+  it('starts with a secret of 32 characters, and listens on the internal port', async () => {
+    const { logger, lines } = captureLogs();
+
+    const app = await startApi({ env: { ...env(), INTERNAL_API_SECRET: 'x'.repeat(32) }, logger });
+    await app.close();
+
+    const started = lines.find(line => line['msg'] === 'Started');
+    expect(started).toMatchObject({ ports: { internalPort: expect.any(Number) } });
+    expect(JSON.stringify(lines)).not.toContain('x'.repeat(32));
+  });
+});

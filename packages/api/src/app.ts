@@ -1,7 +1,10 @@
+import type { AddressInfo } from 'node:net';
+
 import type { FastifyInstance } from 'fastify';
 
 import {
-  createServer, randomIdGenerator, systemClock, type Clock, type IdGenerator, type Logger, type Server,
+  createServer, randomIdGenerator, systemClock, type Clock, type IdGenerator, type ListenOptions, type Logger, type Secret, type Server,
+  type ServerAddresses,
 } from '@anyfare/common';
 import {
   cryptoRandomSource, type ApiKeyRepository, type InvalidationBus, type PlatformConfig, type RandomSource,
@@ -15,6 +18,7 @@ import { registerAccountRoutes } from './accounts/routes.js';
 import { createAccountService } from './accounts/service.js';
 import { createSignupLimit } from './accounts/signupLimit.js';
 import { errorStatuses } from './errors.js';
+import { registerInternalRoutes } from './internal/routes.js';
 import { registerKeyRoutes } from './keys/routes.js';
 import { createPaymentKeyService } from './keys/service.js';
 import { registerLedgerRoutes } from './ledger/routes.js';
@@ -38,6 +42,23 @@ export interface ApiDependencies {
   readonly apiKeys?: Pick<ApiKeyRepository, 'findActiveByHash'>;
   // Where key changes are announced. Default: the Redis channel.
   readonly invalidation?: Pick<InvalidationBus, 'publish'>;
+  // INTERNAL_API_SECRET, the shared secret of the internal API. Without it, every internal call is refused.
+  readonly internalSecret?: Secret;
+}
+
+export interface ApiListenOptions extends ListenOptions {
+  // The internal listener's port. Without it, the internal API doesn't listen.
+  readonly internalPort?: number;
+}
+
+export interface ApiAddresses extends ServerAddresses {
+  readonly internalPort: number | undefined;
+}
+
+/** The public listener and the metrics listener, plus the internal listener, which Traefik never routes to. */
+export interface ApiServer extends Server {
+  readonly internal: FastifyInstance;
+  listen(options: ApiListenOptions): Promise<ApiAddresses>;
 }
 
 // A POST with `Content-Type: application/json` and no body has no body, rather than invalid JSON
@@ -66,7 +87,8 @@ export const createApp = ({
   trustProxy,
   apiKeys = createApiKeyRepository({ db: postgres.db }),
   invalidation = createRedisInvalidationBus({ redis, logger }),
-}: ApiDependencies): Server => {
+  internalSecret,
+}: ApiDependencies): ApiServer => {
   const server = createServer({
     logger,
     errorStatuses,
@@ -104,5 +126,31 @@ export const createApp = ({
   });
   registerLedgerRoutes(app, { db: postgres.db, clock, ids, authenticate });
 
-  return server;
+  // The internal API on a listener of its own, with the same request IDs, logs, and error envelope
+  const internal = createServer({ logger, errorStatuses, requestIds });
+  registerInternalRoutes(internal.app, { db: postgres.db, clock, ids, secret: internalSecret });
+
+  return {
+    ...server,
+    internal: internal.app,
+    listen: async options => {
+      const addresses = await server.listen(options);
+      if (options.internalPort === undefined)
+        return { ...addresses, internalPort: undefined };
+
+      try {
+        await internal.app.listen({ host: options.host, port: options.internalPort });
+      }
+      catch (error) {
+        await server.close();
+        throw error;
+      }
+
+      return { ...addresses, internalPort: (internal.app.server.address() as AddressInfo).port };
+    },
+    close: async () => {
+      await internal.app.close();
+      await server.close();
+    },
+  };
 };

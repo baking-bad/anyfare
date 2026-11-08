@@ -9,6 +9,7 @@ import { startApi } from '../../src/start.js';
 
 // The Platform API's events: IDs and codes only, never a key
 
+const internalSecret = 'internal-secret-0123456789abcdef-xyz';
 const generous = { requests: 1000, windowSeconds: 60 };
 
 let database: TestDatabase;
@@ -116,7 +117,7 @@ describe('the API\'s startup', () => {
     const logger = createLogger({}, { write: (line: string) => startLines.push(JSON.parse(line) as Record<string, unknown>) });
     const env = {
       CONFIG_PATH: 'config/example.yaml', DATABASE_URL: database.url.expose(), REDIS_URL: redis.url.expose(),
-      HOST: '127.0.0.1', PORT: '0', METRICS_PORT: '0', LOG_LEVEL: 'debug', GIT_SHA: 'abcdef1',
+      HOST: '127.0.0.1', PORT: '0', METRICS_PORT: '0', INTERNAL_PORT: '0', INTERNAL_API_SECRET: internalSecret, LOG_LEVEL: 'debug', GIT_SHA: 'abcdef1',
     };
 
     const app = await startApi({ env, logger });
@@ -137,7 +138,7 @@ describe('the API\'s startup', () => {
       ],
     })]);
     const logged = JSON.stringify(startLines);
-    for (const secret of [database.url.expose(), redis.url.expose(), '0x1111111111111111111111111111111111111111'])
+    for (const secret of [database.url.expose(), redis.url.expose(), internalSecret, '0x1111111111111111111111111111111111111111'])
       expect(logged).not.toContain(secret);
   });
 });
