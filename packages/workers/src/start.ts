@@ -76,7 +76,7 @@ export const readNearRpcUrls = (env: AppEnvironment, network: string): readonly 
     const name = separator < 0 ? '' : item.slice(0, separator).trim();
     const url = separator < 0 ? '' : item.slice(separator + 1).trim();
     const parsed = httpUrlOf(url);
-    if (!(name in NEAR_RPC_URLS) || !parsed)
+    if (!Object.hasOwn(NEAR_RPC_URLS, name) || !parsed)
       throw new InvalidEnvironmentError('NEAR_RPC_URLS must be near:<network>=<HTTP(S) URL> items, separated by commas');
     if (parsed.username !== '' || parsed.password !== '')
       throw new InvalidEnvironmentError('NEAR_RPC_URLS can\'t carry a username or password: put a key in the path or the query string');

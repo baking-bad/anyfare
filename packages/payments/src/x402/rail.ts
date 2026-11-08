@@ -255,9 +255,9 @@ const decode = (credential: Credential): PaymentPayload => {
  * x402: requirements per request from the quote, with the SDK's resource server, one `exact` option
  * per offered asset at or above its minimum price. Claims the payment's nonce, so one signed payment
  * pays for one call, and on NEAR its payer, so a payer has one payment in flight. Then verifies
- * through the network's facilitator before forwarding, and records the payment as `verified`. Settles after a billable response, before any byte goes out, and books
- * it. Otherwise cancels: nothing settles. Finalize and abort read the payment first, so running either
- * twice moves money once.
+ * through the network's facilitator before forwarding, and records the payment as `verified`. Settles
+ * after a billable response, before any byte goes out, and books it. Otherwise cancels: nothing
+ * settles. Finalize and abort read the payment first, so running either twice moves money once.
  */
 export const createX402Rail = ({ setup, recorder, ledger, claims, clock, logger }: X402RailOptions): PaymentRail => {
   const { server } = setup;

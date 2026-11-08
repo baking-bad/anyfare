@@ -65,3 +65,34 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Our x402 facilitator for NEAR, from the app image, with its command as every app has one. The proxy
+  # and the workers reach it at their platform config's url for the near facilitator: http://127.0.0.1:8084
+  # in config/example.yaml for apps run on this machine, http://facilitator:8084 in config/production.yaml
+  # inside the stack. It needs the relayer's account and key, so it starts only with its profile:
+  # docker compose --profile facilitator up.
+  facilitator:
+    profiles: [ facilitator ]
+    build: .
+    image: anyfare:local
+    command: [ "node", "packages/facilitator/dist/main.js" ]
+    environment:
+      CONFIG_PATH: ${CONFIG_PATH:-config/example.yaml}
+      LOG_LEVEL: ${LOG_LEVEL:-}
+      HOST: 0.0.0.0
+      PORT: "8084"
+      METRICS_PORT: "9084"
+      FACILITATOR_SECRET: ${FACILITATOR_SECRET:-}
+      FACILITATOR_NEAR_ACCOUNT: ${FACILITATOR_NEAR_ACCOUNT:-}
+      FACILITATOR_NEAR_KEY: ${FACILITATOR_NEAR_KEY:-}
+      FACILITATOR_RECIPIENTS: ${FACILITATOR_RECIPIENTS:-}
+      NEAR_RPC_URLS: ${NEAR_RPC_URLS:-}
+    ports:
+      - 127.0.0.1:8084:8084
+      - 127.0.0.1:9084:9084
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -qO- http://127.0.0.1:8084/_/health > /dev/null" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
