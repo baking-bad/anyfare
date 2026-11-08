@@ -16,7 +16,7 @@ import {
 
 import { createApp, type WorkersServer } from '../../src/app.js';
 import { holdExpiryLockId } from '../../src/holdExpiry.js';
-import { checkEachFacilitator, defaultMetricsPort, readEvmRpcUrls, startWorkers } from '../../src/start.js';
+import { checkEachFacilitator, defaultMetricsPort, readEvmRpcUrls, readNearRpcUrls, startWorkers } from '../../src/start.js';
 import { createEvmBalanceReader, createSolanaBalanceReader } from '../../src/treasury/readers.js';
 
 const exampleConfig = { CONFIG_PATH: 'config/example.yaml' };
@@ -352,6 +352,33 @@ describe('startup', () => {
     expect(urls.get('eip155:42431')).toBe('https://tempo.example');
     expect(urls.get('eip155:84532')).toBe('https://sepolia.base.org');
   });
+
+  it('reads NEAR_RPC_URLS for the config\'s NEAR network in order, then the x402 SDK\'s public RPC as the last fallback', () => {
+    expect(readNearRpcUrls({}, 'near:testnet')).toEqual(['https://rpc.testnet.fastnear.com']);
+    expect(readNearRpcUrls({ NEAR_RPC_URLS: ' near:mainnet=https://near.example/v1/near-key , near:mainnet=https://backup.example ' }, 'near:mainnet')).toEqual([
+      'https://near.example/v1/near-key', 'https://backup.example', 'https://rpc.mainnet.fastnear.com',
+    ]);
+  });
+
+  it.each([
+    ['an item without a network', 'https://near.example/near-url-secret', 'NEAR_RPC_URLS must be near:<network>=<HTTP(S) URL> items'],
+    ['a network that isn\'t NEAR', `${base}=https://near.example/near-url-secret`, 'NEAR_RPC_URLS must be near:<network>=<HTTP(S) URL> items'],
+    ['another NEAR network than the config\'s', 'near:mainnet=https://near.example/near-url-secret', 'NEAR_RPC_URLS names near:mainnet, but the platform config\'s NEAR network is near:testnet'],
+    ['a password', 'near:testnet=https://user:near-url-secret@near.example', 'NEAR_RPC_URLS can\'t carry a username or password'],
+  ])('refuses NEAR_RPC_URLS with %s, without echoing it', (_case, value, message) => {
+    const error = (() => {
+      try {
+        readNearRpcUrls({ NEAR_RPC_URLS: value }, 'near:testnet');
+      }
+      catch (thrown) {
+        return thrown as Error;
+      }
+      return undefined;
+    })();
+
+    expect(error?.message).toContain(message);
+    expect(error?.message).not.toContain('near-url-secret');
+  });
 });
 
 describe('the facilitators at startup', () => {
@@ -596,6 +623,7 @@ describe('the workers\' lines', () => {
       DATABASE_URL: database.url.expose(),
       EVM_RPC_URLS: 'eip155:8453=https://base.example/v2/startup-rpc-path',
       SOLANA_RPC_URL: 'https://sol.example/startup-solana-key',
+      NEAR_RPC_URLS: 'near:testnet=https://near.example/startup-near-key',
       HOST: '127.0.0.1',
       METRICS_PORT: '0',
       LOG_LEVEL: 'debug',
@@ -611,11 +639,11 @@ describe('the workers\' lines', () => {
       rails: { credits: true, x402: [], mpp: false },
       jobs: allJobs,
       settlementFollowUp: { facilitators: [], mpp: false },
-      treasuryReaders: { evm: expect.arrayContaining(['eip155:8453', 'eip155:84532', 'eip155:42431']), solana: 'sol.example' },
+      treasuryReaders: { evm: expect.arrayContaining(['eip155:8453', 'eip155:84532', 'eip155:42431']), solana: 'sol.example', near: ['near.example', 'rpc.testnet.fastnear.com'] },
       ports: { metricsPort: expect.any(Number) },
     })]);
     const logged = JSON.stringify(lines);
-    for (const secret of ['startup-rpc-path', 'startup-solana-key', database.url.expose()])
+    for (const secret of ['startup-rpc-path', 'startup-solana-key', 'startup-near-key', database.url.expose()])
       expect(logged).not.toContain(secret);
   });
 

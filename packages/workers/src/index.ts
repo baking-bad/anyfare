@@ -1,6 +1,6 @@
 export { createApp } from './app.js';
 export type { WorkersDependencies, WorkersServer } from './app.js';
-export { balanceReadTimeoutMs, checkEachFacilitator, defaultMetricsPort, readEvmRpcUrls, startupCheckTimeoutMs, startWorkers } from './start.js';
+export { balanceReadTimeoutMs, checkEachFacilitator, defaultMetricsPort, readEvmRpcUrls, readNearRpcUrls, startupCheckTimeoutMs, startWorkers } from './start.js';
 export { createHoldExpiry, holdExpiryIntervalMs, holdExpiryJobName, holdExpiryLockId, holdTtlMs, HoldExpiryFailedError } from './holdExpiry.js';
 export type { HoldExpiryOptions, HoldExpiryResult } from './holdExpiry.js';
 export { createScheduler } from './scheduler.js';
@@ -17,4 +17,5 @@ export {
   treasuryBalancesIntervalMs, treasuryBalancesJobName, treasuryBalancesLockId,
 } from './treasury/jobs.js';
 export type { ReconciliationOptions, TreasuryBalancesOptions, TreasuryMetrics } from './treasury/jobs.js';
-export { createEvmBalanceReader, createSolanaBalanceReader, readerFor, SolanaRpcError } from './treasury/readers.js';
+export { createEvmBalanceReader, createNearBalanceReader, createSolanaBalanceReader, NearRpcError, readerFor, SolanaRpcError } from './treasury/readers.js';
+export type { NearBalanceReader } from './treasury/readers.js';

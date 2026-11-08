@@ -29,8 +29,10 @@ export interface WorkersDependencies {
   readonly facilitators?: readonly Facilitator[];
   // Reads MPP transactions' receipts on the Tempo node, for the settlement follow-up. Default: none, so MPP payments wait.
   readonly mppCheck?: MppSettlementCheck;
+  // The NEAR network's final height, for the settlement follow-up. Default: none, so no NEAR refusal is final.
+  readonly nearHeight?: () => Promise<bigint>;
   // Balance readers per chain. The treasury jobs run only with one.
-  readonly balanceReaders?: { readonly evm?: BalanceReader; readonly solana?: BalanceReader };
+  readonly balanceReaders?: { readonly evm?: BalanceReader; readonly solana?: BalanceReader; readonly near?: BalanceReader };
 }
 
 export interface WorkersServer extends MetricsServer {
@@ -67,6 +69,7 @@ export const createApp = ({
   ids = randomIdGenerator,
   facilitators = [],
   mppCheck,
+  nearHeight,
   balanceReaders,
 }: WorkersDependencies): WorkersServer => {
   const server = createMetricsServer({
@@ -83,6 +86,7 @@ export const createApp = ({
     // Through the facilitators given: those that passed their startup check, by name
     facilitatorFor: facilitatorLookup(config, facilitators),
     ...mppCheck ? { mppCheck } : {},
+    ...nearHeight ? { nearHeight } : {},
     clock,
     settleMs: config.timeouts.settleMs,
     logger,
@@ -110,7 +114,7 @@ export const createApp = ({
     run: async () => outcomeOf(await routingLosses(), ['booked']),
   }];
 
-  if (balanceReaders?.evm || balanceReaders?.solana) {
+  if (balanceReaders?.evm || balanceReaders?.solana || balanceReaders?.near) {
     const pickReader = readerFor(balanceReaders);
     const wallets = async () => treasuryWallets(config);
     const metrics = createTreasuryMetrics(server.registry);

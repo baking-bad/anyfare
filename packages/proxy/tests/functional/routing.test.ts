@@ -43,6 +43,8 @@ const targetPayTo = '0x3333333333333333333333333333333333333333';
 // What the target says it settled our payment with: never what the buyer sees
 const targetTransaction = `0x${'ab'.repeat(32)}`;
 const generous = { requests: 100_000, windowSeconds: 60 };
+// USDC on Base mainnet, as config/production.yaml names it
+const mainnetUsdc = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 
 // --- Buyers, balances, and the internal API ---
 
@@ -167,6 +169,15 @@ beforeAll(async () => {
         x402Version: 2, error: 'Payment required', resource: { url, description: 'Gateway only', mimeType: 'application/json' }, accepts: options('1000').slice(0, 1),
       } as never);
       response.writeHead(402, { 'payment-required': gatewayOnly }).end('{}');
+      return;
+    }
+    // On Base mainnet, which the production config pays in
+    if (path === '/v1/mainnet') {
+      const mainnet = encodePaymentRequiredHeader({
+        x402Version: 2, error: 'Payment required', resource: { url, description: 'Mainnet', mimeType: 'application/json' },
+        accepts: [{ scheme: 'exact', network: 'eip155:8453', amount: '1000', asset: mainnetUsdc, payTo: targetPayTo, maxTimeoutSeconds: 60, extra: { name: 'USD Coin', version: '2' } }],
+      } as never);
+      response.writeHead(402, { 'payment-required': mainnet }).end('{}');
       return;
     }
     // x402 version 1 only: its options in the body, or in a version 1 header
@@ -458,6 +469,54 @@ describe('a routed call paid with x402', () => {
     const [row] = await database.db.select().from(payments).where(eq(payments.requestId, requestId));
     expect(row).toMatchObject({ rail: 'x402', status: 'settled', amount: 1_100n, fee: 100n, network: base, asset: 'base-usdc' });
     expect(await legOf(row!.id)).toMatchObject({ status: 'settled', amount: 1_000n, buyerCharged: true });
+  });
+
+  it('offers x402 on NEAR mainnet with config/production.yaml: our payTo there and the USDC contract, beside Base and Solana', async () => {
+    const mainnets = ['eip155:8453', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', 'near:mainnet'];
+    // Made-up receiving addresses and hot wallets, as the deployment adds them
+    const payTo: Readonly<Record<string, string>> = {
+      'base-usdc': '0x5555555555555555555555555555555555555555', 'solana-usdc': encodeBase58(Uint8Array.from({ length: 32 }, () => 5)),
+      'tempo-usdce': '0x6666666666666666666666666666666666666666', 'near-usdc': 'pay.anyfare.test.near',
+    };
+    const fake = await startFakeFacilitator({ networks: mainnets, feePayer: encodeBase58(Uint8Array.from({ length: 32 }, () => 9)) });
+    try {
+      const loaded = await loadPlatformConfig({
+        env: {
+          CONFIG_PATH: 'config/production.yaml',
+          CONFIG: Buffer.from(JSON.stringify({
+            facilitators: [
+              { name: 'cdp', url: fake.url, networks: mainnets.slice(0, 2) },
+              { name: 'near', url: fake.url, networks: ['near:mainnet'], auth: { type: 'api-key', apiKey: 'FACILITATOR_SECRET' } },
+            ],
+            signer: { wallets: { base: '0x7777777777777777777777777777777777777777', tempo: '0x7777777777777777777777777777777777777777', solana: payTo['solana-usdc'] } },
+          })).toString('base64'),
+        },
+      });
+      const production: PlatformConfig = { ...loaded, assets: loaded.assets.map(asset => ({ ...asset, payTo: payTo[asset.name] })) };
+      const productionX402 = await initializeX402({
+        config: production, timeoutMs: 5_000,
+        facilitators: createFacilitators({ config: production, cdpApiKey: () => { throw new Error('No CDP auth'); }, facilitatorApiKey: () => Secret.from(internalSecret), clock: systemClock }),
+      });
+
+      await withProxy({ config: production, x402: productionX402 }, async url => {
+        const unpaid = await fetch(`${url}/${at('api.target.test')}/v1/mainnet`);
+        const required = decodePaymentRequiredHeader(unpaid.headers.get('payment-required')!);
+
+        expect(unpaid.status).toBe(402);
+        expect(required.resource.url).toBe(`https://pay.anyfare.agents.bakingbad.dev/${at('api.target.test')}/v1/mainnet`);
+        expect(required.accepts.map(option => [option.network, option.payTo])).toEqual([
+          ['eip155:8453', payTo['base-usdc']], ['solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', payTo['solana-usdc']], ['near:mainnet', 'pay.anyfare.test.near'],
+        ]);
+        expect(required.accepts.find(option => option.network === 'near:mainnet')).toEqual({
+          scheme: 'exact', network: 'near:mainnet', amount: '1000', asset: '17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1', payTo: 'pay.anyfare.test.near',
+          maxTimeoutSeconds: 300, extra: {},
+        });
+      });
+      expect(fake.requests.filter(request => request.path === '/supported').length).toBeGreaterThan(0);
+    }
+    finally {
+      await fake.close();
+    }
   });
 
   it('refuses the same signed payment twice: one payment pays for one call', async () => {

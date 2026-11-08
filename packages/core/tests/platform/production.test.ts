@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { loadPlatformConfig, platformSummary } from '../../src/index.js';
+import { findAsset, loadPlatformConfig, paymentMethodsFor, platformSummary, treasuryWallets } from '../../src/index.js';
 
 // config/production.yaml: mainnets only, with the receiving addresses, the MPP recipient and the hot
 // wallets still to be added
@@ -36,14 +36,15 @@ const samples: Readonly<Record<string, string>> = {
   'near-usdc': 'pay.anyfare.testnet',
 };
 
-/** The config with a `payTo` added under each asset, after its `peg` line. */
-const withPayTo = (yaml: string, payToFor: (asset: string) => string): string => {
+/** The config with a `payTo` added under each asset it names one for, after its `peg` line. */
+const withPayTo = (yaml: string, payToFor: (asset: string) => string | undefined): string => {
   let asset = '';
 
   return yaml.split('\n').flatMap(line => {
     asset = /^\s+- name: (\S+)/.exec(line)?.[1] ?? asset;
+    const payTo = payToFor(asset);
 
-    return /^\s+peg: usd$/.test(line) ? [line, `    payTo: ${payToFor(asset)}`] : [line];
+    return /^\s+peg: usd$/.test(line) && payTo !== undefined ? [line, `    payTo: ${payTo}`] : [line];
   }).join('\n');
 };
 
@@ -138,6 +139,33 @@ describe('config/production.yaml', () => {
       '11111111111111111111111111111111',
       '0x2222222222222222222222222222222222222222',
       'pay.anyfare.testnet',
+    ]);
+  });
+
+  it('offers USDC on NEAR mainnet to buyers once its payTo is added, alone among the assets, with the Signer\'s hot wallets beside it', async () => {
+    // Made-up: our NEAR account, and the hot wallets the deployment adds
+    const nearOnly = withPayTo(text, asset => asset === 'near-usdc' ? 'pay.anyfare.test.near' : undefined);
+    // The signer section is the file's last
+    const wallets = '  wallets:\n    base: "0x3333333333333333333333333333333333333333"\n    tempo: "0x3333333333333333333333333333333333333333"\n    solana: "11111111111111111111111111111111"\n';
+    expect(text.trimEnd().split('\n').at(-1)).toMatch(/^ {2}maxPerNetworkPerDay: /);
+    const config = await loadText(`${nearOnly.trimEnd()}\n${wallets}`);
+
+    expect(findAsset(config, 'near-usdc')).toMatchObject({
+      network: { id: 'near:mainnet', namespace: 'near', testnet: false }, address: '17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1', decimals: 6,
+      payTo: 'pay.anyfare.test.near',
+    });
+    expect(config.assets.filter(asset => asset.payTo !== undefined).map(asset => asset.name)).toEqual(['near-usdc']);
+    // Routed endpoints list x402: NEAR's facilitator is ours, and enabled
+    expect(paymentMethodsFor(1_000n, config)).toEqual(['credits', 'x402']);
+    expect(config.signer.wallets).toEqual({
+      base: '0x3333333333333333333333333333333333333333', tempo: '0x3333333333333333333333333333333333333333', solana: '11111111111111111111111111111111',
+    });
+    // The treasury watches the NEAR payTo. The relayer's account isn't in the platform config: the facilitator reports its NEAR.
+    expect(treasuryWallets(config).map(wallet => [wallet.name, wallet.role, wallet.addresses])).toEqual([
+      ['payTo:near-usdc', 'pay_to', ['pay.anyfare.test.near']],
+      ['signer:base', 'signer', ['0x3333333333333333333333333333333333333333']],
+      ['signer:tempo', 'signer', ['0x3333333333333333333333333333333333333333']],
+      ['signer:solana', 'signer', ['11111111111111111111111111111111']],
     ]);
   });
 });

@@ -9,10 +9,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createLogger, randomIdGenerator, Secret } from '@anyfare/common';
 import { findAsset, loadPlatformConfig, treasuryWallets, type Asset, type PlatformConfig } from '@anyfare/core';
 import { createLedger, createPaymentRepository, createRoutingRepository, createTreasuryRepository, type Ledger } from '@anyfare/db';
-import { createFakeClock, createTestDatabase, encodeBase58, startFakeSolanaRpc, type FakeSolanaRpc, type TestDatabase } from '@anyfare/testing';
+import {
+  createFakeClock, createTestDatabase, encodeBase58, startFakeNearRpc, startFakeSolanaRpc, type FakeNearRpc, type FakeSolanaRpc, type TestDatabase,
+} from '@anyfare/testing';
 
 import { createReconciliationJob, createTreasuryBalancesJob, createTreasuryMetrics } from '../../src/treasury/jobs.js';
-import { createEvmBalanceReader, createSolanaBalanceReader, readerFor } from '../../src/treasury/readers.js';
+import { createEvmBalanceReader, createNearBalanceReader, createSolanaBalanceReader, readerFor } from '../../src/treasury/readers.js';
 
 const clock = createFakeClock(fixtureTime(1, 2, 0, 0, 0, 0));
 const logs: Record<string, unknown>[] = [];
@@ -27,6 +29,7 @@ let config: PlatformConfig;
 let ledger: Ledger;
 let evm: Awaited<ReturnType<typeof startFakeEvmRpc>>;
 let solana: FakeSolanaRpc;
+let nearRpc: FakeNearRpc;
 
 /** A JSON-RPC that answers `eth_call` of ERC-20 `balanceOf` from a map, by holder address, and records each call. */
 const startFakeEvmRpc = async () => {
@@ -59,14 +62,14 @@ const startFakeEvmRpc = async () => {
 };
 
 beforeAll(async () => {
-  [database, config, evm, solana] = await Promise.all([
-    createTestDatabase(), loadPlatformConfig({ env: { CONFIG_PATH: 'config/example.yaml' } }), startFakeEvmRpc(), startFakeSolanaRpc(),
+  [database, config, evm, solana, nearRpc] = await Promise.all([
+    createTestDatabase(), loadPlatformConfig({ env: { CONFIG_PATH: 'config/example.yaml' } }), startFakeEvmRpc(), startFakeSolanaRpc(), startFakeNearRpc(),
   ]);
   ledger = createLedger({ db: database.db, clock, ids: randomIdGenerator });
 });
 
 afterAll(async () => {
-  await Promise.all([evm?.close(), solana?.close()]);
+  await Promise.all([evm?.close(), solana?.close(), nearRpc?.close()]);
   await database?.drop();
 });
 
@@ -391,5 +394,113 @@ describe('the Solana balance reader, and the treasury jobs on Solana', () => {
     expect(await latestRun()).toMatchObject({ ranAt: clock.now(), alerts: 1, results: { 'solana-usdc': { ledger: '6', chain: '4.5', drift: '-1.5', alert: true } } });
     expect(logs).toContainEqual(expect.objectContaining({ level: 50, asset: 'solana-usdc', drift: '-1.5', alert: true }));
     expect(await registry.metrics()).toMatch(/treasury_drift_usd\{asset="solana-usdc"\} -1\.5\n/);
+  });
+});
+
+describe('the NEAR balance reader, and the treasury jobs on NEAR', () => {
+  const usdc = () => asset('near-usdc');
+  const nearOnly = () => ({ ...config, assets: assetsNamed('near-usdc') });
+  // The fake answers on any path: a provider's URL may carry its key there
+  const rpcUrl = () => `${nearRpc.url}/near-rpc-key-secret`;
+  const nearReader = (rpcUrls = [rpcUrl()]) => createNearBalanceReader({ rpcUrls, logger, timeoutMs: 2_000 });
+  // Made-up accounts
+  const holder = 'treasury-holder.testnet';
+  const stranger = 'nobody-here.testnet';
+
+  beforeAll(() => {
+    nearRpc.addToken({ contractId: usdc().address, balances: { [holder]: 4_250_000n } });
+  });
+
+  beforeEach(() => {
+    nearRpc.reset();
+  });
+
+  /** A port nothing listens on, with a key in the URL's path and query. */
+  const closedUrl = async (): Promise<string> => {
+    const listener = createNetServer();
+    await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
+    const { port } = listener.address() as AddressInfo;
+    await new Promise(resolve => listener.close(resolve));
+
+    return `http://127.0.0.1:${port}/v2/near-dead-key-secret?apikey=near-query-secret`;
+  };
+
+  it('reads the token\'s ft_balance_of for the account through query call_function at the final block, in atomic units', async () => {
+    expect(await nearReader().balance({ address: holder, asset: usdc() })).toBe(4_250_000n);
+
+    expect(nearRpc.calls).toEqual([{
+      method: 'query',
+      params: {
+        request_type: 'call_function', finality: 'final', account_id: usdc().address, method_name: 'ft_balance_of',
+        args_base64: Buffer.from(JSON.stringify({ account_id: holder })).toString('base64'),
+      },
+    }]);
+  });
+
+  it('reads 0 for an account the token holds nothing for, and never reads storage_balance_of', async () => {
+    expect(await nearReader().balance({ address: stranger, asset: usdc() })).toBe(0n);
+    expect(nearRpc.calls.map(call => (call.params as { method_name?: string }).method_name)).toEqual(['ft_balance_of']);
+  });
+
+  it('reads the chain\'s final height through the same RPCs', async () => {
+    const before = nearRpc.height;
+
+    expect(await nearReader().height()).toBe(before + 1n);
+    expect(nearRpc.calls).toEqual([{ method: 'block', params: { finality: 'final' } }]);
+  });
+
+  it('goes on to the next RPC when one fails, naming only its host', async () => {
+    logs.length = 0;
+    const dead = await closedUrl();
+    const reader = nearReader([dead, rpcUrl()]);
+
+    expect(await reader.balance({ address: holder, asset: usdc() })).toBe(4_250_000n);
+    nearRpc.unavailable(true, { methods: ['block'] });
+    const second = createNearBalanceReader({ rpcUrls: [rpcUrl(), `${nearRpc.url}/other`], logger, timeoutMs: 2_000 });
+    await expect(second.height()).rejects.toMatchObject({ code: 'near_rpc_unavailable', message: 'The NEAR RPC answered block with status 503' });
+
+    expect(logs.filter(line => line['msg'] === 'A NEAR RPC failed: trying the next')).toEqual([
+      expect.objectContaining({ level: 40, host: new URL(dead).host, next: new URL(nearRpc.url).host, error: expect.objectContaining({ message: expect.stringMatching(/^The NEAR RPC didn't answer ft_balance_of: fetch failed/) }) }),
+      expect.objectContaining({ level: 40, host: new URL(nearRpc.url).host, error: expect.objectContaining({ message: 'The NEAR RPC answered block with status 503' }) }),
+    ]);
+    for (const secret of ['near-dead-key-secret', 'near-query-secret', 'near-rpc-key-secret', '/other'])
+      expect(JSON.stringify(logs)).not.toContain(secret);
+  });
+
+  it.each([
+    ['a token it doesn\'t know', () => ({ ...usdc(), address: 'no-token.testnet' }), 'The NEAR RPC refused ft_balance_of: UNKNOWN_ACCOUNT'],
+    ['an account that isn\'t a token', () => ({ ...usdc(), address: holder }), 'The NEAR RPC answered ft_balance_of with the contract\'s error'],
+  ])('throws on %s, without the RPC\'s URL', async (_case, assetOf, message) => {
+    nearRpc.addAccount({ accountId: holder });
+    const failure = await nearReader().balance({ address: stranger, asset: assetOf() }).then(() => undefined, (error: unknown) => error as Error);
+
+    expect(failure?.message).toBe(message);
+    expect(JSON.stringify({ message: failure?.message, cause: String(failure?.cause) })).not.toContain('near-rpc-key-secret');
+  });
+
+  it('reports the NEAR payTo\'s balance, and the reconciliation counts it', async () => {
+    const readers = readerFor({ near: nearReader() });
+    nearRpc.setBalance(usdc().address, usdc().payTo!, 7_500_000n);
+    const registry = new Registry();
+
+    expect(await balances(nearOnly(), readers, registry)).toEqual({ wallets: 1, balances: 1 });
+
+    expect(await registry.metrics()).toMatch(/treasury_balance_usd\{wallet="payTo:near-usdc",asset="near-usdc"\} 7\.5\n/);
+    await ledger.treasuryTransfer({ reference: 'seed-near-usdc', from: { asset: 'seed', amount: 7_500_000n }, to: { asset: 'near-usdc', amount: 7_500_000n } });
+    expect(await reconciliation(nearOnly(), readers)).toEqual({ assets: 1, alerts: 0 });
+    expect((await latestRun()).results).toEqual({ 'near-usdc': { ledger: '7.5', chain: '7.5', drift: '0', alert: false } });
+  });
+
+  it('fails the balance monitor when every NEAR RPC fails, logging their hosts only', async () => {
+    logs.length = 0;
+    const readers = readerFor({ near: nearReader([await closedUrl()]) });
+
+    await expect(balances(nearOnly(), readers)).rejects.toThrow('1 treasury balances couldn\'t be read');
+
+    expect(logs.find(line => line['msg'] === 'Failed to read a treasury balance')).toMatchObject({
+      level: 50, wallet: 'payTo:near-usdc', asset: 'near-usdc', network: 'near:testnet', error: { code: 'near_rpc_unavailable', message: expect.stringMatching(/^The NEAR RPC didn't answer ft_balance_of: fetch failed/) },
+    });
+    for (const secret of ['near-dead-key-secret', 'near-query-secret'])
+      expect(JSON.stringify(logs)).not.toContain(secret);
   });
 });

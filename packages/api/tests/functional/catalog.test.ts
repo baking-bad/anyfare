@@ -117,6 +117,18 @@ describe('GET /v1/catalog', () => {
     expect((await list(withoutRecipient, '?q=weather')).body.endpoints[0]?.methods).toEqual(['credits', 'x402']);
   });
 
+  it('lists x402 for routed endpoints with config/production.yaml once NEAR mainnet\'s payTo is its only one: our facilitator settles there', async () => {
+    const loaded = await loadPlatformConfig({ env: { CONFIG_PATH: 'config/production.yaml' } });
+    // A made-up account of ours on NEAR mainnet
+    const production = { ...loaded, assets: loaded.assets.map(asset => asset.name === 'near-usdc' ? { ...asset, payTo: 'pay.anyfare.test.near' } : asset) };
+    const withNear = await start(production);
+    const without = await start(loaded);
+
+    expect(production.facilitators.find(facilitator => facilitator.networks.includes('near:mainnet'))).toMatchObject({ name: 'near', enabled: true });
+    expect((await list(withNear, '?q=weather')).body.endpoints[0]?.methods).toEqual(['credits', 'x402']);
+    expect((await list(without, '?q=weather')).body.endpoints[0]?.methods).toEqual(['credits']);
+  });
+
   it('refuses a limit outside 1 to 100, a bad cursor, a bad maxPrice, and a long q', async () => {
     const url = await start(config);
 

@@ -7,9 +7,10 @@ import { createPostgres } from '@anyfare/db';
 import {
   checkFacilitators, createFacilitators, createMppSettlementCheck, createTempoRpc, type Facilitator, type MppSettlementCheck,
 } from '@anyfare/payments';
+import { NEAR_RPC_URLS } from '@x402/near';
 
 import { createApp } from './app.js';
-import { createEvmBalanceReader, createSolanaBalanceReader } from './treasury/readers.js';
+import { createEvmBalanceReader, createNearBalanceReader, createSolanaBalanceReader, type NearBalanceReader } from './treasury/readers.js';
 
 export const defaultMetricsPort = 9082;
 // How long the facilitators get to answer /supported at startup, and the Tempo node its chain ID
@@ -27,16 +28,20 @@ const defaultEvmRpcUrls: Readonly<Record<string, string>> = {
 
 const evmNetworkPattern = /^eip155:[1-9][0-9]*$/;
 
-const isHttpUrl = (value: string): boolean => {
+const httpUrlOf = (value: string): URL | undefined => {
   try {
     const url = new URL(value);
 
-    return url.protocol === 'https:' || url.protocol === 'http:';
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url : undefined;
   }
   catch {
-    return false;
+    return undefined;
   }
 };
+
+const isHttpUrl = (value: string): boolean => httpUrlOf(value) !== undefined;
+
+const hostOf = (url: string): string => httpUrlOf(url)?.host ?? 'an RPC';
 
 /**
  * The EVM RPCs the treasury reads, by network: the public defaults, `mpp.rpcUrl` for `mpp.network`,
@@ -56,6 +61,33 @@ export const readEvmRpcUrls = (env: AppEnvironment, config: Pick<PlatformConfig,
     return [network, url] as const;
   }),
 ]);
+
+/**
+ * The NEAR RPCs the treasury and the settlement follow-up read on the platform config's NEAR network, in
+ * order: the items of NEAR_RPC_URLS, `near:mainnet=https://…` separated by commas as the facilitator
+ * reads them, then the x402 SDK's public RPC of the network, the one fallback left when they fail.
+ * Only that network may be named. A URL may carry a key in its path or query string, never as a
+ * username or password, so an invalid item throws without echoing it, and only hosts are logged.
+ */
+export const readNearRpcUrls = (env: AppEnvironment, network: string): readonly string[] => {
+  const urls: string[] = [];
+  for (const item of (env['NEAR_RPC_URLS'] ?? '').split(',').map(entry => entry.trim()).filter(Boolean)) {
+    const separator = item.indexOf('=');
+    const name = separator < 0 ? '' : item.slice(0, separator).trim();
+    const url = separator < 0 ? '' : item.slice(separator + 1).trim();
+    const parsed = httpUrlOf(url);
+    if (!(name in NEAR_RPC_URLS) || !parsed)
+      throw new InvalidEnvironmentError('NEAR_RPC_URLS must be near:<network>=<HTTP(S) URL> items, separated by commas');
+    if (parsed.username !== '' || parsed.password !== '')
+      throw new InvalidEnvironmentError('NEAR_RPC_URLS can\'t carry a username or password: put a key in the path or the query string');
+    if (name !== network)
+      throw new InvalidEnvironmentError(`NEAR_RPC_URLS names ${name}, but the platform config's NEAR network is ${network}`);
+    urls.push(url);
+  }
+  const fallback = (NEAR_RPC_URLS as Readonly<Record<string, string>>)[network];
+
+  return [...new Set([...urls, ...fallback === undefined ? [] : [fallback]])];
+};
 
 /**
  * Each facilitator's startup check on its own: `/supported` with `exact` on each of its networks.
@@ -121,13 +153,22 @@ export const startWorkers = async ({ env, logger }: AppContext): Promise<Running
 
   if (solanaRpc?.public)
     logger.warn({ host: solanaRpc.host }, 'SOLANA_RPC_URL is not set: the treasury reads Solana through its public RPC, which is rate limited');
+  // NEAR: the treasury's balances and the follow-up's height, through the RPCs of the config's one NEAR network
+  const nearNetworks = [...new Set(config.assets.filter(asset => asset.network.namespace === 'near').map(asset => asset.network.id))];
+  const nearRpcUrls = nearNetworks.length === 1 ? readNearRpcUrls(env, nearNetworks[0]!) : [];
+  if (nearNetworks.length > 1)
+    logger.warn({ networks: nearNetworks }, 'The platform config has NEAR assets on several networks: the workers read none of them, and no NEAR refusal is final');
+  const near: NearBalanceReader | undefined = nearRpcUrls.length > 0 ? createNearBalanceReader({ rpcUrls: nearRpcUrls, logger, timeoutMs: balanceReadTimeoutMs }) : undefined;
   const balanceReaders = {
     evm: createEvmBalanceReader({ rpcUrlFor: network => evmRpcUrls.get(network), timeoutMs: balanceReadTimeoutMs }),
     ...solanaRpc ? { solana: createSolanaBalanceReader({ rpcUrl: solanaRpc.url, timeoutMs: balanceReadTimeoutMs }) } : {},
+    ...near ? { near } : {},
   };
 
   const postgres = createPostgres({ url: databaseUrl, logger });
-  const server = createApp({ config, logger, postgres, facilitators, balanceReaders, ...mppCheck ? { mppCheck } : {} });
+  const server = createApp({
+    config, logger, postgres, facilitators, balanceReaders, ...mppCheck ? { mppCheck } : {}, ...near ? { nearHeight: () => near.height() } : {},
+  });
   let port;
   try {
     port = await server.listen(listen);
@@ -136,7 +177,7 @@ export const startWorkers = async ({ env, logger }: AppContext): Promise<Running
     await postgres.close();
     throw error;
   }
-  // Once, what this replica runs. Network names and the Solana RPC's host only: an RPC URL can carry a key.
+  // Once, what this replica runs. Network names and the Solana and NEAR RPCs' hosts only: an RPC URL can carry a key.
   logger.info({
     app: 'workers',
     commit: readCommit(env) ?? null,
@@ -144,7 +185,7 @@ export const startWorkers = async ({ env, logger }: AppContext): Promise<Running
     ...platformSummary(config),
     jobs: server.jobs,
     settlementFollowUp: { facilitators: facilitators.map(facilitator => facilitator.name), mpp: mppCheck !== undefined },
-    treasuryReaders: { evm: [...evmRpcUrls.keys()], solana: solanaRpc?.host ?? null },
+    treasuryReaders: { evm: [...evmRpcUrls.keys()], solana: solanaRpc?.host ?? null, near: nearRpcUrls.length > 0 ? nearRpcUrls.map(hostOf) : null },
     ports: { metricsPort: port },
   }, 'Started');
 
