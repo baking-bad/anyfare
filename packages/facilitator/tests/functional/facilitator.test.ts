@@ -34,6 +34,15 @@ const config: PlatformConfig = await loadPlatformConfig({
 });
 const usdc = findAsset(config, 'near-usdc')!.address;
 const answerMs = 5_000;
+// How often the relayer polls a transaction whose send had no answer, and how often past its expiry
+const pollMs = 200;
+const expiredPollMs = 10 * pollMs;
+// Our proxy's client waits for a settle's answer that long and a margin: a slow run doesn't race the facilitator's deadline
+const clientSettleMs = answerMs + 10_000;
+// A test that waits for a settle's answer through the client, and a little after
+const settleTestMs = clientSettleMs + 5_000;
+// One whose settle answers pending, then waits for the relayer to find the outcome
+const pendingTestMs = clientSettleMs + 15_000;
 
 // Every line any facilitator here writes, debug included
 const lines: Record<string, unknown>[] = [];
@@ -80,14 +89,14 @@ const startStack = async ({ withSecret = true, relayerKeyOnChain = true, relayer
   const own: Record<string, unknown>[] = [];
   const server = createApp({
     config, logger: capture(own), secret: withSecret ? Secret.from(secret) : undefined, relayer: { accountId: relayerId, secretKey: Secret.from(relayerKey.secretKey) },
-    recipients: [payTo, unregistered], rpcUrls: { [network]: rpc.url }, pollMs: 200,
+    recipients: [payTo, unregistered], rpcUrls: { [network]: rpc.url }, pollMs,
   });
   const ports = await server.listen({ host: '127.0.0.1', port: 0, metricsPort: 0 });
   const url = `http://127.0.0.1:${ports.port}`;
 
   return {
     rpc, server, url, metricsUrl: `http://127.0.0.1:${ports.metricsPort}/metrics`, lines: own,
-    client: createFacilitator({ name: 'near', url, networks: [network], signer: undefined, apiKey: Secret.from(secret), requestTimeoutMs: 5_000, settleTimeoutMs: 10_000 }),
+    client: createFacilitator({ name: 'near', url, networks: [network], signer: undefined, apiKey: Secret.from(secret), requestTimeoutMs: 5_000, settleTimeoutMs: clientSettleMs }),
     close: async () => {
       await server.close();
       await rpc.close();
@@ -153,6 +162,10 @@ const call = async (path: string, body?: unknown, { key = secret as string | nul
 
 const sendTxCalls = (on: FakeNearRpc = rpc) => on.calls.filter(item => item.method === 'send_tx');
 const sendTxCount = (on: FakeNearRpc = rpc): number => sendTxCalls(on).length;
+const lookupCount = (on: FakeNearRpc, from = 0): number => on.calls.slice(from).filter(item => item.method === 'tx').length;
+
+/** Until the relayer's first send reaches the node: a settle signs by its deadline, or never. */
+const firstSend = (on: FakeNearRpc) => vi.waitFor(() => expect(sendTxCount(on)).toBe(1), { timeout: answerMs });
 
 const metric = async (name: string, at = stack.metricsUrl): Promise<number | undefined> => {
   const match = new RegExp(`^${name.replace(/[{}]/g, '\\$&')} (\\S+)$`, 'm').exec(await (await fetch(at)).text());
@@ -424,7 +437,7 @@ describe('settles through the relayer, one at a time', () => {
       const next = await payment(newPayer(100_000n, own.rpc));
       own.rpc.broadcast('drop');
       const first = own.client.settle(dropped.payload, dropped.requirements);
-      await vi.waitFor(() => expect(sendTxCount(own.rpc)).toBe(1));
+      await firstSend(own.rpc);
       const started = performance.now();
 
       expect(await own.client.settle(next.payload, next.requirements)).toMatchObject({ success: true });
@@ -436,7 +449,7 @@ describe('settles through the relayer, one at a time', () => {
     finally {
       await own.close();
     }
-  }, 15_000);
+  }, settleTestMs);
 });
 
 describe('the relayer\'s transaction', () => {
@@ -470,9 +483,11 @@ describe('the relayer\'s transaction', () => {
       const paid = await payment(payer);
       own.rpc.broadcast('drop');
       const settled = own.client.settle(paid.payload, paid.requirements);
-      await vi.waitFor(() => expect(sendTxCount(own.rpc)).toBe(1));
+      await firstSend(own.rpc);
+      const down = own.rpc.calls.length;
       own.rpc.unavailable(true);
-      await new Promise(resolve => setTimeout(resolve, 2_000));
+      // Two lookups, each tried twice, get no answer
+      await vi.waitFor(() => expect(lookupCount(own.rpc, down)).toBeGreaterThanOrEqual(4), { timeout: answerMs });
       own.rpc.unavailable(false);
 
       expect(await settled).toEqual({ success: true, transaction: own.rpc.transactions[0]!.hash, network, payer: payer.accountId });
@@ -483,7 +498,7 @@ describe('the relayer\'s transaction', () => {
     finally {
       await own.close();
     }
-  }, 15_000);
+  }, settleTestMs);
 
   it.concurrent('answers pending with its hash while the node is down past the deadline, then settled once the resend lands', async () => {
     const own = await startStack();
@@ -493,7 +508,7 @@ describe('the relayer\'s transaction', () => {
       own.rpc.broadcast('drop');
       const started = performance.now();
       const answer = own.client.settle(storedOf(paid).paymentPayload, storedOf(paid).paymentRequirements);
-      await vi.waitFor(() => expect(sendTxCount(own.rpc)).toBe(1));
+      await firstSend(own.rpc);
       own.rpc.unavailable(true);
 
       const pending = await answer;
@@ -514,7 +529,7 @@ describe('the relayer\'s transaction', () => {
     finally {
       await own.close();
     }
-  }, 20_000);
+  }, pendingTestMs);
 
   it.concurrent('stays pending while lookups get no answer, even past the expiry, and settles once they show the outcome', async () => {
     // The node holds its answer for long; the transfer lands at once
@@ -535,13 +550,13 @@ describe('the relayer\'s transaction', () => {
       expect(await own.client.settle(paid.payload, paid.requirements)).toEqual(pending);
 
       own.rpc.unavailable(false);
-      await vi.waitFor(() => expect(lastLine('A settle that had answered became final', own.lines)).toMatchObject({ result: 'settled' }), { timeout: 5_000 });
+      await vi.waitFor(() => expect(lastLine('A settle that had answered became final', own.lines)).toMatchObject({ result: 'settled' }), { timeout: expiredPollMs + 5_000 });
       expect(await own.client.settle(paid.payload, paid.requirements)).toEqual({ success: true, transaction: pending.transaction, network, payer: payer.accountId });
     }
     finally {
       await own.close();
     }
-  }, 20_000);
+  }, pendingTestMs);
 
   it.concurrent('keeps a dropped transaction\'s nonce from the next one, and forgets it once the node refuses its resend', async () => {
     const own = await startStack();
@@ -553,7 +568,7 @@ describe('the relayer\'s transaction', () => {
       const next = await payment(second);
       own.rpc.broadcast('drop');
       const answer = call('/settle', bodyOf(dropped), { at: own.url });
-      await vi.waitFor(() => expect(sendTxCount(own.rpc)).toBe(1));
+      await firstSend(own.rpc);
 
       // The chain's nonce lags: the next transaction takes two above it
       expect(await own.client.settle(next.payload, next.requirements)).toMatchObject({ success: true });
@@ -580,7 +595,7 @@ describe('the relayer\'s transaction', () => {
     finally {
       await own.close();
     }
-  }, 15_000);
+  }, settleTestMs);
 
   it.concurrent('is polled and found when the node holds the answer past the send\'s deadline, and the next nonce is higher', async () => {
     const own = await startStack({ timeoutMs: 3_000 });
@@ -646,7 +661,7 @@ describe('the relayer\'s transaction', () => {
     finally {
       await own.close();
     }
-  }, 20_000);
+  }, pendingTestMs);
 
   it.concurrent('is signed again with a new nonce after an InvalidNonce refusal, and lands', async () => {
     const own = await startStack();
@@ -705,7 +720,7 @@ describe('the relayer\'s transaction', () => {
       const paid = await payment(payer);
       own.rpc.broadcast('drop');
       const answer = own.client.settle(paid.payload, paid.requirements);
-      await vi.waitFor(() => expect(sendTxCount(own.rpc)).toBe(1));
+      await firstSend(own.rpc);
       // The first resend is refused as by one node of a pool; the next one lands
       own.rpc.broadcast('refuse', { refusal: 'expired' });
 
@@ -715,7 +730,7 @@ describe('the relayer\'s transaction', () => {
     finally {
       await own.close();
     }
-  }, 15_000);
+  }, settleTestMs);
 
   it.concurrent('looks a transaction up with wait_until NONE only: under FINAL the node answers an unknown one with a 408', async () => {
     const own = await startStack({ timeoutMs: 300 });
@@ -743,8 +758,9 @@ describe('the relayer\'s transaction', () => {
     const paid = await payment(payer);
     own.rpc.broadcast('drop', { times: 1_000 });
     const answer = call('/settle', bodyOf(paid), { at: own.url });
-    await vi.waitFor(() => expect(sendTxCount(own.rpc)).toBe(1));
-    await new Promise(resolve => setTimeout(resolve, config.timeouts.connectMs + 200));
+    await firstSend(own.rpc);
+    // Its first send is over: the relayer polls it
+    await vi.waitFor(() => expect(lookupCount(own.rpc)).toBeGreaterThan(0), { timeout: answerMs });
 
     await own.server.close();
     const sent = sendTxCount(own.rpc);
@@ -754,7 +770,7 @@ describe('the relayer\'s transaction', () => {
     await new Promise(resolve => setTimeout(resolve, 1_500));
     expect(sendTxCount(own.rpc)).toBe(sent);
     await own.rpc.close();
-  }, 15_000);
+  }, settleTestMs);
 });
 
 describe('the shared secret', () => {
