@@ -9,5 +9,6 @@ export { createRedisSpendLimits, spendKeyPrefix } from './spend.js';
 export type { SpendEntry, SpendLimits, SpendRefusal, SpendReservation, SpendWindowIds } from './spend.js';
 export {
   createNearPayer, createRedisNearPayerStore, InvalidNearKeyError, nearKeyPrefix, nearLeaseMs, nearPublicKeyOf, NearRpcError, NearStoreError, readNearAccessKey,
+  releasedQuoteMs,
 } from './near.js';
-export type { NearAccessKey, NearLease, NearPayer, NearPayerStore, NearWallet } from './near.js';
+export type { NearAccessKey, NearLease, NearLeaseTake, NearPayer, NearPayerStore, NearWallet } from './near.js';

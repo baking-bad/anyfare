@@ -59,6 +59,7 @@ const capture = () => createLogger({ level: 'debug' }, { write: (line: string) =
 const lastLine = (msg: string): Record<string, unknown> | undefined => lines.filter(line => line['msg'] === msg).at(-1);
 const leaseKey = () => `${redis.prefix}${nearKeyPrefix}payer:${hotWallet}`;
 const nonceKey = () => `${redis.prefix}${nearKeyPrefix}nonce:${hotWallet}:${key.publicKey}`;
+const releasedKey = (quoteId: string) => `${redis.prefix}${nearKeyPrefix}released:${quoteId}`;
 
 beforeAll(async () => {
   [database, redis, rpc] = await Promise.all([createTestDatabase(), createTestRedis(), startFakeNearRpc()]);
@@ -89,8 +90,9 @@ const baseOption = (amount: string) => ({
 });
 
 // Each sign has its own quote ID, as the proxy's payment IDs are: `pay_` and a UUID
-const sign = async (requirement: Record<string, unknown>, { quotedPrice = String(requirement['amount']), requestId = 'req-near', at = url } = {}) => {
-  const quoteId = `pay_${randomUUID()}`;
+const sign = async (
+  requirement: Record<string, unknown>, { quotedPrice = String(requirement['amount']), requestId = 'req-near', at = url, quoteId = `pay_${randomUUID()}` } = {},
+) => {
   const response = await fetch(`${at}/internal/v1/sign`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-signer-secret': secret, 'x-request-id': requestId },
@@ -282,6 +284,42 @@ describe('the Signer on NEAR', () => {
     expect(lastLine('Released a quote\'s NEAR lease')).toMatchObject({ level: 20 });
 
     await signAndRelease(nearOption('1000'));
+  });
+
+  it('refuses with quote_released a sign whose quote was released before it took the lease: nothing reserved, recorded, read, or held', async () => {
+    await startNew('day');
+    const quoteId = `pay_${randomUUID()}`;
+    const calls = rpc.calls.length;
+
+    expect(await release(quoteId)).toEqual({ status: 204, body: undefined });
+    const markedMs = await redis.client.pTTL(releasedKey(quoteId));
+    const refused = await sign(nearOption('1000'), { quoteId, requestId: 'req-near-released' });
+
+    expect(refused).toMatchObject({ status: 422, body: { error: { code: 'signing_refused', message: 'The proxy released this quote before it was signed' } } });
+    expect(lines.find(line => line['requestId'] === 'req-near-released' && line['msg'] === 'Refused to sign a routed payment')).toMatchObject({
+      level: 30, result: 'refused', reason: 'quote_released', quoteId,
+    });
+    // Remembered for 10 minutes by Redis's clock: longer than any lease
+    expect(markedMs).toBeGreaterThan(599_000);
+    expect(markedMs).toBeLessThanOrEqual(600_000);
+    expect(await spentToday(near)).toBe(0n);
+    expect(await recordsOf('req-near-released')).toEqual([]);
+    expect(await redis.client.get(leaseKey())).toBeNull();
+    expect(rpc.calls.length).toBe(calls);
+    // Any other quote signs at once
+    await signAndRelease(nearOption('1000'));
+  });
+
+  it('marks no quote released when its release freed the lease it held, and signs in the usual order', async () => {
+    const signed = await sign(nearOption('1000'));
+    expect(signed.status).toBe(200);
+    expect(await redis.client.get(leaseKey())).toBe(signed.quoteId);
+
+    expect(await release(signed.quoteId)).toEqual({ status: 204, body: undefined });
+
+    expect(await redis.client.get(leaseKey())).toBeNull();
+    expect(await redis.client.exists(releasedKey(signed.quoteId))).toBe(0);
+    expect(lines.filter(line => line['msg'] === 'Released a quote\'s NEAR lease' && line['quoteId'] === signed.quoteId).map(line => line['released'])).toEqual([true]);
   });
 
   it('answers a release with the shared secret only, and 400 for a quote ID with a character it can\'t hold', async () => {

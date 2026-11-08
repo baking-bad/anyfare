@@ -15,7 +15,9 @@ import {
 } from '@anyfare/core';
 import { RedisNotReadyError, type RoutingRepository } from '@anyfare/db';
 
-import { createNearPayer, nearLeaseMs, NearStoreError, type NearLease, type NearPayer, type NearPayerStore, type NearWallet } from './near.js';
+import {
+  createNearPayer, nearLeaseMs, NearStoreError, type NearLease, type NearLeaseTake, type NearPayer, type NearPayerStore, type NearWallet,
+} from './near.js';
 import type { SpendEntry, SpendLimits, SpendRefusal } from './spend.js';
 import { errorReason, maxFeeOf, signTempoCharge } from './tempo.js';
 
@@ -25,7 +27,7 @@ import { errorReason, maxFeeOf, signTempoCharge } from './tempo.js';
  * count it.
  */
 export type SigningRefusal = X402OptionRefusal | 'not_in_registry' | 'no_wallet' | 'above_quote' | 'above_max_per_call' | 'expired' | TempoChargeRefusal
-  | SpendRefusal;
+  | SpendRefusal | 'quote_released';
 
 /** A spend window's total against its limit, in USD, when a limit refused. */
 export interface SpendWindow {
@@ -274,11 +276,12 @@ export const createSigner = ({
   /**
    * A NEAR payment, with the checks done: the payer's lease, then the reservation, then the chain's
    * reads and the signature, then the record. The lease holds the proxy's quote ID, which the proxy
-   * knows even when the Signer's answer never reached it, so it can always release it.
+   * knows even when the Signer's answer never reached it, so it can always release it. A quote the
+   * proxy released before its lease was taken, having given up on it, is refused: nothing is taken.
    */
   const signNear = async (request: SignRequest, payer: NearPayer, store: NearPayerStore, payment: X402Payment, log: LogSink): Promise<SignResult> => {
     const lease: NearLease = { accountId: payer.accountId, quoteId: request.quoteId };
-    let taken: boolean;
+    let taken: NearLeaseTake;
     try {
       taken = await store.takeLease(lease, nearLeaseMs(payment.maxTimeoutSeconds));
     }
@@ -287,7 +290,9 @@ export const createSigner = ({
       await freeLease(store, lease, log);
       throw error;
     }
-    if (!taken)
+    if (taken === 'released')
+      return refuse('The proxy released this quote before it was signed', 'quote_released');
+    if (taken === 'busy')
       throw new PayerBusyError();
     let reservation: SpendEntry;
     try {

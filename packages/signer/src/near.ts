@@ -7,8 +7,13 @@ import { computeTimeoutBlocks, DEFAULT_FT_TRANSFER_GAS, FT_TRANSFER_METHOD, ONE_
 import { isRecord, outboundErrorCode, type Secret } from '@anyfare/common';
 import { RedisNotReadyError, type Redis } from '@anyfare/db';
 
-// The Signer's NEAR keys after the connection's prefix: the payer's lease and the last nonce per key
+// The Signer's NEAR keys after the connection's prefix: the payer's lease, the quotes released before
+// they took it, and the last nonce per key
 export const nearKeyPrefix = 'near:';
+
+// A quote released while it held no lease is remembered this long, so a sign that comes later takes
+// nothing. Longer than any lease: the longest is 300 s and a minute.
+export const releasedQuoteMs = 10 * 60_000;
 
 // The last nonce signed with a key is remembered this long: past a delegate action's window, the
 // chain's own nonce has caught up, or the delegate action can no longer run
@@ -34,11 +39,20 @@ export interface NearLease {
   readonly quoteId: string;
 }
 
+/**
+ * What taking the lease came to: `taken`; `busy`, another payment holds it; or `released`, the proxy
+ * released this quote before it was signed, so nothing is taken.
+ */
+export type NearLeaseTake = 'taken' | 'busy' | 'released';
+
 /** Port: the NEAR hot wallet's lease and the last nonce it signed, in the Signer's Redis. */
 export interface NearPayerStore {
-  /** Takes the payer's lease for a payment, for `lifetimeMs` by Redis's clock. False: another payment holds it. */
-  takeLease(lease: NearLease, lifetimeMs: number): Promise<boolean>;
-  /** Frees the payer's lease only while this payment holds it. Whether it did. */
+  /** Takes the payer's lease for a payment, for `lifetimeMs` by Redis's clock, unless another holds it or its quote was released. */
+  takeLease(lease: NearLease, lifetimeMs: number): Promise<NearLeaseTake>;
+  /**
+   * Frees the payer's lease only while this payment holds it. Otherwise marks its quote released, for
+   * `releasedQuoteMs`, so a sign of it that comes later takes nothing. Whether it freed the lease.
+   */
   releaseLease(lease: NearLease): Promise<boolean>;
   /** The last nonce signed with this key, when one is remembered. */
   lastNonce(accountId: string, publicKey: string): Promise<bigint | undefined>;
@@ -54,29 +68,36 @@ export interface NearPayerStore {
  */
 export const nearLeaseMs = (maxTimeoutSeconds: number): number => maxTimeoutSeconds * 1_000 + 60_000;
 
-// Sets the lease only when no payment holds it, until Redis's own clock passes its lifetime, so every
-// Signer counts it alike. KEYS[1]: the payer's key. ARGV: the quote ID, the lifetime in ms.
+// Sets the lease only when no payment holds it and its quote wasn't released, until Redis's own clock
+// passes its lifetime, so every Signer counts it alike. KEYS: the payer's key, the quote's released
+// marker. ARGV: the quote ID, the lifetime in ms. 1: taken; 0: another payment holds it; 2: released.
 const takeLeaseScript = `
+if redis.call('EXISTS', KEYS[2]) == 1 then return 2 end
 local time = redis.call('TIME')
 local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 if redis.call('SET', KEYS[1], ARGV[1], 'NX', 'PXAT', string.format('%d', now + tonumber(ARGV[2]))) then return 1 end
 return 0`;
 
-// Deletes the lease only when this quote holds it: a late release never frees a newer payment's lease
+// Deletes the lease only when this quote holds it: a late release never frees a newer payment's lease.
+// Otherwise the quote is marked released, in the same step, so a sign of it still on its way takes
+// nothing. KEYS: the payer's key, the quote's released marker. ARGV: the quote ID, the marker's lifetime in ms.
 const releaseLeaseScript = `
 if redis.call('GET', KEYS[1]) == ARGV[1] then
   redis.call('DEL', KEYS[1])
   return 1
 end
+redis.call('SET', KEYS[2], '1', 'PX', ARGV[2])
 return 0`;
 
 /**
  * The NEAR payer's lease and nonces in Redis: the lease at `<prefix>near:payer:<account>`, whose value is
- * the payment's quote ID, and the last nonce at `<prefix>near:nonce:<account>:<public key>`.
- * Fails closed: while Redis is down, nothing is signed.
+ * the payment's quote ID, a quote released before it held the lease at `<prefix>near:released:<quote ID>`,
+ * and the last nonce at `<prefix>near:nonce:<account>:<public key>`. Fails closed: while Redis is down,
+ * nothing is signed.
  */
 export const createRedisNearPayerStore = ({ redis }: { readonly redis: Redis }): NearPayerStore => {
   const leaseKey = (accountId: string) => `${redis.prefix}${nearKeyPrefix}payer:${accountId}`;
+  const releasedKey = (quoteId: string) => `${redis.prefix}${nearKeyPrefix}released:${quoteId}`;
   const nonceKey = (accountId: string, publicKey: string) => `${redis.prefix}${nearKeyPrefix}nonce:${accountId}:${publicKey}`;
   const ready = () => {
     if (!redis.client.isReady)
@@ -86,13 +107,14 @@ export const createRedisNearPayerStore = ({ redis }: { readonly redis: Redis }):
   return {
     takeLease: async ({ accountId, quoteId }, lifetimeMs) => {
       ready();
+      const result = await redis.client.eval(takeLeaseScript, { keys: [leaseKey(accountId), releasedKey(quoteId)], arguments: [quoteId, String(Math.ceil(lifetimeMs))] });
 
-      return await redis.client.eval(takeLeaseScript, { keys: [leaseKey(accountId)], arguments: [quoteId, String(Math.ceil(lifetimeMs))] }) === 1;
+      return result === 1 ? 'taken' : result === 2 ? 'released' : 'busy';
     },
     releaseLease: async ({ accountId, quoteId }) => {
       ready();
 
-      return await redis.client.eval(releaseLeaseScript, { keys: [leaseKey(accountId)], arguments: [quoteId] }) === 1;
+      return await redis.client.eval(releaseLeaseScript, { keys: [leaseKey(accountId), releasedKey(quoteId)], arguments: [quoteId, String(releasedQuoteMs)] }) === 1;
     },
     lastNonce: async (accountId, publicKey) => {
       ready();

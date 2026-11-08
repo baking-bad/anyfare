@@ -33,9 +33,10 @@ const usdc = findAsset(config, 'near-usdc')!.address;
 const clock = createFakeClock(fixtureTime(0, 12, 9, 30, 0, 0));
 const key = generateNearKey();
 
-/** The Signer's Redis, in memory: the payer's lease and the last nonces, what was asked of them, and what fails. */
+/** The Signer's Redis, in memory: the payer's lease, the released quotes, the last nonces, what was asked of them, and what fails. */
 const memoryStore = () => {
   const leases = new Map<string, string>();
+  const releasedQuotes = new Set<string>();
   const nonces = new Map<string, bigint>();
   const taken: { readonly lease: NearLease; readonly lifetimeMs: number }[] = [];
   const released: NearLease[] = [];
@@ -45,16 +46,20 @@ const memoryStore = () => {
       taken.push({ lease, lifetimeMs });
       if (failing.takeLease)
         throw new Error('the connection was reset');
+      if (releasedQuotes.has(lease.quoteId))
+        return 'released';
       if (leases.has(lease.accountId))
-        return false;
+        return 'busy';
       leases.set(lease.accountId, lease.quoteId);
 
-      return true;
+      return 'taken';
     },
     releaseLease: async lease => {
       released.push(lease);
-      if (leases.get(lease.accountId) !== lease.quoteId)
+      if (leases.get(lease.accountId) !== lease.quoteId) {
+        releasedQuotes.add(lease.quoteId);
         return false;
+      }
       leases.delete(lease.accountId);
 
       return true;
@@ -72,7 +77,7 @@ const memoryStore = () => {
     },
   };
 
-  return { store, leases, nonces, taken, released, failing };
+  return { store, leases, releasedQuotes, nonces, taken, released, failing };
 };
 
 const nearOption = (amount: string, overrides: Record<string, unknown> = {}) => ({
@@ -392,6 +397,24 @@ describe('the Signer\'s NEAR payments, in order', () => {
     expect(await signer.release('pay_near_held')).toBe(true);
     expect(await signer.release('pay_near_held')).toBe(false);
     expect((await signer.sign(x402(nearOption('1000'), '1000', 'pay_near_next'))).network).toBe(near);
+  });
+
+  it('refuses a quote the proxy released before it was signed (quote_released): no lease, no reservation, no read, no record', async () => {
+    const signer = signerWith();
+    const before = { reservations: reservations.length, recorded: recorded.length, calls: rpc.calls.length };
+
+    expect(await signer.release('pay_near_abandoned')).toBe(false);
+    const failure = await failureOf(signer.sign(x402(nearOption('1000'), '1000', 'pay_near_abandoned')));
+
+    expect(failure).toBeInstanceOf(SigningRefusedError);
+    expect(failure).toMatchObject({ code: 'signing_refused', reason: 'quote_released', message: 'The proxy released this quote before it was signed' });
+    expect(memory.taken).toEqual([{ lease: { accountId: hotWallet, quoteId: 'pay_near_abandoned' }, lifetimeMs: 120_000 }]);
+    expect(memory.leases.size).toBe(0);
+    expect(reservations.length).toBe(before.reservations);
+    expect(recorded.length).toBe(before.recorded);
+    expect(rpc.calls.length).toBe(before.calls);
+    // Another quote still signs
+    expect((await signer.sign(x402(nearOption('1000'), '1000', 'pay_near_after'))).network).toBe(near);
   });
 
   it('releases nothing without a NEAR wallet', async () => {
