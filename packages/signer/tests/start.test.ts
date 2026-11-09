@@ -36,6 +36,27 @@ describe('reading the hot wallets\' keys', () => {
     expect(env['SIGNER_BASE_KEY']).toBeUndefined();
   });
 
+  it.each([
+    ['SIGNER_BASE_KEY', 'signer.wallets.base'],
+    ['SIGNER_TEMPO_KEY', 'signer.wallets.tempo'],
+  ] as const)('refuses %s when its address isn\'t %s, and takes it out of the environment', (name, wallet) => {
+    const key = generatePrivateKey();
+    const configured = privateKeyToAccount(generatePrivateKey()).address;
+    const env: Record<string, string | undefined> = { [name]: key };
+
+    expect(() => readWallet(env, name, configured))
+      .toThrow(`${name}'s address, ${privateKeyToAccount(key).address}, isn't ${wallet}, ${configured}`);
+    expect(env[name]).toBeUndefined();
+  });
+
+  it('takes a key whose address is the configured wallet, in any letter case', () => {
+    const key = generatePrivateKey();
+    const { address } = privateKeyToAccount(key);
+
+    expect(readWallet({ SIGNER_BASE_KEY: key }, 'SIGNER_BASE_KEY', address.toLowerCase())?.address).toBe(address);
+    expect(readWallet({ SIGNER_TEMPO_KEY: key }, 'SIGNER_TEMPO_KEY', address)?.address).toBe(address);
+  });
+
   it('reads no wallet when the key isn\'t set', () => {
     expect(readWallet({}, 'SIGNER_BASE_KEY')).toBeUndefined();
     expect(readWallet({ SIGNER_TEMPO_KEY: ' ' }, 'SIGNER_TEMPO_KEY')).toBeUndefined();

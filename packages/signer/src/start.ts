@@ -44,9 +44,10 @@ const takeKey = (env: AppEnvironment, name: string): Secret | undefined => {
 /**
  * A hot wallet's private key, `0x` and 64 hex characters: SIGNER_BASE_KEY for Base, SIGNER_TEMPO_KEY for
  * Tempo. Optional: without it, nothing is paid on that chain. One key may serve both: the address is the
- * same on each.
+ * same on each. Its address must be `configured`, the config's wallet for the chain, when that's set, or
+ * the balance monitor watches another wallet than the one that pays.
  */
-export const readWallet = (env: AppEnvironment, name: 'SIGNER_BASE_KEY' | 'SIGNER_TEMPO_KEY') => {
+export const readWallet = (env: AppEnvironment, name: 'SIGNER_BASE_KEY' | 'SIGNER_TEMPO_KEY', configured?: string) => {
   const key = takeKey(env, name);
   if (!key)
     return undefined;
@@ -54,8 +55,13 @@ export const readWallet = (env: AppEnvironment, name: 'SIGNER_BASE_KEY' | 'SIGNE
     const value = key.expose().trim();
     if (!/^0x[0-9a-fA-F]{64}$/.test(value))
       throw new InvalidEnvironmentError(`${name} must be 0x and 64 hex characters`);
+    const account = privateKeyToAccount(value as `0x${string}`);
+    if (configured !== undefined && configured.toLowerCase() !== account.address.toLowerCase()) {
+      const wallet = name === 'SIGNER_BASE_KEY' ? 'signer.wallets.base' : 'signer.wallets.tempo';
+      throw new InvalidEnvironmentError(`${name}'s address, ${account.address}, isn't ${wallet}, ${configured}`);
+    }
 
-    return privateKeyToAccount(value as `0x${string}`);
+    return account;
   }
   finally {
     key.destroy();
@@ -219,8 +225,8 @@ export const startSigner = async ({ env, logger }: AppContext): Promise<RunningA
     metricsPort: readPort(env, 'METRICS_PORT', defaultMetricsPort),
   };
   const secret = readSignerSecret(env);
-  const base = readWallet(env, 'SIGNER_BASE_KEY');
-  const tempo = readWallet(env, 'SIGNER_TEMPO_KEY');
+  const base = readWallet(env, 'SIGNER_BASE_KEY', config.signer.wallets.base);
+  const tempo = readWallet(env, 'SIGNER_TEMPO_KEY', config.signer.wallets.tempo);
   const solana = await readSolanaWallet(env, config);
   const near = readNearWallet(env, config);
   if (!base && !tempo && !solana && !near)
