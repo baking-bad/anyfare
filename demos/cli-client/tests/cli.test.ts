@@ -142,6 +142,7 @@ function fakeIo(isTerminal: boolean): { io: Io; out: () => string; err: () => st
     fetch: async () => {
       throw new Error('These tests use no network');
     },
+    appDir: '/nonexistent/anyfare-cli-test',
   };
   return { io, out: () => out, err: () => err };
 }
@@ -165,8 +166,15 @@ describe('runCli', () => {
 
   it('returns 1 for a command that is not built yet', async () => {
     const fake = fakeIo(false);
-    expect(await runCli(['balance'], fake.io)).toBe(1);
-    expect(fake.err()).toBe('✘ balance is not built yet\n');
+    expect(await runCli(['topup', '--network', 'base', '--token', 'USDC', '--amount', '1'], fake.io)).toBe(1);
+    expect(fake.err()).toBe('✘ topup is not built yet\n');
+    expect(await runCli(['call', '--tool', 'cmc', '--pay', 'near', '--yes'], fake.io)).toBe(1);
+    expect(fake.err()).toContain('✘ call --pay near is not built yet\n');
+  });
+
+  it('refuses a label longer than Anyfare takes', () => {
+    expect(usageMessage(`key create --label ${'x'.repeat(61)}`)).toBe('--label is at most 60 characters');
+    expect(parse(`key create --label ${'x'.repeat(60)}`)).toMatchObject({ label: 'x'.repeat(60) });
   });
 
   it('returns 2 for interactive mode without a terminal', async () => {

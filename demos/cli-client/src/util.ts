@@ -4,8 +4,8 @@
 export class Stop extends Error {
   readonly notCharged: boolean;
 
-  constructor(message: string, options: { readonly notCharged?: boolean } = {}) {
-    super(message);
+  constructor(message: string, options: { readonly notCharged?: boolean; readonly cause?: unknown } = {}) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = 'Stop';
     this.notCharged = options.notCharged ?? false;
   }

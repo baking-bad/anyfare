@@ -1,4 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import type { Io } from '../src/cli.ts';
 import type { Fetch } from '../src/http.ts';
@@ -56,8 +59,36 @@ export function fakeFetch(routes: Readonly<Record<string, () => Response>>): { f
   return { fetch: fetchFn, calls };
 }
 
+/** An answer whose body breaks after its status arrived, with a network error of this code. */
+export function brokenAnswer(status: number, code: string, headers: HeadersInit = {}): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(new TypeError('terminated', { cause: Object.assign(new Error(`Made up: ${code}`), { code }) }));
+    },
+  });
+  return new Response(body, { status, headers });
+}
+
+/** True when the tests run as root, who can write a directory or a file whatever its mode. */
+export const RUNS_AS_ROOT = process.getuid?.() === 0;
+export const ROOT_NOTE = 'runs as root: root can write whatever the mode, so chmod 500 and 400 prove nothing here';
+
+/** A new empty directory to stand for the app's directory, and a way to remove it. */
+export function tempAppDir(): { dir: string; remove: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'anyfare-cli-test-'));
+  return { dir, remove: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+export interface IoOptions {
+  /** The app's directory. Default: one that does not exist, so nothing can be saved by mistake. */
+  readonly appDir?: string;
+  readonly isTerminal?: boolean;
+  /** What is typed at the questions, such as "n\n". */
+  readonly input?: string;
+}
+
 /** An Io that keeps what is written to it. */
-export function captureIo(fetchFn: Fetch, env: Record<string, string> = {}) {
+export function captureIo(fetchFn: Fetch, env: Record<string, string> = {}, options: IoOptions = {}) {
   let out = '';
   let err = '';
   const sink = (append: (text: string) => void) =>
@@ -67,13 +98,16 @@ export function captureIo(fetchFn: Fetch, env: Record<string, string> = {}) {
         done();
       },
     });
+  const stdin = new PassThrough();
+  if (options.input !== undefined) stdin.end(options.input);
   const io: Io = {
     stdout: sink((text) => (out += text)),
     stderr: sink((text) => (err += text)),
-    stdin: new PassThrough(),
-    isTerminal: false,
+    stdin,
+    isTerminal: options.isTerminal ?? false,
     env,
     fetch: fetchFn,
+    appDir: options.appDir ?? join(tmpdir(), `anyfare-cli-no-app-${randomUUID()}`),
   };
   return { io, out: () => out, err: () => err };
 }

@@ -1,10 +1,14 @@
 import { parseArgs } from 'node:util';
 import type { Readable, Writable } from 'node:stream';
+import { createPaymentKey, showBalance, signUp } from './account.ts';
+import { createContext } from './context.ts';
+import type { Context } from './context.ts';
+import { hideKeys } from './errors.ts';
 import { explainHeader, explainLines, planFailure, readPlan } from './explain.ts';
 import { loadConfig } from './config.ts';
 import type { Fetch } from './http.ts';
 import { createStyle } from './style.ts';
-import { TOOLS as IMPLEMENTATIONS } from './tools/index.ts';
+import { DEFAULT_ARGS, TOOLS as IMPLEMENTATIONS } from './tools/index.ts';
 import { Stop, UsageError, toAtomic } from './util.ts';
 
 export type Tool = 'cmc' | '3route' | 'evidence';
@@ -57,6 +61,8 @@ export interface Io {
   readonly isTerminal: boolean;
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly fetch: Fetch;
+  /** The app's directory, where `.env.local` is. The app writes nowhere else. */
+  readonly appDir: string;
 }
 
 const TOOLS: readonly Tool[] = ['cmc', '3route', 'evidence'];
@@ -82,6 +88,9 @@ const OPTIONS = {
 } as const;
 
 type Flags = Partial<Record<keyof typeof OPTIONS, string | boolean>>;
+
+/** The longest label Anyfare takes for a payment key. */
+const MAX_LABEL_LENGTH = 60;
 
 const TOOL_FLAGS: Record<Tool, readonly string[]> = {
   cmc: ['pair'],
@@ -163,17 +172,19 @@ function toolArgs(name: string, flags: Flags): ToolArgs {
   const get = (flag: keyof typeof OPTIONS, fallback: string): string => str(flags, flag) ?? fallback;
   switch (tool) {
     case 'cmc':
-      return { tool, pair: get('pair', 'BTC/USD') };
-    case '3route':
+      return { tool, pair: get('pair', DEFAULT_ARGS.cmc.pair) };
+    case '3route': {
+      const defaults = DEFAULT_ARGS['3route'];
       return {
         tool,
-        chain: get('chain', 'base'),
-        from: get('from', 'USDC'),
-        to: get('to', 'WETH'),
-        amount: get('amount', '1'),
+        chain: get('chain', defaults.chain),
+        from: get('from', defaults.from),
+        to: get('to', defaults.to),
+        amount: get('amount', defaults.amount),
       };
+    }
     case 'evidence':
-      return { tool, account: get('account', 'anyfare.near') };
+      return { tool, account: get('account', DEFAULT_ARGS.evidence.account) };
   }
 }
 
@@ -233,9 +244,13 @@ export function parseCommand(argv: readonly string[]): Command {
       if (rest[0] !== 'create') throw new UsageError('key needs the word create: key create');
       extra(1);
       rejectOther('key create', flags, ['label', 'daily', 'max-price', 'yes']);
+      const label = str(flags, 'label') ?? 'demo';
+      if (label.length > MAX_LABEL_LENGTH) {
+        throw new UsageError(`--label is at most ${MAX_LABEL_LENGTH} characters`);
+      }
       return {
         kind: 'key-create',
-        label: str(flags, 'label') ?? 'demo',
+        label,
         daily: usdFlag(flags, 'daily', '1'),
         maxPrice: usdFlag(flags, 'max-price', '0.02'),
         yes,
@@ -311,7 +326,7 @@ Exit codes:
   2  Bad usage.
 `;
 
-type Handler<K extends Command['kind']> = (command: Extract<Command, { kind: K }>, io: Io) => Promise<number>;
+type Handler<K extends Command['kind']> = (command: Extract<Command, { kind: K }>, ctx: Context) => Promise<number>;
 
 const COMMAND_NAMES: Record<Command['kind'], string> = {
   interactive: 'interactive mode',
@@ -330,19 +345,21 @@ function notBuilt(kind: Command['kind']): never {
 
 /** One handler per command kind. A later task replaces a stub in one place. */
 const HANDLERS: { [K in Command['kind']]: Handler<K> } = {
-  help: async (_command, io) => {
+  help: async (_command, { io }) => {
     io.stdout.write(HELP_TEXT);
     return 0;
   },
-  interactive: async (_command, io) => {
+  interactive: async (_command, { io }) => {
     if (!io.isTerminal) {
       throw new UsageError('Interactive mode needs a terminal. Name a command; see --help');
     }
     return notBuilt('interactive');
   },
-  call: async () => notBuilt('call'),
-  explain: async (command, io) => {
-    const config = loadConfig(io.env);
+  call: async (command) => {
+    throw new Stop(`call --pay ${command.pay} is not built yet`);
+  },
+  explain: async (command, { io, session }) => {
+    const config = loadConfig(session.env);
     const prepared = await IMPLEMENTATIONS[command.args.tool].prepare(command.args, { fetch: io.fetch });
     const plan = await readPlan({ fetch: io.fetch, config, prepared });
     const style = createStyle(io.stdout);
@@ -351,29 +368,42 @@ const HANDLERS: { [K in Command['kind']]: Handler<K> } = {
     if (failure !== undefined) throw new Stop(failure);
     return 0;
   },
-  signup: async () => notBuilt('signup'),
-  'key-create': async () => notBuilt('key-create'),
-  balance: async () => notBuilt('balance'),
+  signup: async (command, ctx) => {
+    await signUp(ctx, { yes: command.yes });
+    ctx.print('Next: npm run demo -- key create');
+    return 0;
+  },
+  'key-create': async (command, ctx) => {
+    await createPaymentKey(ctx, command);
+    return 0;
+  },
+  balance: async (_command, ctx) => {
+    await showBalance(ctx);
+    return 0;
+  },
   topup: async () => notBuilt('topup'),
 };
 
-async function dispatch(command: Command, io: Io): Promise<number> {
-  const handler = HANDLERS[command.kind] as (command: Command, io: Io) => Promise<number>;
-  return handler(command, io);
+async function dispatch(command: Command, ctx: Context): Promise<number> {
+  const handler = HANDLERS[command.kind] as (command: Command, ctx: Context) => Promise<number>;
+  return handler(command, ctx);
 }
 
 /** Runs the app and returns the exit code: 0 success, 1 expected failure, 2 bad usage. */
 export async function runCli(argv: readonly string[], io: Io): Promise<number> {
   const style = createStyle(io.stderr);
+  const ctx = createContext(io);
   try {
-    return await dispatch(parseCommand(argv), io);
+    return await dispatch(parseCommand(argv), ctx);
   } catch (error) {
     if (error instanceof Stop) {
-      io.stderr.write(`${style.fail(error.line())}\n`);
+      io.stderr.write(`${style.fail(hideKeys(error.line()))}\n`);
       return error instanceof UsageError ? 2 : 1;
     }
     const message = error instanceof Error ? error.message : String(error);
-    io.stderr.write(`${style.fail(message)}\n`);
+    io.stderr.write(`${style.fail(hideKeys(message))}\n`);
     return 1;
+  } finally {
+    ctx.close();
   }
 }
