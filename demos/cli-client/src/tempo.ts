@@ -19,7 +19,7 @@ import { limitText } from './http.ts';
 import type { Answer, Fetch } from './http.ts';
 import { amountText, sameAddress } from './networks.ts';
 import { isKnownTempoUsdc, payWayOf } from './offers.ts';
-import { NO_TERMINAL, callingLine, readPaidPlan, sendOnce, shortPlan, stopForAnswer, storyLine } from './paid.ts';
+import { askToPay, callingLine, payerLines, printResult, readPaidPlan, sendOnce, shortPlan, stopForAnswer, storyLine } from './paid.ts';
 import type { CallCommand, Chosen } from './paid.ts';
 import { Stop, isRecord, toAtomic, usd } from './util.ts';
 import { EXPLORERS, readTempoWallet } from './wallets.ts';
@@ -385,30 +385,31 @@ export function readReceipt(value: string | null): ReceiptRead {
     : { kind: 'unreadable' };
 }
 
-/** The proof's lines on stdout, and a warning for anything in it that is not what was paid. */
-function printProof(ctx: Context, chosen: TempoChoice, wallet: TempoWallet, answer: Answer, signed: { readonly hash: Hex; readonly maxFee: bigint }, check: string): void {
+/** The proof's lines, and a warning for anything in it that is not what was paid. */
+function proofOf(ctx: Context, chosen: TempoChoice, wallet: TempoWallet, answer: Answer, signed: { readonly hash: Hex; readonly maxFee: bigint }, check: string): string[] {
   const receipt = readReceipt(answer.headers.get(RECEIPT_HEADER));
   if (receipt.kind === 'missing') {
     ctx.warn(`No Payment-Receipt came with the answer: ${check}.`);
-    return;
+    return [];
   }
   if (receipt.kind === 'unreadable') {
     ctx.warn(`The Payment-Receipt that came with the answer is unreadable: ${check}.`);
-    return;
+    return [];
   }
   const explorer = EXPLORERS.tempo;
   const linked = explorer.hash.test(receipt.reference);
   // A hash has the shape of a private key, which `clip` hides: one of that shape is shown as it is
   const reference = linked ? receipt.reference : clip(receipt.reference);
-  ctx.print([
-    `  Paid ${chosen.what} from ${wallet.payer}, and a network fee of at most ${usd(signed.maxFee)}: transaction ${reference}`,
-    ...(linked ? [`  ${ctx.style.styles.link(explorer.transaction(receipt.reference))}`] : []),
-  ]);
+  const lines = [
+    `Paid ${chosen.what} from ${wallet.payer}, and a network fee of at most ${usd(signed.maxFee)}: transaction ${reference}`,
+    ...(linked ? [ctx.style.styles.link(explorer.transaction(receipt.reference))] : []),
+  ];
   if (!linked) {
     ctx.warn("The Payment-Receipt's reference is not a Tempo transaction hash, so there is no link to it.");
   } else if (receipt.reference.toLowerCase() !== signed.hash.toLowerCase()) {
     ctx.warn(`The Payment-Receipt names another transaction than the one you signed, ${signed.hash}: ${check}.`);
   }
+  return lines;
 }
 
 const USED_BEFORE = /already used/i;
@@ -468,17 +469,12 @@ export async function callWithTempo(ctx: Context, command: CallCommand, limits: 
     ['From', wallet.payer],
     ['Network fee', `at most ${usd(feeBound)}, in ${LABEL}`],
   ];
-  const field = (label: string, value: string): string => style.field(label, value, 15);
   ctx.print([
-    ...(command.explain
-      ? [field('You pay', style.styles.money(what)), ...to.map(([label, value]) => field(label, value))]
-      : shortPlan(ctx, plan, chosen.micro, what, to)),
+    ...(command.explain ? payerLines(ctx, what, to) : shortPlan(ctx, plan, chosen.micro, what, to)),
     `  The charge closes in ${windowText(closesIn)}.`,
   ]);
-  await ctx.approve({
-    yes: command.yes,
+  await askToPay(ctx, command, {
     question: `Pay ${what} to ${recipient}, plus a network fee of at most ${usd(feeBound)}?`,
-    noTerminal: NO_TERMINAL,
     declined: new Stop('Nothing was signed or sent.', { notCharged: true }),
   });
 
@@ -497,8 +493,7 @@ export async function callWithTempo(ctx: Context, command: CallCommand, limits: 
   ctx.print(callingLine(ctx, plan));
   const answer = await sendOnce(ctx, plan, { authorization: header }, check);
   if (answer.status < 200 || answer.status >= 300) throw stopForAnswer(answer, plan, 'tempo', mppLines(check));
-  ctx.print(plan.prepared.format(answer.body).map((line) => `  ${line}`));
-  printProof(ctx, chosen, wallet, answer, { hash, maxFee }, check);
-  ctx.print(style.done(storyLine(plan, `You paid in ${LABEL}.`)));
+  const proof = proofOf(ctx, chosen, wallet, answer, { hash, maxFee }, check);
+  printResult(ctx, plan, plan.prepared.format(answer.body), proof, storyLine(plan, `You paid in ${LABEL}.`));
   return 0;
 }

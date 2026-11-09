@@ -4,7 +4,7 @@ import { paymentKeyOf } from './account.ts';
 import { loadConfig } from './config.ts';
 import type { Context } from './context.ts';
 import type { Plan } from './explain.ts';
-import { NO_TERMINAL, callingLine, readPaidPlan, sendOnce, shortPlan, stopForAnswer, storyLine } from './paid.ts';
+import { askToPay, callingLine, printResult, readPaidPlan, sendOnce, shortPlan, stopForAnswer, storyLine } from './paid.ts';
 import type { CallCommand } from './paid.ts';
 import { Stop, toAtomic, usd } from './util.ts';
 
@@ -88,26 +88,24 @@ export async function callWithCredits(ctx: Context, command: CallCommand): Promi
   });
   const price = chosen.micro;
   if (!command.explain) ctx.print(shortPlan(ctx, plan, price, `${usd(price)} of Credits`));
-  await ctx.approve({
-    yes: command.yes,
+  await askToPay(ctx, command, {
     question: `Pay ${usd(price)} of Credits?`,
-    noTerminal: NO_TERMINAL,
     declined: new Stop('Nothing was sent.', { notCharged: true }),
   });
 
   ctx.print(callingLine(ctx, plan));
   const answer = await sendOnce(ctx, plan, { authorization: `Bearer ${key}` }, BALANCE_SHOWS);
   if (answer.status < 200 || answer.status >= 300) throw stopForAnswer(answer, plan, 'credits');
-  ctx.print(plan.prepared.format(answer.body).map((line) => `  ${line}`));
+  const proof: string[] = [];
   const receipt = parseReceipt(answer.headers.get(RECEIPT_HEADER));
   if (receipt.kind === 'ok') {
-    ctx.print(`  Receipt ${receipt.id}: ${usd(receipt.amount)} of Credits`);
+    proof.push(`Receipt ${receipt.id}: ${usd(receipt.amount)} of Credits`);
     if (receipt.amount !== price) ctx.warn(`The receipt's amount, ${usd(receipt.amount)}, is not the price, ${usd(price)}.`);
   } else if (receipt.kind === 'missing') {
     ctx.warn('No receipt came with the answer. npm run demo -- balance shows what was paid.');
   } else {
     ctx.warn('The receipt that came with the answer is unreadable.');
   }
-  ctx.print(ctx.style.done(storyLine(plan, 'You paid with Credits.')));
+  printResult(ctx, plan, plan.prepared.format(answer.body), proof, storyLine(plan, 'You paid with Credits.'));
   return 0;
 }

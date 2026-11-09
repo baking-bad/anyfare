@@ -38,7 +38,7 @@ import { EVIDENCE_URL, FAKE_TEMPO_RECIPIENT, ROUTE_URL, TEMPO_USDCE, forwardingF
 import type { FakeAnyfare, FakeTarget, FakeTempoCharge, PaidAnswer } from './fakeAnyfare.ts';
 import { HONEST_GAS, HONEST_MAX_FEE_PER_GAS, startFakeTempoRpc } from './fakeTempoRpc.ts';
 import type { FakeTempoRpc } from './fakeTempoRpc.ts';
-import { brokenAnswer, captureIo, fixture, tempAppDir } from './helpers.ts';
+import { brokenAnswer, captureIo, expectResultShape, fixture, tempAppDir } from './helpers.ts';
 import type { IoOptions } from './helpers.ts';
 
 const TEMPO_KEY = generatePrivateKey();
@@ -275,8 +275,22 @@ describe('call --pay tempo', () => {
     expect(settled?.payer.toLowerCase()).toBe(TEMPO_PAYER.toLowerCase());
     expect(settled?.recipient.toLowerCase()).toBe(FAKE_TEMPO_RECIPIENT);
     expect(out).toContain(`  Paid 0.0012 USDC.e on Tempo from ${TEMPO_PAYER}, and a network fee of at most $0.000069: transaction ${settled?.transaction}\n`);
-    expect(out).toContain(`  https://explore.tempo.xyz/tx/${settled?.transaction}\n`);
-    expect(out.trimEnd().split('\n').at(-1)).toBe('✔ You paid in USDC.e on Tempo. Anyfare paid 3Route in USDC on Base from its own wallet.');
+    expect(out).toContain(`https://explore.tempo.xyz/tx/${settled?.transaction}\n`);
+    expectResultShape(out, {
+      name: '3Route',
+      answer: [
+        '1 USDC → 0.00025 WETH',
+        'Rate        1 USDC = 0.00025 WETH',
+        '            1 WETH = 4000 USDC',
+        'Gas         150000',
+        'Block 12345678 on Base',
+      ],
+      proof: [
+        `Paid 0.0012 USDC.e on Tempo from ${TEMPO_PAYER}, and a network fee of at most $0.000069: transaction ${settled?.transaction}`,
+        `https://explore.tempo.xyz/tx/${settled?.transaction}`,
+      ],
+      story: '✔ You paid in USDC.e on Tempo. Anyfare paid 3Route in USDC on Base from its own wallet.',
+    });
 
     // Exactly one request carried the credential: the same call, with Authorization only
     const paid = fake.mppRequests();
@@ -307,7 +321,7 @@ describe('call --pay tempo', () => {
   it('asks before it signs, and signs and sends nothing on a "no"', async () => {
     const result = await call(['--tool', '3route', '--pay', 'tempo'], tempoEnv(), { isTerminal: true, input: 'n\n' });
     expect(result.code).toBe(1);
-    expect(result.out).toMatch(/The charge closes in 5 minutes\.\nPay 0\.0012 USDC\.e on Tempo/);
+    expect(result.out).toMatch(/The charge closes in 5 minutes\.\n\nPay 0\.0012 USDC\.e on Tempo/);
     expect(result.out).toContain(`Pay 0.0012 USDC.e on Tempo to ${FAKE_TEMPO_RECIPIENT}, plus a network fee of at most $0.01? [y/N]`);
     expect(result.out).not.toContain('Signing');
     expect(result.err).toBe('✘ Nothing was signed or sent. Not charged.\n');
@@ -379,6 +393,18 @@ describe('call --pay tempo', () => {
       /You pay\s+0\.0012 USDC\.e on Tempo\n\s+To\s+0x0{38}e7\n\s+From\s+0x[0-9a-fA-F]{40}\n\s+Network fee\s+at most \$0\.01, in USDC\.e on Tempo\n {2}The charge closes in 5 minutes\.\n/,
     );
     expect(result.out).not.toContain('The API asks');
+  });
+
+  it('shows one "You pay" with --explain: the quote block has the quote, the payer block has the payment and the fee', async () => {
+    const result = await call(['--tool', '3route', '--pay', 'tempo', '--explain', '--yes'], tempoEnv());
+    const { out } = result;
+    expect(out.match(/You pay/g)).toHaveLength(1);
+    expect(out).not.toMatch(/You pay\s+\$/);
+    expect(out).toMatch(/\n {2}Anyfare's quote {2}\$0\.0012\n/);
+    // One width for the whole block: that of "Network fee"
+    expect(out).toMatch(
+      /\n\n {2}You pay {6}0\.0012 USDC\.e on Tempo\n {2}To {11}0x0{38}e7\n {2}From {9}0x[0-9a-fA-F]{40}\n {2}Network fee {2}at most \$0\.01, in USDC\.e on Tempo\n {2}The charge closes in 5 minutes\.\n/,
+    );
   });
 });
 

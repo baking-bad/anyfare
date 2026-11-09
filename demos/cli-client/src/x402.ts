@@ -21,7 +21,7 @@ import { limitText } from './http.ts';
 import type { Answer, Fetch } from './http.ts';
 import { amountText, networkName, sameAddress } from './networks.ts';
 import { isKnownUsdc, payWayOf } from './offers.ts';
-import { NO_TERMINAL, callingLine, readPaidPlan, sendOnce, shortPlan, stopForAnswer, storyLine } from './paid.ts';
+import { askToPay, callingLine, payerLines, printResult, readPaidPlan, sendOnce, shortPlan, stopForAnswer, storyLine } from './paid.ts';
 import type { CallCommand, Chosen } from './paid.ts';
 import { Stop, fromAtomic, isRecord } from './util.ts';
 import { EXPLORERS, isNearAccountId, readWallet } from './wallets.ts';
@@ -423,20 +423,20 @@ export function readProof(value: string | null): Proof {
   return { kind: 'failed', reason: clip(text('errorReason') ?? 'no reason given') };
 }
 
-/** The proof's lines on stdout, and a warning for anything in it that is not what was paid. */
-function printProof(ctx: Context, chosen: X402Choice, wallet: Wallet, answer: Answer, check: string): void {
+/** The proof's lines, and a warning for anything in it that is not what was paid. */
+function proofOf(ctx: Context, chosen: X402Choice, wallet: Wallet, answer: Answer, check: string): string[] {
   const proof = readProof(answer.headers.get('payment-response'));
   if (proof.kind === 'missing') {
     ctx.warn(`No PAYMENT-RESPONSE came with the answer: ${check}.`);
-    return;
+    return [];
   }
   if (proof.kind === 'unreadable') {
     ctx.warn(`The PAYMENT-RESPONSE that came with the answer is unreadable: ${check}.`);
-    return;
+    return [];
   }
   if (proof.kind === 'failed') {
     ctx.warn(`The PAYMENT-RESPONSE says the payment did not settle (${proof.reason}): ${check}.`);
-    return;
+    return [];
   }
   const explorer = EXPLORERS[chosen.way];
   const linked = explorer.hash.test(proof.transaction);
@@ -445,10 +445,10 @@ function printProof(ctx: Context, chosen: X402Choice, wallet: Wallet, answer: An
   const pending = proof.kind === 'pending' ? ', not final yet: Anyfare finishes its settlement' : '';
   // A Base hash has the shape of a private key, which `clip` hides: one of that shape is shown as it is
   const transaction = linked ? proof.transaction : clip(proof.transaction);
-  ctx.print([
-    `  Paid ${chosen.what} from ${clip(payer)}: transaction ${transaction}${pending}`,
-    ...(linked ? [`  ${ctx.style.styles.link(explorer.transaction(proof.transaction))}`] : []),
-  ]);
+  const lines = [
+    `Paid ${chosen.what} from ${clip(payer)}: transaction ${transaction}${pending}`,
+    ...(linked ? [ctx.style.styles.link(explorer.transaction(proof.transaction))] : []),
+  ];
   if (!linked) ctx.warn(`The transaction is not a ${networkName(network)} transaction hash, so there is no link to it.`);
   if (proof.network !== undefined && proof.network !== network) {
     ctx.warn(`The PAYMENT-RESPONSE names another network, ${clip(proof.network)}, not ${networkName(network)}.`);
@@ -456,6 +456,7 @@ function printProof(ctx: Context, chosen: X402Choice, wallet: Wallet, answer: An
   if (proof.payer !== undefined && !sameAddress(network, proof.payer, wallet.payer)) {
     ctx.warn(`The PAYMENT-RESPONSE names another payer, ${clip(proof.payer)}, not ${wallet.payer}.`);
   }
+  return lines;
 }
 
 const IN_FLIGHT = /another NEAR payment in flight/i;
@@ -524,16 +525,9 @@ export async function callWithX402(
     ['From', wallet.payer],
     ['Valid for', validFor(way, option.maxTimeoutSeconds)],
   ];
-  const field = (label: string, value: string): string => style.field(label, value, 15);
-  ctx.print(
-    command.explain
-      ? [field('You pay', style.styles.money(what)), ...to.map(([label, value]) => field(label, value))]
-      : shortPlan(ctx, plan, chosen.micro, what, to),
-  );
-  await ctx.approve({
-    yes: command.yes,
+  ctx.print(command.explain ? payerLines(ctx, what, to) : shortPlan(ctx, plan, chosen.micro, what, to));
+  await askToPay(ctx, command, {
     question: `Pay ${what} to ${option.payTo}?`,
-    noTerminal: NO_TERMINAL,
     declined: new Stop('Nothing was signed or sent.', { notCharged: true }),
   });
 
@@ -544,8 +538,7 @@ export async function callWithX402(
   ctx.print(callingLine(ctx, plan));
   const answer = await sendOnce(ctx, plan, { 'payment-signature': encodePaymentSignatureHeader(payload) }, check);
   if (answer.status < 200 || answer.status >= 300) throw stopForAnswer(answer, plan, way, x402Lines(check));
-  ctx.print(plan.prepared.format(answer.body).map((line) => `  ${line}`));
-  printProof(ctx, chosen, wallet, answer, check);
-  ctx.print(style.done(storyLine(plan, `You paid in ${WAY_LABELS[way]}.`)));
+  const proof = proofOf(ctx, chosen, wallet, answer, check);
+  printResult(ctx, plan, plan.prepared.format(answer.body), proof, storyLine(plan, `You paid in ${WAY_LABELS[way]}.`));
   return 0;
 }

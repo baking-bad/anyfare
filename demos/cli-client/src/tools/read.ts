@@ -39,7 +39,10 @@ export function cutPlaces(decimal: string, places: number): string {
   return kept === '' ? whole : `${whole}.${kept}`;
 }
 
+/** The width of the label in an answer line made by `line`. */
+export const LABEL_WIDTH = 12;
+
 /** A label and a value as one answer line. */
-export function line(label: string, value: string, width = 12): string {
+export function line(label: string, value: string, width = LABEL_WIDTH): string {
   return `${label.padEnd(width)}${value}`;
 }

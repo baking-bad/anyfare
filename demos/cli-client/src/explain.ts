@@ -242,8 +242,10 @@ function microOf(dollarsText: string): bigint | undefined {
 }
 
 /** `paying`: the one amount a call pays, in micro-USD, shown in place of the quote when given. */
-function quoteBlock(plan: Plan, style: Style, paying: bigint | undefined): string[] {
-  const field = (label: string, value: string): string => style.field(label, value, 16);
+function quoteBlock(plan: Plan, style: Style, paying: bigint | undefined, own: boolean): string[] {
+  // A payer that shows its own "You pay" under the blocks: the quote is named for what it is
+  const pays = own ? "Anyfare's quote" : 'You pay';
+  const field = (label: string, value: string): string => style.field(label, value, 15);
   if (plan.check.kind === 'skipped') {
     const lines = [style.step("Anyfare's quote, from the routing link's 402"), `  ${plan.check.note}`];
     if (plan.anyfare.kind !== 'ok') return [...lines, '  Anyfare did not answer, so there is no quote.'];
@@ -261,7 +263,7 @@ function quoteBlock(plan: Plan, style: Style, paying: bigint | undefined): strin
           : `${dollars(apiMicro)} in ${assetLabel(mark.offer.network, mark.offer.asset, mark.offer.assetName)} on ${networkName(mark.offer.network)}`,
       ),
       field("Anyfare's fee", apiMicro === undefined || apiMicro > amount ? 'not known' : dollars(amount - apiMicro)),
-      field('You pay', style.styles.money(`$${total}`)),
+      field(pays, style.styles.money(`$${total}`)),
     );
     const cap = capLine(plan, total);
     return cap === undefined ? lines : [...lines, cap];
@@ -284,7 +286,7 @@ function quoteBlock(plan: Plan, style: Style, paying: bigint | undefined): strin
   lines.push(
     field("The API's price", `$${check.price.amount} in ${label}`),
     field("Anyfare's fee", fee),
-    field('You pay', style.styles.money(paying === undefined ? `$${check.quote.amount}` : dollars(paying))),
+    field(pays, style.styles.money(paying === undefined ? `$${check.quote.amount}` : dollars(paying))),
   );
   // The proxy holds the price of its 402 at the time of the call: say so when it is not the quote
   const quoted = microOf(check.quote.amount);
@@ -348,7 +350,15 @@ export function explainLines(
   style: Style = createStyle(process.stdout),
   paying?: bigint,
 ): string[] {
-  return [...apiBlock(plan, style), ...anyfareBlock(plan, style, payWay), ...quoteBlock(plan, style, paying)];
+  // A payer other than Credits shows its own "You pay" block after these
+  const own = paying !== undefined && payWay !== undefined && payWay !== 'credits';
+  return [
+    ...apiBlock(plan, style),
+    '',
+    ...anyfareBlock(plan, style, payWay),
+    '',
+    ...quoteBlock(plan, style, paying, own),
+  ];
 }
 
 /** The title and the two addresses the command talks to. */

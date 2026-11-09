@@ -111,3 +111,61 @@ export function captureIo(fetchFn: Fetch, env: Record<string, string> = {}, opti
   };
   return { io, out: () => out, err: () => err };
 }
+
+/**
+ * The shape of the result of a call, with colors off: one blank line, the header (48 characters wide),
+ * the answer's lines under a bar, the closing line, the proof under its own header (when it has lines),
+ * one blank line, and the story line last. The lines in `proof` are given as they read, without their
+ * indent. Throws, with the output, when the shape is not that.
+ */
+export function expectResultShape(
+  out: string,
+  shape: {
+    readonly name: string;
+    readonly answer: readonly string[];
+    readonly proof: readonly (string | RegExp)[];
+    readonly story: string;
+  },
+): void {
+  const lines = out.split('\n');
+  const at = lines.findIndex((text) => text.startsWith('━━ Result: '));
+  const fail = (why: string): never => {
+    throw new Error(`${why}\n${out}`);
+  };
+  if (at < 1) fail('There is no result header');
+  if (lines[at - 1] !== '') fail('The header does not follow a blank line');
+  const head = `━━ Result: ${shape.name} `;
+  const header = lines[at] ?? '';
+  if (!header.startsWith(head) || header.length !== 48 || !/^━+$/.test(header.slice(head.length))) {
+    fail(`The header is not "${head}" filled with ━ to 48 characters`);
+  }
+  let next = at + 1;
+  for (const answer of shape.answer) {
+    if (lines[next] !== `  │ ${answer}`) fail(`Expected the answer line "  │ ${answer}", got "${lines[next]}"`);
+    next += 1;
+  }
+  if (lines[next] !== `  └${'─'.repeat(45)}`) fail(`Expected the closing line, got "${lines[next]}"`);
+  next += 1;
+  if (shape.proof.length > 0) {
+    if (lines[next] !== '  Proof') fail(`Expected "  Proof", got "${lines[next]}"`);
+    next += 1;
+    for (const proof of shape.proof) {
+      const text = lines[next] ?? '';
+      const good = typeof proof === 'string' ? text === `    ${proof}` : text.startsWith('    ') && proof.test(text.slice(4));
+      if (!good) fail(`Expected the proof line ${String(proof)}, got "${text}"`);
+      next += 1;
+    }
+  }
+  if (lines[next] !== '') fail('The story line does not follow a blank line');
+  if (lines[next + 1] !== shape.story) fail(`Expected the story line "${shape.story}", got "${lines[next + 1]}"`);
+  if (lines.slice(next + 2).some((text) => text !== '')) fail('Something follows the story line');
+}
+
+/** Waits until the check is true, polling often, and fails with `what` after `ms`. */
+export async function waitUntil(check: () => boolean, what: string, ms = 5_000): Promise<void> {
+  const until = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > until) throw new Error(`Timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}

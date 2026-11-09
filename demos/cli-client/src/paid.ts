@@ -150,7 +150,42 @@ export function storyLine(plan: Plan, youPaid: string): string {
   return `${youPaid} Anyfare paid ${nameInSentence(plan)}${how} from its own wallet.`;
 }
 
+/**
+ * The payer's own block of a plan that is shown with `--explain`: what you pay, and the rows the payer
+ * adds, such as where the payment goes. The quote block above it has its own labels, so no label is
+ * said twice; the labels of this block share one width.
+ */
+export function payerLines(ctx: Context, pays: string, rows: readonly (readonly [string, string])[]): string[] {
+  const all: (readonly [string, string])[] = [['You pay', ctx.style.styles.money(pays)], ...rows];
+  const width = Math.max(...all.map(([label]) => label.length));
+  return ['', ...all.map(([label, value]) => ctx.style.field(label, value, width))];
+}
+
+/** The question before a payment, set apart from the plan above it by one blank line. */
+export async function askToPay(
+  ctx: Context,
+  command: CallCommand,
+  asking: { readonly question: string; readonly declined: Stop },
+): Promise<void> {
+  if (!command.yes) ctx.print('');
+  await ctx.approve({ yes: command.yes, question: asking.question, noTerminal: NO_TERMINAL, declined: asking.declined });
+}
+
+/**
+ * The result of a call: the answer's lines, the proof (the receipt, or the transaction and its link),
+ * and the story line after one blank line. The result stands apart from the plan: see `Style.result`.
+ */
+export function printResult(
+  ctx: Context,
+  plan: Plan,
+  answer: readonly string[],
+  proof: readonly string[],
+  story: string,
+): void {
+  ctx.print([...ctx.style.result(TOOLS[plan.prepared.tool].name, answer, proof), ctx.style.done(story)]);
+}
+
 /** The step line before the paid request. */
 export function callingLine(ctx: Context, plan: Plan): string {
-  return ctx.style.step(`Calling ${TOOLS[plan.prepared.tool].name} through Anyfare`);
+  return ctx.style.step(`Calling ${nameInSentence(plan)} through Anyfare`);
 }

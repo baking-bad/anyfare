@@ -37,7 +37,7 @@ import { CMC_URL, EVIDENCE_URL, forwardingFetch, startFakeAnyfare, toolRoutes, t
 import type { FakeAnyfare, FakeTarget, PaidAnswer } from './fakeAnyfare.ts';
 import { startFakeNearRpc } from './fakeNearRpc.ts';
 import type { FakeNearRpc } from './fakeNearRpc.ts';
-import { answerOf, brokenAnswer, captureIo, fakeFetch, tempAppDir } from './helpers.ts';
+import { answerOf, brokenAnswer, captureIo, expectResultShape, fakeFetch, tempAppDir } from './helpers.ts';
 import { readNearWallet } from '../src/wallets.ts';
 import type { IoOptions } from './helpers.ts';
 
@@ -214,11 +214,23 @@ describe('call --pay base', () => {
     expect(fake.x402Settled).toHaveLength(1);
     const [settled] = fake.x402Settled;
     expect(settled).toMatchObject({ network: 'eip155:8453', payer: BASE_PAYER, payTo: BASE_PAY_TO, amount: '11000' });
-    expect(out).toContain(`  Paid 0.011 USDC on Base from ${BASE_PAYER}: transaction ${settled?.transaction}\n`);
-    expect(out).toContain(`  https://basescan.org/tx/${settled?.transaction}\n`);
-    expect(out.trimEnd().split('\n').at(-1)).toBe(
-      '✔ You paid in USDC on Base. Anyfare paid CoinMarketCap in USDC on Base from its own wallet.',
-    );
+    expect(out).toContain(`Paid 0.011 USDC on Base from ${BASE_PAYER}: transaction ${settled?.transaction}\n`);
+    expect(out).toContain(`https://basescan.org/tx/${settled?.transaction}\n`);
+    expectResultShape(out, {
+      name: 'CoinMarketCap',
+      answer: [
+        'Bitcoin Real (BTC)',
+        'Price       12,345.68 USD',
+        '24h         +2.50%',
+        'Market cap  987,654,322',
+        `Updated     ${out.match(/│ Updated {5}(\S+)/)?.[1] ?? ''}`,
+      ],
+      proof: [
+        `Paid 0.011 USDC on Base from ${BASE_PAYER}: transaction ${settled?.transaction}`,
+        `https://basescan.org/tx/${settled?.transaction}`,
+      ],
+      story: '✔ You paid in USDC on Base. Anyfare paid CoinMarketCap in USDC on Base from its own wallet.',
+    });
 
     const paid = fake.x402Requests();
     expect(paid).toHaveLength(1);
@@ -246,7 +258,7 @@ describe('call --pay base', () => {
   it('asks before it signs, and signs and sends nothing on a "no"', async () => {
     const result = await call(['--tool', 'cmc', '--pay', 'base'], BASE_ENV, { isTerminal: true, input: 'n\n' });
     expect(result.code).toBe(1);
-    expect(result.out).toMatch(/Valid for {8}5 minutes\nPay 0\.011 USDC on Base/);
+    expect(result.out).toMatch(/Valid for {8}5 minutes\n\nPay 0\.011 USDC on Base/);
     expect(result.out).toContain(`Pay 0.011 USDC on Base to ${BASE_PAY_TO}? [y/N]`);
     expect(result.out).not.toContain('Signing');
     expect(result.err).toBe('✘ Nothing was signed or sent. Not charged.\n');
@@ -292,6 +304,37 @@ describe('call --pay base', () => {
     expect(result.out).toMatch(/0\.011 USDC on Base\s+exact \(eip3009\)\s+--pay base\s+← you pay this one/);
     expect(result.out).toMatch(/You pay\s+0\.011 USDC on Base\n\s+To\s+0x0{38}b1\n\s+From\s+0x/);
     expect(result.out).not.toContain('The API asks');
+  });
+
+  it('shows one "You pay" with --explain: the quote block has the quote, the payer block has the payment', async () => {
+    const result = await call(['--tool', 'cmc', '--pay', 'base', '--explain', '--yes'], BASE_ENV);
+    const { out } = result;
+    expect(out.match(/You pay/g)).toHaveLength(1);
+    expect(out).not.toMatch(/You pay\s+\$/);
+    // The quote block: the API's price, the fee and the quote, in one width
+    expect(out).toMatch(/▸ Anyfare's quote, from GET \/_\/check\n {2}The API's price {2}\$0\.01 in USDC on Base\n {2}Anyfare's fee {4}\$0\.001\n {2}Anyfare's quote {2}\$0\.011\n/);
+    // The payer's block: its own width, after one blank line
+    expect(out).toMatch(
+      / {2}Your cap, MAX_PAYMENT_USD, is \$0\.02\. This quote is within it\.\n\n {2}You pay {4}0\.011 USDC on Base\n {2}To {9}0x0{38}b1\n {2}From {7}0x[0-9a-fA-F]{40}\n {2}Valid for {2}5 minutes\n/,
+    );
+  });
+
+  it('separates the explain blocks with one blank line each', async () => {
+    const result = await call(['--tool', 'cmc', '--pay', 'base', '--explain', '--yes'], BASE_ENV);
+    const lines = result.out.split('\n');
+    for (const title of ["▸ What Anyfare asks for the same call", "▸ Anyfare's quote, from GET /_/check", '▸ What CoinMarketCap asks, without Anyfare']) {
+      const at = lines.indexOf(title);
+      expect(at, title).toBeGreaterThan(-1);
+      if (!title.includes('What CoinMarketCap')) expect(lines[at - 1], title).toBe('');
+      expect(lines[at - 2] ?? 'x', title).not.toBe('');
+    }
+  });
+
+  it('puts one blank line before the question, and the name inside a sentence in lower case', async () => {
+    const result = await call(['--tool', 'evidence', '--pay', 'base'], BASE_ENV, { isTerminal: true, input: 'y\n' });
+    expect(result.out).toMatch(/\n {2}Valid for {8}5 minutes\n {2}This one takes a while\.\n\nPay 0\.002 USDC on Base to /);
+    expect(result.out).toContain('▸ Calling the evidence API through Anyfare');
+    expect(result.out).not.toContain('Calling The evidence API');
   });
 
   it.each([
@@ -1036,11 +1079,24 @@ describe('call --pay near, signed against a made-up NEAR RPC', () => {
     expect(fake.x402Settled).toHaveLength(1);
     const [settled] = fake.x402Settled;
     expect(settled).toMatchObject({ network: 'near:mainnet', payer: NEAR_ACCOUNT, payTo: NEAR_PAY_TO, amount: '2000' });
-    expect(out).toContain(`  Paid 0.002 USDC on NEAR from ${NEAR_ACCOUNT}: transaction ${settled?.transaction}\n`);
-    expect(out).toContain(`  https://nearblocks.io/txns/${settled?.transaction}\n`);
-    expect(out.trimEnd().split('\n').at(-1)).toBe(
-      '✔ You paid in USDC on NEAR. Anyfare paid the evidence API in USDC on NEAR from its own wallet.',
-    );
+    expectResultShape(out, {
+      name: 'The evidence API',
+      answer: [
+        'Account     anyfare.near',
+        'Balance     1.23456 NEAR',
+        'Storage     4242 bytes',
+        'Contract    no',
+        'Block       123456789 (FakeBlockHashForTheTest1111111111111111111)',
+        'Finality    final',
+        'Observed    2026-11-09T10:15:00.000Z',
+      ],
+      proof: [
+        `Paid 0.002 USDC on NEAR from ${NEAR_ACCOUNT}: transaction ${settled?.transaction}`,
+        `https://nearblocks.io/txns/${settled?.transaction}`,
+      ],
+      story: '✔ You paid in USDC on NEAR. Anyfare paid the evidence API in USDC on NEAR from its own wallet.',
+    });
+    expect(out).toContain('▸ Calling the evidence API through Anyfare');
     const paid = fake.x402Requests();
     expect(paid).toHaveLength(1);
     expect(paid[0]?.method).toBe('POST');
