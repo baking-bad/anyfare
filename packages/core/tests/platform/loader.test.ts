@@ -54,14 +54,15 @@ describe('loadPlatformConfig', () => {
 
   it('merges files left to right, then CONFIG; lists replace and objects merge', async () => {
     await writeFile(path.join(directory, 'override.json'), JSON.stringify({ logger: { level: 'debug' }, rateLimits: { signup: { requests: 3 } } }));
-    const config = await load({ CONFIG_PATH: 'base.yaml, override.json', CONFIG: base64('rateLimits:\n  unpaidIp: { requests: 5, windowSeconds: 1 }\ntimeouts:\n  connectMs: 1000\nassets:\n  - { name: base-usdc, network: "eip155:84532", address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", decimals: 6, peg: usd }\n') });
+    const config = await load({ CONFIG_PATH: 'base.yaml, override.json', CONFIG: base64('rateLimits:\n  unpaidIp: { requests: 5, windowSeconds: 1 }\ntimeouts:\n  connectMs: 1000\nassets:\n  - { name: base-usdc, network: "eip155:84532", address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", decimals: 6, peg: usd }\n'
+      + '  - { name: near-usdc, network: "near:testnet", address: 3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af, decimals: 6, peg: usd }\n') });
 
     expect(config.logger.level).toBe('debug');
     expect(config.rateLimits.signup).toEqual({ requests: 3, windowSeconds: 3600 });
     expect(config.timeouts.connectMs).toBe(1000);
     expect(config.rateLimits.unpaidIp).toEqual({ requests: 5, windowSeconds: 1 });
     expect(config.rateLimits.paymentKey).toEqual({ requests: 600, windowSeconds: 60 });
-    expect(config.assets.map(asset => asset.name)).toEqual(['base-usdc']);
+    expect(config.assets.map(asset => asset.name)).toEqual(['base-usdc', 'near-usdc']);
   });
 
   it('takes the whole config from CONFIG alone', async () => {

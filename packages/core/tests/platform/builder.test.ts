@@ -29,7 +29,7 @@ const issues = (build: () => unknown): readonly { readonly path: string; readonl
 
 const minimalOptionalFields = {
   logger: undefined, ownHosts: undefined, paymentKeyDefaults: undefined, timeouts: undefined,
-  sizeLimits: undefined, signer: undefined, rateLimits: { documents: undefined, probeIp: undefined }, freeCredits: undefined,
+  sizeLimits: undefined, signer: undefined, rateLimits: { documents: undefined, probeIp: undefined }, freeCredits: undefined, topups: undefined,
 };
 
 type MutableDocument = { facilitators: Record<string, unknown>[] };
@@ -84,6 +84,7 @@ describe('buildPlatformConfig', () => {
       wallets: { base: undefined, tempo: undefined, solana: undefined, near: undefined },
     });
     expect(config.freeCredits).toEqual({ enabled: false, amount: 100_000n, perIp: { requests: 3, windowSeconds: 86_400 }, maxPerDay: undefined });
+    expect(config.topups).toMatchObject({ enabled: false, url: 'https://1click.chaindefuser.com', asset: undefined, networks: [] });
   });
 
   it('takes the limits from the document when it sets them', () => {
@@ -195,7 +196,9 @@ describe('buildPlatformConfig', () => {
   });
 
   it('rejects an asset with an invalid payTo', () => {
-    expect(issues(() => buildPlatformConfig(document({ assets: [{ name: 'base-usdc', network: 'eip155:84532', address: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', decimals: 6, peg: 'usd', payTo: '0x12' }] }))))
+    const assets = [{ name: 'base-usdc', network: 'eip155:84532', address: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', decimals: 6, peg: 'usd', payTo: '0x12' }];
+
+    expect(issues(() => buildPlatformConfig(document({ assets, topups: undefined }))))
       .toEqual([{ path: '/assets/0/payTo', message: 'is not a valid address on Base Sepolia' }]);
   });
 });
@@ -348,6 +351,116 @@ describe('free credits', () => {
   });
 });
 
+describe('top-ups', () => {
+  const exampleNetworks = [
+    { name: 'base', blockchain: 'base', minimum: 1_000_000n },
+    { name: 'arbitrum', blockchain: 'arb', minimum: 1_000_000n },
+    { name: 'solana', blockchain: 'sol', minimum: 1_000_000n },
+    { name: 'near', blockchain: 'near', minimum: 1_000_000n },
+    { name: 'ethereum', blockchain: 'eth', minimum: 5_000_000n },
+    { name: 'bitcoin', blockchain: 'btc', minimum: 10_000_000n },
+  ];
+
+  it('are off without the section, with the defaults and no networks', () => {
+    const config = buildPlatformConfig(document({ topups: undefined }));
+
+    expect(config.topups).toEqual({
+      enabled: false,
+      url: 'https://1click.chaindefuser.com',
+      apiKey: undefined,
+      asset: undefined,
+      recipient: undefined,
+      refundTo: undefined,
+      slippageBps: 100,
+      deadlineMinutes: { stablecoin: 1_440, other: 120 },
+      stablecoins: ['USDC', 'USDT', 'USDT0', 'DAI', 'USD1'],
+      timeoutMs: 15_000,
+      networks: [],
+    });
+    expect(platformSummary(config).topups).toEqual({ enabled: false, networks: [] });
+  });
+
+  it('take the example\'s section: off, the registry\'s NEAR asset, and six networks with their minimums in micro-USD', () => {
+    const config = buildPlatformConfig(document());
+
+    expect(config.topups).toMatchObject({
+      enabled: false, url: 'http://127.0.0.1:8085', apiKey: undefined, recipient: 'treasury.anyfare.testnet', refundTo: 'treasury.anyfare.testnet', networks: exampleNetworks,
+    });
+    expect(config.topups.asset).toBe(findAsset(config, 'near-usdc'));
+    expect(Object.isFrozen(config.topups.networks[0])).toBe(true);
+  });
+
+  it('turn on with an override, and the summary names the networks', () => {
+    const config = buildPlatformConfig(document({ topups: { enabled: true } }));
+
+    expect(config.topups.enabled).toBe(true);
+    expect(config.topups.asset).toMatchObject({ name: 'near-usdc', network: { id: 'near:testnet' }, address: '3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af' });
+    expect(platformSummary(config).topups).toEqual({ enabled: true, networks: ['base', 'arbitrum', 'solana', 'near', 'ethereum', 'bitcoin'] });
+  });
+
+  it('take the values the document sets, and fill a partial deadline with the default', () => {
+    const config = buildPlatformConfig(document({
+      topups: {
+        enabled: true, url: 'https://oneclick.example.com', apiKey: 'ONECLICK_API_KEY', slippageBps: 50, deadlineMinutes: { other: 60 }, stablecoins: ['usdc', 'PYUSD'],
+        timeoutMs: 5_000, networks: [{ name: 'base', blockchain: 'base', minimum: '0.5' }],
+      },
+    }));
+
+    expect(config.topups).toMatchObject({
+      url: 'https://oneclick.example.com', apiKey: 'ONECLICK_API_KEY', slippageBps: 50, deadlineMinutes: { stablecoin: 1_440, other: 60 }, stablecoins: ['usdc', 'PYUSD'],
+      timeoutMs: 5_000, networks: [{ name: 'base', blockchain: 'base', minimum: 500_000n }],
+    });
+  });
+
+  it.each([
+    ['a missing recipient', { recipient: undefined }, [{ path: '/topups', message: 'missing required field "recipient": top-ups are enabled' }]],
+    ['a missing asset', { asset: undefined }, [{ path: '/topups', message: 'missing required field "asset": top-ups are enabled' }]],
+    ['a missing refundTo', { refundTo: undefined }, [{ path: '/topups', message: 'missing required field "refundTo": top-ups are enabled' }]],
+    ['no networks', { networks: undefined }, [{ path: '/topups', message: 'missing required field "networks": top-ups are enabled' }]],
+    ['an empty network list', { networks: [] }, [{ path: '/topups/networks', message: 'must have at least 1 item: top-ups are enabled' }]],
+  ])('refuse %s when enabled, and take it while off', (_name, changes, expected) => {
+    expect(issues(() => buildPlatformConfig(document({ topups: { ...changes, enabled: true } })))).toEqual(expected);
+    expect(buildPlatformConfig(document({ topups: changes })).topups.enabled).toBe(false);
+  });
+
+  it.each([
+    ['an asset not on NEAR', { asset: 'base-usdc' }, '/topups/asset', 'must be an asset on a NEAR network: 1Click delivers it to a NEAR account'],
+    ['an asset not in the registry', { asset: 'near-usdt' }, '/topups/asset', 'is not an asset in assets. Assets: base-usdc, solana-usdc, tempo-pathusd, near-usdc'],
+    ['a recipient that isn\'t a NEAR account', { recipient: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU' }, '/topups/recipient', 'is not a NEAR account ID'],
+    ['a refundTo that isn\'t a NEAR account', { refundTo: 'Treasury.Anyfare.testnet' }, '/topups/refundTo', 'is not a NEAR account ID'],
+    ['a minimum of 0', { networks: [{ name: 'base', blockchain: 'base', minimum: '0' }] }, '/topups/networks/0/minimum', 'must be more than 0: the least a top-up on this network must be worth'],
+    ['a minimum that overflows', { networks: [{ name: 'base', blockchain: 'base', minimum: '99999999999999' }] }, '/topups/networks/0/minimum', 'The USD amount is too large'],
+    ['duplicate network names', { networks: [{ name: 'base', blockchain: 'base', minimum: '1' }, { name: 'base', blockchain: 'arb', minimum: '1' }] }, '/topups/networks/1/name', 'duplicate network name "base"'],
+  ])('refuse %s, even while off', (_name, changes, path, message) => {
+    expect(issues(() => buildPlatformConfig(document({ topups: changes })))).toEqual([{ path, message }]);
+    expect(issues(() => buildPlatformConfig(document({ topups: { ...changes, enabled: true } })))).toEqual([{ path, message }]);
+  });
+
+  it('take one blockchain under two names', () => {
+    const networks = [{ name: 'ethereum', blockchain: 'eth', minimum: '5' }, { name: 'eth', blockchain: 'eth', minimum: '5' }];
+
+    expect(buildPlatformConfig(document({ topups: { enabled: true, networks } })).topups.networks.map(network => network.name)).toEqual(['ethereum', 'eth']);
+  });
+
+  it.each([
+    ['a key value instead of its name', { apiKey: 'sk-live-1234' }, '/topups/apiKey', 'must name the environment variable that holds the secret, such as CDP_API_KEY_SECRET. Never put the value here'],
+    ['a URL that isn\'t HTTP', { url: 'ftp://1click.example.com' }, '/topups/url', 'must be an HTTP or HTTPS URL without credentials or a fragment'],
+    ['a slippage of 0', { slippageBps: 0 }, '/topups/slippageBps', 'must be at least 1'],
+    ['a slippage above 50%', { slippageBps: 5_001 }, '/topups/slippageBps', 'must be at most 5000'],
+    ['a deadline under 10 minutes', { deadlineMinutes: { stablecoin: 9 } }, '/topups/deadlineMinutes/stablecoin', 'must be at least 10'],
+    ['a deadline over a week', { deadlineMinutes: { other: 10_081 } }, '/topups/deadlineMinutes/other', 'must be at most 10080'],
+    ['a stablecoin listed twice', { stablecoins: ['USDC', 'USDC'] }, '/topups/stablecoins', 'must not contain duplicates'],
+    ['a timeout of 0', { timeoutMs: 0 }, '/topups/timeoutMs', 'must be at least 1'],
+    ['a network name with capitals', { networks: [{ name: 'Base', blockchain: 'base', minimum: '1' }] }, '/topups/networks/0/name', 'must be 2–32 lowercase letters, digits, or hyphens, starting with a letter, such as base'],
+    ['a blockchain that starts with a digit', { networks: [{ name: 'base', blockchain: '1base', minimum: '1' }] }, '/topups/networks/0/blockchain', 'must be 2–32 lowercase letters, digits, or hyphens, starting with a letter, such as base'],
+    ['a network without a minimum', { networks: [{ name: 'base', blockchain: 'base' }] }, '/topups/networks/0', 'missing required field "minimum"'],
+    ['a numeric minimum', { networks: [{ name: 'base', blockchain: 'base', minimum: 1 }] }, '/topups/networks/0/minimum', 'must be a USD amount as a string with at most 6 decimal places, such as "0.001"'],
+    ['an unknown field', { memo: true }, '/topups/memo', 'unknown field'],
+  ])('refuse %s in the schema', (_name, topups, path, message) => {
+    expect(issues(() => assertValidPlatformConfigDocument(patch(loadExamplePlatformDocument(), { topups })))).toContainEqual({ path, message });
+  });
+});
+
 describe('platformSummary', () => {
   it('names the environment, URLs, asset names and networks, and no address', () => {
     const summary = platformSummary(buildPlatformConfig(document()));
@@ -371,6 +484,7 @@ describe('platformSummary', () => {
       },
       fees: { routingFeeBps: 0 },
       freeCredits: { enabled: false, amount: '0.1' },
+      topups: { enabled: false, networks: ['base', 'arbitrum', 'solana', 'near', 'ethereum', 'bitcoin'] },
     });
     expect(JSON.stringify(summary)).not.toMatch(/0x[0-9a-fA-F]{40}/);
   });

@@ -20,4 +20,14 @@ export const platformDefaults = {
   // Free Credits on sign-up: off unless the deployment turns them on, then $0.10 for each of the first
   // three new accounts a day from one client IP. No daily cap unless set.
   freeCredits: { enabled: false, amount: '0.1', perIp: { requests: 3, windowSeconds: 86_400 } },
+  // Top-ups: off unless the deployment turns them on. A deposit address takes transfers for a day when
+  // the token is a stablecoin, two hours otherwise, since another token's price moves.
+  topups: {
+    enabled: false,
+    url: 'https://1click.chaindefuser.com',
+    slippageBps: 100,
+    deadlineMinutes: { stablecoin: 1_440, other: 120 },
+    stablecoins: ['USDC', 'USDT', 'USDT0', 'DAI', 'USD1'],
+    timeoutMs: 15_000,
+  },
 } as const;

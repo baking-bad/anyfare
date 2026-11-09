@@ -97,6 +97,27 @@ rateLimits:
 #   perIp: { requests: 3, windowSeconds: 86400 }   # New accounts per client IP that get it. Later ones are created with none
 #   maxPerDay: "5"              # Optional. The most given across all IPs in one UTC day, at least amount. Without it there is no cap
 
+# Optional. Top-ups: any token on any chain, sent to a deposit address, swapped to the asset by the 1Click API of
+# NEAR Intents and delivered to recipient. Without the section they are off. Tests turn them on with an override
+topups:
+  enabled: false                # Default: false. When true, asset, recipient, refundTo and one network are required
+  url: http://127.0.0.1:8085    # Default: https://1click.chaindefuser.com
+  # apiKey: ONECLICK_API_KEY    # Optional. The environment variable that holds the 1Click key, never the key
+  asset: near-usdc              # The registry asset 1Click delivers: one on a NEAR network
+  recipient: treasury.anyfare.testnet   # The NEAR account that receives the asset
+  refundTo: treasury.anyfare.testnet    # The account inside intents.near that receives refunds
+  # slippageBps: 100            # Default: 100. From 1 to 5000
+  # deadlineMinutes: { stablecoin: 1440, other: 120 }   # The defaults. How long an address takes transfers: 10 to 10080
+  # stablecoins: [USDC, USDT, USDT0, DAI, USD1]         # The default. Symbols, compared without case
+  # timeoutMs: 15000            # Default: 15000. Each call to 1Click
+  networks:                     # What a client sends, 1Click's name for it, and the least a top-up there must be worth in USD
+    - { name: base, blockchain: base, minimum: "1" }
+    - { name: arbitrum, blockchain: arb, minimum: "1" }
+    - { name: solana, blockchain: sol, minimum: "1" }
+    - { name: near, blockchain: near, minimum: "1" }
+    - { name: ethereum, blockchain: eth, minimum: "5" }
+    - { name: bitcoin, blockchain: btc, minimum: "10" }
+
 timeouts:
   connectMs: 5000
   requestMs: 30000

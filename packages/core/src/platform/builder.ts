@@ -153,6 +153,40 @@ export const checkPlatformConfig = (document: PlatformConfigDocument): readonly 
   if (giftAmount !== undefined && maxPerDay !== undefined && maxPerDay < giftAmount)
     add(['freeCredits', 'maxPerDay'], `must be at least freeCredits.amount (${formatUsd(giftAmount)} USD): a smaller daily cap would give nothing`);
 
+  // Top-ups too are checked while they are off. 1Click delivers to a NEAR account and refunds to an
+  // account inside intents.near, so the asset is on NEAR and both accounts are NEAR account IDs.
+  const topups = document.topups ?? {};
+  const topupAsset = topups.asset === undefined ? undefined : document.assets.find(asset => asset.name === topups.asset);
+  const topupNetwork = findNetwork(topupAsset?.network ?? '');
+  if (topups.asset !== undefined && !topupAsset)
+    add(['topups', 'asset'], `is not an asset in assets. Assets: ${document.assets.map(asset => asset.name).join(', ')}`);
+  else if (topupAsset && topupNetwork?.namespace !== 'near')
+    add(['topups', 'asset'], 'must be an asset on a NEAR network: 1Click delivers it to a NEAR account');
+  const nearNetwork = topupNetwork?.namespace === 'near' ? topupNetwork : supportedNetworks.find(item => item.namespace === 'near')!;
+  for (const field of ['recipient', 'refundTo'] as const) {
+    const account = topups[field];
+    if (account !== undefined && !isValidAddress(nearNetwork, account))
+      add(['topups', field], 'is not a NEAR account ID');
+  }
+  const topupNetworkNames = new Set<string>();
+  for (const [index, network] of (topups.networks ?? []).entries()) {
+    const path = ['topups', 'networks', index];
+    if (topupNetworkNames.has(network.name))
+      add([...path, 'name'], `duplicate network name ${JSON.stringify(network.name)}`);
+    topupNetworkNames.add(network.name);
+    const minimum = checkAmount([...path, 'minimum'], network.minimum);
+    if (minimum !== undefined && minimum <= 0n)
+      add([...path, 'minimum'], 'must be more than 0: the least a top-up on this network must be worth');
+  }
+  if (topups.enabled) {
+    for (const field of ['asset', 'recipient', 'refundTo', 'networks'] as const) {
+      if (topups[field] === undefined)
+        add(['topups'], `missing required field ${JSON.stringify(field)}: top-ups are enabled`);
+    }
+    if (topups.networks?.length === 0)
+      add(['topups', 'networks'], 'must have at least 1 item: top-ups are enabled');
+  }
+
   return drafts;
 };
 
@@ -184,7 +218,7 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
     minPrice: usd(asset.minPrice, platformDefaults.assetMinPrice),
     payTo: asset.payTo,
   }));
-  const { timeouts, sizeLimits, signer, freeCredits } = platformDefaults;
+  const { timeouts, sizeLimits, signer, freeCredits, topups } = platformDefaults;
 
   return deepFreeze<PlatformConfig>({
     version: document.version,
@@ -231,6 +265,19 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
       amount: usd(document.freeCredits?.amount, freeCredits.amount),
       perIp: { ...document.freeCredits?.perIp ?? freeCredits.perIp },
       maxPerDay: document.freeCredits?.maxPerDay === undefined ? undefined : parseUsd(document.freeCredits.maxPerDay),
+    },
+    topups: {
+      enabled: document.topups?.enabled ?? topups.enabled,
+      url: document.topups?.url ?? topups.url,
+      apiKey: document.topups?.apiKey,
+      asset: assets.find(asset => asset.name === document.topups?.asset),
+      recipient: document.topups?.recipient,
+      refundTo: document.topups?.refundTo,
+      slippageBps: document.topups?.slippageBps ?? topups.slippageBps,
+      deadlineMinutes: { ...topups.deadlineMinutes, ...document.topups?.deadlineMinutes },
+      stablecoins: [...document.topups?.stablecoins ?? topups.stablecoins],
+      timeoutMs: document.topups?.timeoutMs ?? topups.timeoutMs,
+      networks: (document.topups?.networks ?? []).map(network => ({ name: network.name, blockchain: network.blockchain, minimum: parseUsd(network.minimum) })),
     },
   });
 };

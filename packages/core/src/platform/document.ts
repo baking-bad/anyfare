@@ -104,6 +104,40 @@ export interface FreeCreditsDocument {
   readonly maxPerDay?: string;
 }
 
+export interface TopupNetworkDocument {
+  // What a client sends, such as base
+  readonly name: string;
+  // 1Click's name for the network, such as arb
+  readonly blockchain: string;
+  // The least a top-up on it must be worth, in USD. More than 0.
+  readonly minimum: string;
+}
+
+export interface TopupsDocument {
+  // Default: false
+  readonly enabled?: boolean;
+  // The 1Click API. Default: https://1click.chaindefuser.com
+  readonly url?: string;
+  // The name of the environment variable that holds the 1Click key, never the value. Optional.
+  readonly apiKey?: string;
+  // The registry asset 1Click delivers: one on a NEAR network
+  readonly asset?: string;
+  // The NEAR account that receives the asset
+  readonly recipient?: string;
+  // The account inside intents.near that receives refunds
+  readonly refundTo?: string;
+  // Default: 100
+  readonly slippageBps?: number;
+  // How long a deposit address takes transfers. Defaults: 1440 for a stablecoin, 120 for another token.
+  readonly deadlineMinutes?: { readonly stablecoin?: number; readonly other?: number };
+  // The symbols that count as stablecoins, compared without case
+  readonly stablecoins?: readonly string[];
+  // Each call to 1Click. Default: 15000.
+  readonly timeoutMs?: number;
+  // The networks a client may send from. At least one when enabled.
+  readonly networks?: readonly TopupNetworkDocument[];
+}
+
 export interface PlatformConfigDocument {
   readonly version: 1;
   readonly environment: Environment;
@@ -124,4 +158,6 @@ export interface PlatformConfigDocument {
   readonly signer?: SignerLimitsDocument;
   // Free Credits for each new account, so a visitor can try the hosted service without a wallet
   readonly freeCredits?: FreeCreditsDocument;
+  // Top-ups: any token on any chain, swapped to USDC on NEAR by the 1Click API of NEAR Intents
+  readonly topups?: TopupsDocument;
 }

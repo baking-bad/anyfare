@@ -32,6 +32,12 @@ const basisPoints = integer(0, 10_000);
 const positive = integer(1);
 // A window of at most 30 days: Redis refuses an expiry far beyond that, and the counter would never expire
 const rateLimit = object({ requests: positive, windowSeconds: integer(1, 2_592_000) }, ['requests', 'windowSeconds']);
+// A top-up network's name, and 1Click's name for it
+const topupNetworkName: SchemaObject = {
+  type: 'string', pattern: '^[a-z][a-z0-9-]{1,31}$',
+  errorMessage: 'must be 2–32 lowercase letters, digits, or hyphens, starting with a letter, such as base',
+};
+const deadlineMinutes = integer(10, 10_080);
 
 export const platformConfigSchema: SchemaObject = {
   $id: 'anyfare-platform-config-v1',
@@ -81,5 +87,18 @@ export const platformConfigSchema: SchemaObject = {
       wallets: object({ base: addressText, tempo: addressText, solana: addressText, near: addressText }),
     }),
     freeCredits: object({ enabled: boolean, amount: usdAmount, perIp: rateLimit, maxPerDay: usdAmount }),
+    topups: object({
+      enabled: boolean,
+      url: httpUrl,
+      apiKey: secretName,
+      asset: assetName,
+      recipient: text(64),
+      refundTo: text(64),
+      slippageBps: integer(1, 5_000),
+      deadlineMinutes: object({ stablecoin: deadlineMinutes, other: deadlineMinutes }),
+      stablecoins: array(text(32), { uniqueItems: true }),
+      timeoutMs: positive,
+      networks: array(object({ name: topupNetworkName, blockchain: topupNetworkName, minimum: usdAmount }, ['name', 'blockchain', 'minimum'])),
+    }),
   }, ['version', 'environment', 'urls', 'keyPrefixes', 'routingFeeBps', 'assets', 'facilitators', 'mpp', 'rateLimits']),
 };

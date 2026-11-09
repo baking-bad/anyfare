@@ -17,11 +17,13 @@ export interface PlatformSummary {
   readonly fees: { readonly routingFeeBps: number };
   // What each new account gets, as a USD string, and whether the gift is on
   readonly freeCredits: { readonly enabled: boolean; readonly amount: string };
+  // Whether top-ups are on, and the names of the networks a client may send from
+  readonly topups: { readonly enabled: boolean; readonly networks: readonly string[] };
 }
 
 /**
  * The platform as the startup line logs it: the environment, the public URLs, the assets, the enabled
- * rails with their networks and facilitators, the fees, and the sign-up gift. No secret, key, or
+ * rails with their networks and facilitators, the fees, the sign-up gift, and top-ups. No secret, key, or
  * address: config holds secrets by name only.
  */
 export const platformSummary = (config: PlatformConfig): PlatformSummary => ({
@@ -35,4 +37,5 @@ export const platformSummary = (config: PlatformConfig): PlatformSummary => ({
   },
   fees: { routingFeeBps: config.routingFeeBps },
   freeCredits: { enabled: config.freeCredits.enabled, amount: formatUsd(config.freeCredits.amount) },
+  topups: { enabled: config.topups.enabled, networks: config.topups.networks.map(network => network.name) },
 });

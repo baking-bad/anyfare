@@ -45,6 +45,15 @@ export interface RateLimit {
   readonly windowSeconds: number;
 }
 
+export interface TopupNetwork {
+  // What a client sends
+  readonly name: string;
+  // 1Click's name for the network
+  readonly blockchain: string;
+  // The least a top-up on it must be worth
+  readonly minimum: MicroUsd;
+}
+
 export interface PlatformConfig {
   readonly version: 1;
   readonly environment: Environment;
@@ -115,5 +124,25 @@ export interface PlatformConfig {
     readonly perIp: RateLimit;
     // The most given across all IPs in one UTC day. Undefined: no daily cap.
     readonly maxPerDay: MicroUsd | undefined;
+  };
+  // Top-ups through the 1Click API of NEAR Intents. When enabled, asset, recipient and refundTo are set
+  // and there is at least one network.
+  readonly topups: {
+    readonly enabled: boolean;
+    readonly url: string;
+    // Its value is sent in the X-API-Key header. Undefined: 1Click is called without a key.
+    readonly apiKey: SecretName | undefined;
+    // The registry asset 1Click delivers, on a NEAR network
+    readonly asset: Asset | undefined;
+    // The NEAR account that receives the asset
+    readonly recipient: string | undefined;
+    // The account inside intents.near that receives refunds
+    readonly refundTo: string | undefined;
+    readonly slippageBps: number;
+    readonly deadlineMinutes: { readonly stablecoin: number; readonly other: number };
+    // Symbols, compared without case
+    readonly stablecoins: readonly string[];
+    readonly timeoutMs: number;
+    readonly networks: readonly TopupNetwork[];
   };
 }
