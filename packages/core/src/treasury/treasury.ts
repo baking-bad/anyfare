@@ -12,7 +12,7 @@ export interface TreasuryWallet {
   // counts it, since the ledger books each top-up into the treasury of its asset, and it never runs low:
   // nothing pays out of it.
   readonly role: 'pay_to' | 'signer' | 'treasury';
-  // A `payTo` that is the Signer's hot wallet too, such as `signer:near`: its balance is in this row
+  // A `payTo` that is the Signer's hot wallet too, such as `signer:near` or `signer:base`: its balance is in this row
   // only, so it's counted once. Absent on every other row.
   readonly signer?: string;
   readonly addresses: readonly string[];
@@ -36,30 +36,39 @@ export interface BalanceReader {
  * `topups.recipient` with `topups.asset`, whether or not top-ups are on. An asset without a `payTo` has
  * no receiving wallet. Keys stay offline for receiving addresses.
  *
- * On NEAR the hot wallet is the account buyers pay: a NEAR asset whose `payTo` is `signer.wallets.near`
- * stays in its `payTo` row, noted as `signer:near`, and the `signer:near` row keeps only the NEAR
- * assets paid to another account, or none, so no balance is listed twice. For the same reason the
- * top-up recipient has no row of its own when a `payTo` or the Signer's NEAR row already lists its
- * account with the asset.
+ * A hot wallet may be the address buyers pay on its chain too, as on NEAR: an asset whose `payTo` is the
+ * Signer's wallet of its chain stays in its `payTo` row, noted as `signer:<chain>`, and the Signer's row
+ * keeps only that chain's assets paid to another address, or none, so no balance is listed twice. EVM
+ * addresses match in any letter case. For the same reason the top-up recipient has no row of its own
+ * when a `payTo` or the Signer's NEAR row already lists its account with the asset.
  */
 export const treasuryWallets = (config: PlatformConfig): readonly TreasuryWallet[] => {
   const { base, tempo, solana, near } = config.signer.wallets;
-  // A NEAR asset received by the Signer's own NEAR account
-  const nearSigner = (asset: Asset): boolean => near !== undefined && asset.network.chain === 'near' && asset.payTo === near;
+  // The Signer's wallet that holds an asset: Tempo's holds mpp.network's, the others their chain's
+  const signerWalletOf = (asset: Asset): string | undefined =>
+    asset.network.chain === 'tempo' ? (asset.network.id === config.mpp.network.id ? tempo : undefined) : config.signer.wallets[asset.network.chain];
+  // An asset received by the Signer's own hot wallet on its chain
+  const paidToSigner = (asset: Asset): boolean => {
+    const wallet = signerWalletOf(asset);
+    if (wallet === undefined || asset.payTo === undefined)
+      return false;
+
+    return asset.network.namespace === 'eip155' ? wallet.toLowerCase() === asset.payTo.toLowerCase() : wallet === asset.payTo;
+  };
   const payTo = new Map<string, { addresses: string[]; assets: Asset[]; signer?: string }>();
   for (const asset of config.assets) {
     if (asset.payTo === undefined)
       continue;
-    const key = `${asset.network.id}:${asset.payTo}`;
-    const wallet = payTo.get(key) ?? { addresses: [asset.payTo], assets: [], ...nearSigner(asset) ? { signer: 'signer:near' } : {} };
+    const key = `${asset.network.id}:${asset.network.namespace === 'eip155' ? asset.payTo.toLowerCase() : asset.payTo}`;
+    const wallet = payTo.get(key) ?? { addresses: [asset.payTo], assets: [], ...paidToSigner(asset) ? { signer: `signer:${asset.network.chain}` } : {} };
     wallet.assets.push(asset);
     payTo.set(key, wallet);
   }
   const signerWallets = [
-    { chain: 'base', address: base, assets: config.assets.filter(asset => asset.network.chain === 'base') },
-    { chain: 'tempo', address: tempo, assets: config.assets.filter(asset => asset.network.id === config.mpp.network.id) },
-    { chain: 'solana', address: solana, assets: config.assets.filter(asset => asset.network.chain === 'solana') },
-    { chain: 'near', address: near, assets: config.assets.filter(asset => asset.network.chain === 'near' && !nearSigner(asset)) },
+    { chain: 'base', address: base, assets: config.assets.filter(asset => asset.network.chain === 'base' && !paidToSigner(asset)) },
+    { chain: 'tempo', address: tempo, assets: config.assets.filter(asset => asset.network.id === config.mpp.network.id && !paidToSigner(asset)) },
+    { chain: 'solana', address: solana, assets: config.assets.filter(asset => asset.network.chain === 'solana' && !paidToSigner(asset)) },
+    { chain: 'near', address: near, assets: config.assets.filter(asset => asset.network.chain === 'near' && !paidToSigner(asset)) },
   ].filter(wallet => wallet.address !== undefined && wallet.assets.length > 0);
 
   const wallets: TreasuryWallet[] = [

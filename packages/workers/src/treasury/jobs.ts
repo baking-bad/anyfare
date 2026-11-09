@@ -97,8 +97,8 @@ export interface TreasuryBalancesOptions {
 
 /**
  * The balance monitor: each wallet's holdings as a metric, the account top-ups deliver to included.
- * Warns when a Signer wallet holds less than a day's spend limit, the NEAR hot wallet included where it
- * is a `payTo` noted as the Signer's, and when a Solana `payTo` has no token account. The top-up
+ * Warns when a Signer wallet holds less than a day's spend limit, a hot wallet included where it is a
+ * `payTo` noted as the Signer's, and when a Solana `payTo` has no token account. The top-up
  * account gets no low-balance warning: nothing pays out of it. A balance that can't be read fails the
  * run, so the job goes stale.
  */
@@ -117,7 +117,7 @@ export const createTreasuryBalancesJob = ({ wallets, readerFor, signerDailyLimit
         failed += await warnWithoutTokenAccounts(wallet, result.held, readerFor, logger);
 
       // A hot wallet that read fine, but holds less than a day of routed payments. A payTo that is also the
-      // Signer's hot wallet, as on NEAR, pays targets too, and runs dry the same way.
+      // Signer's hot wallet pays targets too, and runs dry the same way.
       if ((wallet.role === 'signer' || wallet.signer !== undefined) && result.held.size > 0) {
         const held = [...result.held.values()].reduce((sum, amount) => sum + amount, 0n);
         if (held < signerDailyLimit)

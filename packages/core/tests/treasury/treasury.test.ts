@@ -26,8 +26,9 @@ describe('the treasury', () => {
   });
 
   it('lists the Signer\'s hot wallets from signer.wallets, each with its chain\'s assets: Base\'s, mpp.network\'s for Tempo, Solana\'s, and NEAR\'s', () => {
+    // Other addresses than the payTo of each chain
     const address = '0x3333333333333333333333333333333333333333';
-    const solana = '11111111111111111111111111111111';
+    const solana = '22222222222222222222222222222222';
     const near = 'hot.anyfare.testnet';
     const config = { ...examplePlatform, signer: { ...examplePlatform.signer, wallets: { base: address, tempo: address, solana, near } } };
 
@@ -56,6 +57,38 @@ describe('the treasury', () => {
     // Each asset of the account once: its balance is never counted twice
     expect(listed.flatMap(wallet => wallet.addresses.flatMap(address => wallet.assets.map(asset => `${asset.name} ${address}`))).filter(entry => entry.endsWith(' pay.anyfare.testnet')))
       .toEqual(['near-usdc pay.anyfare.testnet']);
+  });
+
+  it('lists the Base, Tempo and Solana hot wallets once when buyers pay them, EVM addresses in any letter case', () => {
+    const payToOf = (name: string) => findAsset(examplePlatform, name as Parameters<typeof findAsset>[1])!.payTo!;
+    // Base's in lower case: an EVM address is the same wallet in any letter case
+    const wallets = { base: payToOf('base-usdc').toLowerCase(), tempo: payToOf('tempo-pathusd'), solana: payToOf('solana-usdc'), near: payToOf('near-usdc') };
+    const config = { ...examplePlatform, signer: { ...examplePlatform.signer, wallets } };
+
+    const listed = treasuryWallets(config);
+
+    expect(listed.map(wallet => [wallet.name, wallet.role, wallet.signer, wallet.assets.map(asset => asset.name)])).toEqual([
+      ['payTo:base-usdc', 'pay_to', 'signer:base', ['base-usdc']],
+      ['payTo:solana-usdc', 'pay_to', 'signer:solana', ['solana-usdc']],
+      ['payTo:tempo-pathusd', 'pay_to', 'signer:tempo', ['tempo-pathusd']],
+      ['payTo:near-usdc', 'pay_to', 'signer:near', ['near-usdc']],
+      ['treasury:near', 'treasury', undefined, ['near-usdc']],
+    ]);
+    // Each asset of each address is listed once, EVM addresses in any letter case: no balance shows twice
+    const entries = listed.flatMap(wallet => wallet.addresses.flatMap(address => wallet.assets.map(asset => `${asset.name} ${address.toLowerCase()}`)));
+    expect(new Set(entries).size).toBe(entries.length);
+  });
+
+  it('lists two assets of one network in one payTo row when their payTo differs only in letter case', () => {
+    const found = findAsset(examplePlatform, 'base-usdc')!;
+    const baseUsdc = { ...found, payTo: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd' };
+    const other = { ...found, name: 'base-usdt' as typeof found.name, address: '0x4444444444444444444444444444444444444444', payTo: '0xABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD' };
+    const config = { ...examplePlatform, assets: [baseUsdc, ...examplePlatform.assets.slice(1), other] };
+
+    expect(treasuryWallets(config).filter(wallet => wallet.assets.some(asset => asset.network.chain === 'base'))
+      .map(wallet => [wallet.name, wallet.addresses, wallet.assets.map(asset => asset.name)])).toEqual([
+      ['payTo:base-usdc+base-usdt', [baseUsdc.payTo], ['base-usdc', 'base-usdt']],
+    ]);
   });
 
   it('keeps a signer:near row for the NEAR assets paid to another account than the hot wallet', () => {
