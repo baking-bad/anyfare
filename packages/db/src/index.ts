@@ -31,3 +31,5 @@ export { createCatalogRepository } from './catalogRepository.js';
 export type { CatalogRepository, CatalogRepositoryOptions, RoutedCatalogEntry } from './catalogRepository.js';
 export { createTreasuryRepository } from './treasuryRepository.js';
 export type { ReconciliationRunRecord, TreasuryRepository, TreasuryRepositoryOptions, TreasuryTransferRecord } from './treasuryRepository.js';
+export { createTopupRepository } from './topupRepository.js';
+export type { NewTopup, Topup, TopupQuote, TopupQuoteFailure, TopupRepository, TopupRepositoryOptions } from './topupRepository.js';

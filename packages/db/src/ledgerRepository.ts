@@ -3,7 +3,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { formatUsd, type Clock, type IdGenerator, type MicroUsd } from '@anyfare/common';
 import {
   CreditReferenceConflictError, HoldReferenceConflictError, InvalidPaymentStatusChangeError, PromotionReferenceConflictError,
-  TreasuryTransferReferenceConflictError, utcDay,
+  TopUpReferenceConflictError, TreasuryTransferReferenceConflictError, utcDay,
   type CaptureResult, type CreditsBalance, type HoldInput, type HoldRefusal, type HoldResult, type KeySpend, type Payment, type PaymentStatus,
   type SettleInput,
 } from '@anyfare/core';
@@ -56,6 +56,21 @@ export interface Ledger {
    * amount of zero or less.
    */
   promotion(input: { readonly accountId: string; readonly amount: MicroUsd; readonly reference: string; readonly requestId?: string }): Promise<CreditResult>;
+  /**
+   * A top-up that arrived on chain: the treasury of `asset` → the account's available credits. The
+   * asset is in the treasury's account on chain, so the treasury's balance falls by the amount: it
+   * holds more. Idempotent by `reference`, the top-up's deposit address: the same top-up again is a
+   * replay, and another account, asset or amount under the same reference throws
+   * TopUpReferenceConflictError. Throws RangeError for an amount of zero or less.
+   */
+  topUp(input: {
+    readonly accountId: string;
+    // The registry asset that arrived, such as near-usdc
+    readonly asset: string;
+    readonly amount: MicroUsd;
+    readonly reference: string;
+    readonly requestId?: string;
+  }): Promise<CreditResult>;
   /**
    * Available → held for a credits payment, counted on its key against the daily budget and the
    * allowance, with the payment row, in one transaction. A refusal moves nothing. The same payment
@@ -387,6 +402,33 @@ export const createLedger = ({ db, clock, ids }: LedgerOptions): Ledger => {
       const refused = await post(tx, transactionId, postings, now);
       if (refused !== undefined)
         throw new Error(`The promotion could not be posted: the balance of ${refused} is missing or may not go below zero`);
+
+      return { transactionId, createdAt: now, replayed: false };
+    }),
+
+    topUp: ({ accountId, asset, amount, reference, requestId }) => withTransaction(db, async tx => {
+      if (amount <= 0n)
+        throw new RangeError('A top-up must add more than zero');
+
+      const treasury = treasuryOf(asset);
+      const postings: readonly Posting[] = [
+        { ledgerAccountId: treasury.id, amount: -amount },
+        { ledgerAccountId: ledgerAccountIds.available(accountId), amount },
+      ];
+      const now = clock.now();
+      await ensureAccounts(tx, [...accountsOf(accountId, 'available', 'held'), treasury], now);
+      const transactionId = await insertTransaction(tx, 'top_up', reference, requestId, now);
+      if (!transactionId) {
+        // The reference was used before: the same top-up again is a replay, anything else a conflict
+        if (!samePostings(await bookedPostings(tx, 'top_up', reference), postings))
+          throw new TopUpReferenceConflictError();
+
+        return replayOf(tx, 'top_up', reference);
+      }
+
+      const refused = await post(tx, transactionId, postings, now);
+      if (refused !== undefined)
+        throw new Error(`The top-up could not be posted: the balance of ${refused} is missing or may not go below zero`);
 
       return { transactionId, createdAt: now, replayed: false };
     }),

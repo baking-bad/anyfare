@@ -4,3 +4,4 @@ export * from './accounts.js';
 export * from './ledger.js';
 export * from './routing.js';
 export * from './treasury.js';
+export * from './topups.js';

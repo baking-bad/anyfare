@@ -43,6 +43,13 @@
       "when": 1794114794950,
       "tag": "0005_treasury",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794199153731,
+      "tag": "0006_topups",
+      "breakpoints": true
     }
   ]
 }

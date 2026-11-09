@@ -129,6 +129,15 @@ export class TreasuryTransferReferenceConflictError extends AnyfareError {
   }
 }
 
+/** A top-up's reference, its deposit address, was reused for another account, asset or amount: references are idempotency keys. */
+export class TopUpReferenceConflictError extends AnyfareError {
+  readonly code = 'idempotency_conflict';
+
+  constructor() {
+    super('This reference was already used for another top-up: another account, asset or amount');
+  }
+}
+
 /** A hold reused a payment's ID for another buyer, key or amount: payment IDs are idempotency keys. */
 export class HoldReferenceConflictError extends AnyfareError {
   readonly code = 'idempotency_conflict';

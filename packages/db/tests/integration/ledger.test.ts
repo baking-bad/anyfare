@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { parseUsd, Secret } from '@anyfare/common';
 import {
   CreditReferenceConflictError, hashApiKey, HoldReferenceConflictError, InvalidPaymentStatusChangeError, PaymentFinalizedError,
-  PromotionReferenceConflictError, TreasuryTransferReferenceConflictError, utcDay, type HoldInput, type NewPayment, type PaymentStatus, type SettleInput,
+  PromotionReferenceConflictError, TopUpReferenceConflictError, TreasuryTransferReferenceConflictError, utcDay, type HoldInput, type NewPayment, type PaymentStatus, type SettleInput,
 } from '@anyfare/core';
 import { createFakeClock, createFakeIdGenerator, createTestDatabase, type FakeClock, type TestDatabase } from '@anyfare/testing';
 
@@ -1575,5 +1575,122 @@ describe('the platform accounts', () => {
       .toBe('balances_not_negative_check');
     expect(await negativeBalances()).toEqual([]);
     expect(await unbalancedTransactions()).toEqual([]);
+  });
+});
+
+describe('top-ups', () => {
+  const nearTreasury = treasuryOf('near-usdc');
+  const treasuryBalance = async (asset = 'near-usdc') => (await ledger.balancesOf([treasuryOf(asset)])).get(treasuryOf(asset)) ?? 0n;
+  // A deposit address of 1Click's, which keys the top-up
+  const depositAddress = () => `0x${(counter += 1).toString(16).padStart(40, '0')}`;
+
+  it('books a top-up from the asset\'s treasury to the account\'s available balance, once per reference', async () => {
+    const accountId = await newAccount();
+    const reference = depositAddress();
+    const before = await treasuryBalance();
+
+    const first = await ledger.topUp({ accountId, asset: 'near-usdc', amount: usd('1.99876'), reference, requestId: 'req-topup' });
+    clock.advance(1_000);
+    const again = await ledger.topUp({ accountId, asset: 'near-usdc', amount: usd('1.99876'), reference });
+
+    expect(first).toEqual({ transactionId: expect.any(String), createdAt: new Date(noon), replayed: false });
+    expect(again).toEqual({ ...first, replayed: true });
+    expect(await ledger.balance(accountId)).toEqual({ available: usd('1.99876'), held: 0n });
+    // The treasury holds more on chain, so its balance falls
+    expect(await treasuryBalance()).toBe(before - usd('1.99876'));
+    expect(await entriesOf(reference, 'top_up')).toEqual([
+      { account: nearTreasury, amount: -usd('1.99876') },
+      { account: ledgerAccountIds.available(accountId), amount: usd('1.99876') },
+    ]);
+    expect(await transactionsFor(reference)).toEqual(['top_up']);
+    const { rows } = await database.db.execute<{ type: string; may_go_negative: boolean; request_id: string | null }>(sql`
+      select a.type, b.may_go_negative, (select request_id from ledger_transactions where reference = ${reference}) as request_id
+      from ledger_accounts a join balances b on b.ledger_account_id = a.id where a.id = ${nearTreasury}
+    `);
+    expect(rows).toEqual([{ type: 'treasury:near-usdc', may_go_negative: true, request_id: 'req-topup' }]);
+    expect(await unbalancedTransactions()).toEqual([]);
+    expect(await negativeBalances()).toEqual([]);
+  });
+
+  it.each([
+    ['another account', async () => ({ accountId: await newAccount() })],
+    ['another asset', async () => ({ asset: 'base-usdc' })],
+    ['another amount', async () => ({ amount: usd('2') })],
+  ])('refuses a reference reused for %s, and moves nothing', async (_case, change) => {
+    const accountId = await newAccount();
+    const reference = depositAddress();
+    const input = { accountId, asset: 'near-usdc', amount: usd('1'), reference };
+    const first = await ledger.topUp(input);
+    const reused = { ...input, ...await change() };
+    const before = await Promise.all([treasuryBalance(), treasuryBalance('base-usdc'), ledger.balance(reused.accountId)]);
+
+    expect(await thrown(ledger.topUp(reused))).toBeInstanceOf(TopUpReferenceConflictError);
+    expect(await Promise.all([treasuryBalance(), treasuryBalance('base-usdc'), ledger.balance(reused.accountId)])).toEqual(before);
+    expect(await ledger.balance(accountId)).toEqual({ available: usd('1'), held: 0n });
+    expect(await transactionsFor(reference)).toEqual(['top_up']);
+    // The first top-up, asked again, is still a replay
+    expect(await ledger.topUp(input)).toEqual({ ...first, replayed: true });
+  });
+
+  it('keys a top-up apart from a credit with the same reference', async () => {
+    const accountId = await newAccount();
+    const reference = depositAddress();
+
+    await ledger.credit({ accountId, amount: usd('1'), reference });
+    const topUp = await ledger.topUp({ accountId, asset: 'near-usdc', amount: usd('1'), reference });
+
+    expect(topUp.replayed).toBe(false);
+    expect(await transactionsFor(reference)).toEqual(['credit', 'top_up']);
+    expect(await ledger.balance(accountId)).toEqual({ available: usd('2'), held: 0n });
+  });
+
+  it('books once when 10 top-ups with one reference run concurrently, and answers the other 9 as replays', async () => {
+    const accountId = await newAccount();
+    const reference = depositAddress();
+    const before = await treasuryBalance();
+
+    const results = await Promise.all(Array.from({ length: 10 }, () => ledger.topUp({ accountId, asset: 'near-usdc', amount: usd('5'), reference })));
+
+    expect(results.filter(result => result.replayed)).toHaveLength(9);
+    expect(new Set(results.map(result => result.transactionId)).size).toBe(1);
+    expect(await ledger.balance(accountId)).toEqual({ available: usd('5'), held: 0n });
+    expect(await treasuryBalance()).toBe(before - usd('5'));
+  });
+
+  it('refuses a top-up of zero or less', async () => {
+    const accountId = await newAccount();
+    const reference = depositAddress();
+
+    expect(await thrown(ledger.topUp({ accountId, asset: 'near-usdc', amount: 0n, reference }))).toBeInstanceOf(RangeError);
+    expect(await thrown(ledger.topUp({ accountId, asset: 'near-usdc', amount: -1n, reference }))).toBeInstanceOf(RangeError);
+    expect(await transactionsFor(reference)).toEqual([]);
+    expect(await ledger.balance(accountId)).toEqual({ available: 0n, held: 0n });
+  });
+
+  it('joins a transaction it is given, and rolls back with it', async () => {
+    const accountId = await newAccount();
+    const reference = depositAddress();
+    const before = await treasuryBalance();
+
+    const error = await thrown(withTransaction(database.db, async tx => {
+      await createLedger({ db: tx, clock, ids }).topUp({ accountId, asset: 'near-usdc', amount: usd('1'), reference });
+      throw new Error('the status change failed');
+    }));
+
+    expect((error as Error).message).toBe('the status change failed');
+    expect(await transactionsFor(reference)).toEqual([]);
+    expect(await ledger.balance(accountId)).toEqual({ available: 0n, held: 0n });
+    expect(await treasuryBalance()).toBe(before);
+  });
+
+  it('adds Credits a payment key can hold', async () => {
+    const accountId = await newAccount();
+    const keyId = await newKey(accountId);
+    await ledger.topUp({ accountId, asset: 'near-usdc', amount: usd('1'), reference: depositAddress() });
+
+    const held = await hold({ accountId, keyId }, usd('0.25'));
+
+    expect(held.ok).toBe(true);
+    expect(await ledger.balance(accountId)).toEqual({ available: usd('0.75'), held: usd('0.25') });
   });
 });
