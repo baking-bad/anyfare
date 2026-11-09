@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { routingLink } from '../src/anyfare.ts';
+import { checkQuote, routingLink } from '../src/anyfare.ts';
 import { runCli } from '../src/cli.ts';
 import { loadConfig } from '../src/config.ts';
 import { explainLines, planFailure, readPlan } from '../src/explain.ts';
@@ -69,6 +69,19 @@ describe('routingLink', () => {
   });
 });
 
+describe('checkQuote', () => {
+  it('keeps a missing currency missing', async () => {
+    const { fetch } = fakeFetch({
+      [`GET ${checkUrl(CMC)}`]: () =>
+        Response.json({ payable: true, target: CMC, price: { amount: '0.01' }, quote: { amount: '0.011', fee: '0.001' } }),
+    });
+    const check = await checkQuote(fetch, PAY, CMC);
+    if (!check.payable) throw new Error('Expected a quote');
+    expect(check.price.currency).toBeUndefined();
+    expect(check.quote.currency).toBeUndefined();
+  });
+});
+
 describe('readPlan', () => {
   it('reads the API, then /_/check, then the routing link, with the same call', async () => {
     const { plan, calls } = await planFor(cmcArgs, cmcRoutes());
@@ -132,6 +145,39 @@ describe('explainLines', () => {
     expect(out).toMatch(/Anyfare's fee\s+\$0\.001/);
     expect(out).toMatch(/You pay\s+\$0\.011/);
     expect(out).toContain('Your cap, MAX_PAYMENT_USD, is $0.02. This quote is within it.');
+  });
+
+  it("keeps the /_/check quote, and names the routing link's 402 price when it differs", async () => {
+    const quote = (amount: string) => () =>
+      Response.json({
+        payable: true,
+        target: CMC,
+        price: { amount: '0.008', currency: 'USD', asset: 'base-usdc', network: 'eip155:8453' },
+        quote: { amount, fee: '0.001', currency: 'USD' },
+        link: routingLink(PAY, CMC),
+      });
+    // Made up: /_/check quotes $0.009 while the 402 of the fixture asks $0.011
+    const { plan } = await planFor(cmcArgs, { ...cmcRoutes(), [`GET ${checkUrl(CMC)}`]: quote('0.009') });
+    const out = text(plan);
+    expect(out).toMatch(/You pay\s+\$0\.009\n/);
+    expect(out).toContain("  Anyfare's 402 for the same call asks $0.011 of Credits, not $0.009.");
+    const same = await planFor(cmcArgs, { ...cmcRoutes(), [`GET ${checkUrl(CMC)}`]: quote('0.011') });
+    expect(text(same.plan)).not.toContain("Anyfare's 402 for the same call");
+  });
+
+  it("judges the cap on the routing link's 402 price when it is the higher one", async () => {
+    const quote = () =>
+      Response.json({
+        payable: true,
+        target: CMC,
+        price: { amount: '0.008', currency: 'USD', asset: 'base-usdc', network: 'eip155:8453' },
+        quote: { amount: '0.009', fee: '0.001', currency: 'USD' },
+        link: routingLink(PAY, CMC),
+      });
+    // Made up: /_/check quotes $0.009, the 402 of the fixture asks $0.011, and the cap is $0.01
+    const routes = { ...cmcRoutes(), [`GET ${checkUrl(CMC)}`]: quote };
+    const { plan } = await planFor(cmcArgs, routes, { ...ENV, MAX_PAYMENT_USD: '0.01' });
+    expect(text(plan)).toContain('Your cap, MAX_PAYMENT_USD, is $0.01. This quote is over it');
   });
 
   it('says when the quote is over the cap', async () => {

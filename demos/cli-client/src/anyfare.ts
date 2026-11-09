@@ -19,11 +19,13 @@ export interface Check {
   readonly target: string;
   readonly price: {
     readonly amount: string;
-    readonly currency: string;
+    /** As Anyfare gave it; `undefined` when it gave none. */
+    readonly currency: string | undefined;
     readonly asset: string | undefined;
     readonly network: string | undefined;
   };
-  readonly quote: { readonly amount: string; readonly fee: string; readonly currency: string };
+  /** `currency` as Anyfare gave it; `undefined` when it gave none. */
+  readonly quote: { readonly amount: string; readonly fee: string; readonly currency: string | undefined };
   readonly link: string;
 }
 
@@ -81,8 +83,8 @@ export async function checkQuote(
   return {
     payable: true,
     target: str(body['target']) ?? targetUrl,
-    price: { amount, currency: str(price['currency']) ?? 'USD', asset, network },
-    quote: { amount: total, fee, currency: str(quote['currency']) ?? 'USD' },
+    price: { amount, currency: str(price['currency']), asset, network },
+    quote: { amount: total, fee, currency: str(quote['currency']) },
     link: str(body['link']) ?? routingLink(payUrl, targetUrl),
   };
 }

@@ -95,6 +95,15 @@ describe('readOffers', () => {
   });
 });
 
+describe('the Credits currency', () => {
+  it('keeps the currency of the 402 as given, and none when it gave none', () => {
+    const parts = (credits: Record<string, unknown>) => ({ headers: new Headers(), body: { credits } });
+    expect(readOffers(parts({ price: '0.01', currency: 'USD' })).offers[0]?.asset).toBe('USD');
+    expect(readOffers(parts({ price: '0.01', currency: 'EUR' })).offers[0]?.asset).toBe('EUR');
+    expect(readOffers(parts({ price: '0.01' })).offers[0]?.asset).toBeUndefined();
+  });
+});
+
 describe('payWayOf', () => {
   const offer = (fields: Partial<Offer> & Pick<Offer, 'protocol' | 'scheme'>): Offer => ({
     amount: 1n,

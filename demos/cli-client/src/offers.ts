@@ -134,7 +134,9 @@ function creditsOffers(body: unknown): Offer[] {
   } catch {
     throw new Stop(`The Credits price of the 402 is not an amount: "${price}"`);
   }
-  return [{ protocol: 'credits', scheme: 'credits', asset: 'USD', amount: micro, raw: credits }];
+  // The currency as Anyfare gave it: a payer checks it before it compares the price with anything
+  const currency = text(credits['currency']);
+  return [{ protocol: 'credits', scheme: 'credits', ...(currency !== undefined && { asset: currency }), amount: micro, raw: credits }];
 }
 
 /** Every option a 402 lists. A header that cannot be read is a `Stop`. */

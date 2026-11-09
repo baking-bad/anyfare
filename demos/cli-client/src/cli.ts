@@ -3,6 +3,7 @@ import type { Readable, Writable } from 'node:stream';
 import { createPaymentKey, showBalance, signUp } from './account.ts';
 import { createContext } from './context.ts';
 import type { Context } from './context.ts';
+import { callWithCredits } from './credits.ts';
 import { hideKeys } from './errors.ts';
 import { explainHeader, explainLines, planFailure, readPlan } from './explain.ts';
 import { loadConfig } from './config.ts';
@@ -355,8 +356,9 @@ const HANDLERS: { [K in Command['kind']]: Handler<K> } = {
     }
     return notBuilt('interactive');
   },
-  call: async (command) => {
-    throw new Stop(`call --pay ${command.pay} is not built yet`);
+  call: async (command, ctx) => {
+    if (command.pay !== 'credits') throw new Stop(`call --pay ${command.pay} is not built yet`);
+    return callWithCredits(ctx, command);
   },
   explain: async (command, { io, session }) => {
     const config = loadConfig(session.env);

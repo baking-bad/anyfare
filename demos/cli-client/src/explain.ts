@@ -232,7 +232,16 @@ function capLine(plan: Plan, totalDollars: string): string | undefined {
     : `  Your cap, MAX_PAYMENT_USD, is ${cap}. This quote is over it, so a call would not go ahead.`;
 }
 
-function quoteBlock(plan: Plan, style: Style): string[] {
+function microOf(dollarsText: string): bigint | undefined {
+  try {
+    return toAtomic(dollarsText, 6);
+  } catch {
+    return undefined;
+  }
+}
+
+/** `paying`: the one amount a call pays, in micro-USD, shown in place of the quote when given. */
+function quoteBlock(plan: Plan, style: Style, paying: bigint | undefined): string[] {
   const field = (label: string, value: string): string => style.field(label, value, 16);
   if (plan.check.kind === 'skipped') {
     const lines = [style.step("Anyfare's quote, from the routing link's 402"), `  ${plan.check.note}`];
@@ -241,7 +250,8 @@ function quoteBlock(plan: Plan, style: Style): string[] {
     if (credits === undefined) return [...lines, "  Anyfare's 402 has no Credits price, so there is no quote."];
     const mark = plan.api.kind === 'ok' ? markOf(plan.api.value.offers, plan.check) : { offer: undefined, onlyOption: false };
     const apiMicro = mark.offer === undefined ? undefined : toMicro(mark.offer);
-    const total = fromAtomic(credits.amount, 6);
+    const amount = paying ?? credits.amount;
+    const total = fromAtomic(amount, 6);
     lines.push(
       field(
         "The API's price",
@@ -249,7 +259,7 @@ function quoteBlock(plan: Plan, style: Style): string[] {
           ? 'not known'
           : `${dollars(apiMicro)} in ${assetLabel(mark.offer.network, mark.offer.asset, mark.offer.assetName)} on ${networkName(mark.offer.network)}`,
       ),
-      field("Anyfare's fee", apiMicro === undefined || apiMicro > credits.amount ? 'not known' : dollars(credits.amount - apiMicro)),
+      field("Anyfare's fee", apiMicro === undefined || apiMicro > amount ? 'not known' : dollars(amount - apiMicro)),
       field('You pay', style.styles.money(`$${total}`)),
     );
     const cap = capLine(plan, total);
@@ -263,18 +273,81 @@ function quoteBlock(plan: Plan, style: Style): string[] {
   const label = named === undefined
     ? `${check.price.asset ?? 'an unknown asset'} on ${networkName(check.price.network)}`
     : `${assetLabel(named.network, named.address)} on ${networkName(named.network)}`;
+  const apiMicro = microOf(check.price.amount);
+  const fee =
+    paying === undefined
+      ? `$${check.quote.fee}`
+      : apiMicro === undefined || apiMicro > paying
+        ? 'not known'
+        : dollars(paying - apiMicro);
   lines.push(
     field("The API's price", `$${check.price.amount} in ${label}`),
-    field("Anyfare's fee", `$${check.quote.fee}`),
-    field('You pay', style.styles.money(`$${check.quote.amount}`)),
+    field("Anyfare's fee", fee),
+    field('You pay', style.styles.money(paying === undefined ? `$${check.quote.amount}` : dollars(paying))),
   );
-  const cap = capLine(plan, check.quote.amount);
+  // The proxy holds the price of its 402 at the time of the call: say so when it is not the quote
+  const quoted = microOf(check.quote.amount);
+  const credits = plan.anyfare.kind === 'ok' ? plan.anyfare.value.offers.find((offer) => offer.protocol === 'credits') : undefined;
+  if (paying === undefined && credits !== undefined && quoted !== undefined && credits.amount !== quoted) {
+    lines.push(`  Anyfare's 402 for the same call asks ${dollars(credits.amount)} of Credits, not ${dollars(quoted)}.`);
+  }
+  // A call pays the higher of the two, so the cap line judges that one
+  const higher = credits !== undefined && quoted !== undefined && credits.amount > quoted ? credits.amount : undefined;
+  const judged = paying ?? higher;
+  const cap = capLine(plan, judged === undefined ? check.quote.amount : fromAtomic(judged, 6));
   return cap === undefined ? lines : [...lines, cap];
 }
 
-/** The three blocks, as lines. `payWay` marks the option of Anyfare's 402 that a later call would pay. */
-export function explainLines(plan: Plan, payWay?: PayWay, style: Style = createStyle(process.stdout)): string[] {
-  return [...apiBlock(plan, style), ...anyfareBlock(plan, style, payWay), ...quoteBlock(plan, style)];
+/** What Anyfare pays the API for the call. Any part may be unknown. */
+export interface ApiPrice {
+  /** In micro-USD. */
+  readonly micro: bigint | undefined;
+  /** The asset's symbol, such as "USDC". */
+  readonly asset: string | undefined;
+  /** The network's name, such as "Base". */
+  readonly network: string | undefined;
+}
+
+/** From `/_/check` for a GET; for a POST, from the one option of the API's own 402 that Anyfare can pay. */
+export function apiPrice(plan: Plan): ApiPrice | undefined {
+  if (plan.check.kind === 'ok') {
+    const check = plan.check.value;
+    if (!check.payable) return undefined;
+    const named = check.price.asset === undefined ? undefined : ANYFARE_ASSETS[check.price.asset];
+    const network = named?.network ?? check.price.network;
+    let micro: bigint | undefined;
+    try {
+      micro = toAtomic(check.price.amount, 6);
+    } catch {
+      micro = undefined;
+    }
+    return {
+      micro,
+      asset: named === undefined ? check.price.asset : assetLabel(named.network, named.address),
+      network: network === undefined ? undefined : networkName(network),
+    };
+  }
+  if (plan.check.kind !== 'skipped' || plan.api.kind !== 'ok') return undefined;
+  const { offer } = markOf(plan.api.value.offers, plan.check);
+  if (offer === undefined) return undefined;
+  return {
+    micro: toMicro(offer),
+    asset: assetLabel(offer.network, offer.asset, offer.assetName),
+    network: offer.network === undefined ? undefined : networkName(offer.network),
+  };
+}
+
+/**
+ * The three blocks, as lines. `payWay` marks the option of Anyfare's 402 that a later call would pay.
+ * `paying`, from a call, is the one amount it pays, in micro-USD: the quote lines and the cap use it.
+ */
+export function explainLines(
+  plan: Plan,
+  payWay?: PayWay,
+  style: Style = createStyle(process.stdout),
+  paying?: bigint,
+): string[] {
+  return [...apiBlock(plan, style), ...anyfareBlock(plan, style, payWay), ...quoteBlock(plan, style, paying)];
 }
 
 /** The title and the two addresses the command talks to. */
