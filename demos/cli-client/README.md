@@ -28,7 +28,7 @@ Anyfare is a payment router for AI agents. This README is the only document of t
 | `3route`: 3Route | A swap quote | x402 on Base, Etherlink and Solana; MPP on Tempo | The cheapest `exact` option it can: today USDC on Base |
 | `evidence`: the evidence API | A NEAR account's balance at a final block | Only USDC on NEAR | USDC on NEAR, from its NEAR wallet |
 
-- 3Route: a DEX aggregator by Baking Bad, the team behind Anyfare.
+- 3Route: best-priced crypto token swaps, for agents, traders, and apps. Pay-per-call quote & swap API via x402/MPP. No API key or subscription.
 - Data flags and their defaults:
 
 | Tool | Flags | Defaults |

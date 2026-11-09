@@ -104,7 +104,7 @@ export const threeRoute: Tool = {
   id: '3route',
   name: '3Route',
   about:
-    '3Route: a DEX aggregator by Baking Bad, the team behind Anyfare. A swap quote: takes a chain, a pair and an amount.',
+    '3Route: best-priced crypto token swaps, for agents, traders, and apps. Pay-per-call quote & swap API via x402/MPP. No API key or subscription. Takes a chain, a pair and an amount.',
   async prepare(args, context): Promise<PreparedCall> {
     if (args.tool !== '3route') throw new Error('The 3Route tool got the arguments of another tool');
     const chainId = chainOf(args.chain);

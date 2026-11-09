@@ -99,7 +99,7 @@ describe('the interactive mode', () => {
     expect(out).toContain(`Pay URL       ${fake.payUrl}`);
     // The tools, by their about line
     expect(out).toContain('1  CoinMarketCap: the latest price of a coin. Takes a pair, such as BTC/USD.');
-    expect(out).toContain('2  3Route: a DEX aggregator');
+    expect(out).toContain('2  3Route: best-priced crypto token swaps');
     expect(out).toContain('3  The evidence API: a NEAR account');
     expect(out).toContain('Pair [BTC/USD]');
     // The ways, with what each needs and whether it is set
