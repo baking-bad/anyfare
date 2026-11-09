@@ -1,15 +1,16 @@
 // Sign-up, payment keys and the balance. Each step is a function, so a flow can chain them.
 
 import { checkQuote } from './anyfare.ts';
+import { balanceText, readWalletBalance, walletsOf, wayLabel } from './balances.ts';
 import { loadConfig } from './config.ts';
 import type { Config } from './config.ts';
 import type { Context } from './context.ts';
-import { ENV_LOCAL } from './envLocal.ts';
+import { ENV_LOCAL, has } from './envLocal.ts';
 import * as platform from './platform.ts';
-import { PAYMENT_KEY_SHAPE } from './platform.ts';
+import { MASTER_KEY_SHAPE, PAYMENT_KEY_SHAPE } from './platform.ts';
 import { DEFAULT_ARGS, TOOLS } from './tools/index.ts';
 import type { ToolId } from './tools/types.ts';
-import { Stop, fromAtomic, requireEnv, short, toAtomic, usd } from './util.ts';
+import { Stop, UsageError, fromAtomic, requireEnv, short, toAtomic, usd } from './util.ts';
 
 export const MASTER_KEY = 'ANYFARE_MASTER_KEY';
 export const PAYMENT_KEY = 'ANYFARE_PAYMENT_KEY';
@@ -19,6 +20,38 @@ export const SIGNUP_QUESTION =
   'Sign up creates an Anyfare account and a master key. The key is shown only once, so the app saves it to .env.local. Go on?';
 
 const FIELD_WIDTH = 14;
+const MAX_TRIES = 3;
+
+export type KeyKind = 'master' | 'payment';
+
+/** Anyfare keys given as flags, for one run: they win over the settings, and only `key save` saves them. */
+export interface FlagKeys {
+  readonly master?: string;
+  readonly payment?: string;
+}
+
+const KEY_NAMES: Readonly<Record<KeyKind, string>> = { master: 'master key', payment: 'payment key' };
+const KEY_STARTS: Readonly<Record<KeyKind, string>> = { master: 'afm_', payment: 'af_' };
+
+/**
+ * Why a text is not the key it should be, to follow its subject, such as "--payment-key"; `undefined`
+ * when it is one. It never quotes the text.
+ */
+export function keyShapeProblem(text: string, wanted: KeyKind): string | undefined {
+  const kind = MASTER_KEY_SHAPE.test(text) ? 'master' : PAYMENT_KEY_SHAPE.test(text) ? 'payment' : undefined;
+  if (kind === wanted) return undefined;
+  const starts = `A ${KEY_NAMES[wanted]} starts with ${KEY_STARTS[wanted]}`;
+  if (kind !== undefined) return `is a ${KEY_NAMES[kind]}, not a ${KEY_NAMES[wanted]}. ${starts}`;
+  return `does not look like a ${KEY_NAMES[wanted]}. ${starts}`;
+}
+
+/** The settings that keys stand for: `ANYFARE_MASTER_KEY` and `ANYFARE_PAYMENT_KEY`. */
+export function keySettings(keys: FlagKeys | undefined): Record<string, string> {
+  return {
+    ...(keys?.master !== undefined && { [MASTER_KEY]: keys.master }),
+    ...(keys?.payment !== undefined && { [PAYMENT_KEY]: keys.payment }),
+  };
+}
 
 /** A key from the settings, checked before it goes into a header. `undefined` when it is not set. */
 function keyIn(env: Readonly<Record<string, string | undefined>>, name: string): string | undefined {
@@ -205,17 +238,40 @@ export async function createPaymentKey(ctx: Context, options: KeyOptions): Promi
   ]);
 }
 
-/** The Credits balance with the master key, and the payment key's limits with the payment key. */
+/**
+ * The Credits balance with the master key, the payment key's limits with the payment key, and then the
+ * balance of each wallet whose settings are present. The wallets are read at the same time as the
+ * Credits, each with its own time limit; one that can't be read is a line that says why.
+ */
 export async function showBalance(ctx: Context): Promise<void> {
   const env = ctx.session.env;
   const master = env[MASTER_KEY]?.trim() ? masterKeyOf(env) : undefined;
   const payment = env[PAYMENT_KEY]?.trim() ? paymentKeyOf(env) : undefined;
-  if (master === undefined && payment === undefined) {
+  const wallets = walletsOf(env);
+  if (master === undefined && payment === undefined && wallets.length === 0) {
     throw new Stop(`Neither ${MASTER_KEY} nor ${PAYMENT_KEY} is set. ${SIGNUP_HINT}`);
   }
-  const config = loadConfig(env);
+  const reads = Promise.all(wallets.map((way) => readWalletBalance(ctx.io.fetch, env, way, { withNear: true })));
+  // Not left unheard when the Credits stop the command first
+  reads.catch(() => undefined);
   const { style } = ctx;
   const field = (label: string, value: string): string => style.field(label, value, FIELD_WIDTH);
+  await showCredits(ctx, master, payment, field);
+  if (wallets.length === 0) return;
+  const balances = await reads;
+  const width = Math.max(...balances.map((balance) => wayLabel(balance.way).length));
+  ctx.print([style.step('Wallets'), ...balances.map((balance) => style.field(wayLabel(balance.way), balanceText(balance), width))]);
+}
+
+async function showCredits(
+  ctx: Context,
+  master: string | undefined,
+  payment: string | undefined,
+  field: (label: string, value: string) => string,
+): Promise<void> {
+  if (master === undefined && payment === undefined) return;
+  const config = loadConfig(ctx.session.env);
+  const { style } = ctx;
   if (master !== undefined) {
     const balance = await platform.balance(ctx.io.fetch, config.apiUrl, master);
     ctx.print([
@@ -226,6 +282,8 @@ export async function showBalance(ctx: Context): Promise<void> {
   }
   if (payment !== undefined) {
     const key = await platform.keyStatus(ctx.io.fetch, config.payUrl, payment);
+    // The payment key pays: its account's Credits are the ones a call takes
+    const ofAccount = master === undefined ? undefined : await keyOfAccount(ctx, config, master, key.id);
     const allowance =
       key.allowance === null || key.remaining.allowance === null
         ? 'none: only the daily budget limits it'
@@ -235,7 +293,155 @@ export async function showBalance(ctx: Context): Promise<void> {
       field('Left today', `${usd(key.remaining.dailyBudget)} of ${usd(key.dailyBudget)}`),
       field('Allowance', allowance),
       field('Per call', key.maxPrice === null ? 'no limit' : `at most ${usd(key.maxPrice)}`),
-      ...(master === undefined ? [field('Available', style.styles.money(usd(key.remaining.balance)))] : []),
+      field('Available', style.styles.money(usd(key.remaining.balance))),
+      ...(ofAccount === false ? [style.styles.warn(`  ${OTHER_ACCOUNT}`)] : []),
     ]);
   }
+}
+
+/** The line for a payment key that is not of the master key's account. */
+export const OTHER_ACCOUNT =
+  "The payment key is of another account than the master key: a call it pays takes its own account's Credits.";
+
+/**
+ * Whether the payment key `keyId` is one of the master key's account, by `GET /v1/keys`: free.
+ * `undefined` when that can't be read.
+ */
+export async function keyOfAccount(ctx: Context, config: Config, masterKey: string, keyId: string): Promise<boolean | undefined> {
+  try {
+    return (await platform.keyIds(ctx.io.fetch, config.apiUrl, masterKey)).includes(keyId);
+  } catch (error) {
+    if (!(error instanceof Stop)) throw error;
+    return undefined;
+  }
+}
+
+/** A `Stop` that says nothing was saved, once. */
+function notSaved(error: Stop): Stop {
+  if (error.message.endsWith('Nothing was saved.')) return error;
+  return new Stop(`${error.message.replace(/\.$/, '')}. Nothing was saved.`);
+}
+
+const SECRET_QUESTIONS: Readonly<Record<KeyKind, string>> = {
+  payment: 'Payment key, af_… (Enter to skip):',
+  master: 'Master key, afm_… (to skip: Enter, then y):',
+};
+
+/** What a console that shows what is typed says before any key is asked for. */
+export const ECHOING_CONSOLE = "This console can't hide what you type. Give the keys with .env.local, or run in a terminal.";
+
+/**
+ * A key asked with hidden input, checked for its shape, and asked again after a wrong one. `undefined`:
+ * skipped. An empty master key is asked about once more, plainly: a stray Enter must not skip it, or the
+ * key would next be typed at a question that shows it.
+ */
+async function askKey(ctx: Context, kind: KeyKind): Promise<string | undefined> {
+  const prompter = ctx.prompter();
+  for (let attempt = 1; attempt <= MAX_TRIES; attempt += 1) {
+    const answer = await prompter.askSecret(SECRET_QUESTIONS[kind]);
+    if (answer === '') {
+      if (kind === 'payment' || (await prompter.confirm('Skip the master key?', false))) return undefined;
+      continue;
+    }
+    const problem = keyShapeProblem(answer, kind);
+    if (problem === undefined) return answer;
+    ctx.print(`That ${problem}.`);
+  }
+  throw new Stop(`No ${KEY_NAMES[kind]} after ${MAX_TRIES} tries. Nothing was saved.`);
+}
+
+/**
+ * The keys a person has: from the flags, whose shape the command line checked, or else asked with
+ * hidden input, the payment key first. Then each is checked for free, before it is saved or used: the
+ * master key with `GET /v1/account`, the payment key with `GET <pay>/_/key`. A key that is refused, or
+ * that can't be checked, stops it all, and nothing is saved. Prints only `short(key)`.
+ */
+async function keysYouHave(ctx: Context, flags: FlagKeys | undefined): Promise<Record<string, string>> {
+  // Before any question: a key typed here would show
+  if (flags === undefined && ctx.prompter().secretInput() === 'echoed') throw new UsageError(ECHOING_CONSOLE);
+  let keys: FlagKeys;
+  try {
+    if (flags !== undefined) {
+      keys = flags;
+    } else {
+      const payment = await askKey(ctx, 'payment');
+      const master = await askKey(ctx, 'master');
+      keys = { ...(payment !== undefined && { payment }), ...(master !== undefined && { master }) };
+    }
+    if (keys.payment === undefined && keys.master === undefined) throw new Stop('No key was given. Nothing was saved.');
+    const config = loadConfig(ctx.session.env);
+    if (keys.payment !== undefined) await platform.keyStatus(ctx.io.fetch, config.payUrl, keys.payment);
+    if (keys.master !== undefined) await platform.account(ctx.io.fetch, config.apiUrl, keys.master);
+  } catch (error) {
+    if (!(error instanceof Stop)) throw error;
+    throw notSaved(error);
+  }
+  const { style } = ctx;
+  const given = (['payment', 'master'] as const).filter((kind) => keys[kind] !== undefined);
+  ctx.print([
+    style.done(given.length === 1 ? 'Anyfare took the key, in a free check' : 'Anyfare took the keys, in a free check'),
+    ...given.map((kind) => style.field(kind === 'payment' ? 'Payment key' : 'Master key', short(keys[kind] ?? ''), FIELD_WIDTH)),
+  ]);
+  return keySettings(keys);
+}
+
+/** Saves checked keys into .env.local, at mode 600, and says so; a failure saves nothing. */
+function saveChecked(ctx: Context, values: Readonly<Record<string, string>>): void {
+  for (const name of Object.keys(values)) {
+    if (has(ctx.io.appDir, name)) ctx.print(`${name} is in ${ENV_LOCAL} already: the new key replaces it there.`);
+  }
+  let warnings: readonly string[];
+  try {
+    warnings = ctx.session.save(values);
+  } catch (error) {
+    if (!(error instanceof Stop)) throw error;
+    throw notSaved(error);
+  }
+  for (const warning of warnings) ctx.warn(warning);
+  ctx.print(ctx.style.done(`Saved to ${ENV_LOCAL}`));
+}
+
+/**
+ * `key save`: the keys a person has, from the flags or asked with hidden input, checked for their
+ * shape and then for free, saved into .env.local after a yes. `--yes` skips the yes.
+ */
+export async function saveKeys(ctx: Context, options: { readonly keys?: FlagKeys; readonly yes: boolean }): Promise<void> {
+  const noTerminal = 'key save asks before it saves. Add --yes to save without a terminal';
+  // Before any key is asked for or sent
+  ctx.requireAnswerable(options.yes, noTerminal);
+  const values = await keysYouHave(ctx, options.keys);
+  // A line typed before the question appeared does not answer it
+  if (!options.yes) ctx.prompter().dropTypedAhead();
+  await ctx.approve({
+    yes: options.yes,
+    question: SAVE_QUESTION,
+    noTerminal,
+    declined: new Stop('Nothing was saved.'),
+  });
+  saveChecked(ctx, values);
+}
+
+/** The question before keys are saved. Its answer is No unless it is a y. */
+const SAVE_QUESTION = `Save to ${ENV_LOCAL}?`;
+
+/**
+ * The interactive mode's "Use keys I have": the steps of `key save`, with hidden input. Anything but a
+ * "yes" to the save, Enter too, uses the keys for this session only.
+ */
+export async function useKeysYouHave(ctx: Context): Promise<void> {
+  const values = await keysYouHave(ctx, undefined);
+  let save: boolean;
+  try {
+    ctx.prompter().dropTypedAhead();
+    save = await ctx.prompter().confirm(SAVE_QUESTION, false);
+  } catch (error) {
+    if (!(error instanceof Stop)) throw error;
+    throw notSaved(error);
+  }
+  if (save) {
+    saveChecked(ctx, values);
+    return;
+  }
+  ctx.session.use(values);
+  ctx.print(`Nothing was saved: ${Object.keys(values).length === 1 ? 'the key works' : 'the keys work'} for this session only.`);
 }

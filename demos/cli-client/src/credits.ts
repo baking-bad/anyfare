@@ -6,6 +6,7 @@ import type { Context } from './context.ts';
 import type { Plan } from './explain.ts';
 import { askToPay, callingLine, printResult, readPaidPlan, sendOnce, shortPlan, stopForAnswer, storyLine } from './paid.ts';
 import type { CallCommand } from './paid.ts';
+import * as platform from './platform.ts';
 import { Stop, toAtomic, usd } from './util.ts';
 
 export const RECEIPT_HEADER = 'anyfare-receipt';
@@ -78,6 +79,25 @@ export function creditsPrice(ctx: Context, plan: Plan): bigint {
 
 const BALANCE_SHOWS = 'npm run demo -- balance shows the Credits';
 
+/**
+ * Before the confirmation: the Credits balance, from `GET /_/key` with the payment key, against the
+ * price. Known and below it: a `Stop`, not charged, since nothing was sent. Not read: one warning, and
+ * the call goes on, since Anyfare refuses a call the Credits can't cover before it holds anything.
+ */
+export async function checkCreditsCover(ctx: Context, payUrl: string, key: string, price: bigint): Promise<void> {
+  let available: bigint;
+  try {
+    available = (await platform.keyStatus(ctx.io.fetch, payUrl, key)).remaining.balance;
+  } catch (error) {
+    if (!(error instanceof Stop)) throw error;
+    ctx.warn(`Could not read the Credits balance: ${error.message.replace(/\.$/, '')}. Anyfare refuses a call the Credits can't cover.`);
+    return;
+  }
+  if (available < price) {
+    throw new Stop(`Your Credits balance is ${usd(available)}, less than the ${usd(price)} this call pays. Nothing was sent.`, { notCharged: true });
+  }
+}
+
 /** `call --pay credits`. Returns the exit code. */
 export async function callWithCredits(ctx: Context, command: CallCommand): Promise<number> {
   const config = loadConfig(ctx.session.env);
@@ -88,6 +108,7 @@ export async function callWithCredits(ctx: Context, command: CallCommand): Promi
   });
   const price = chosen.micro;
   if (!command.explain) ctx.print(shortPlan(ctx, plan, price, `${usd(price)} of Credits`));
+  await checkCreditsCover(ctx, config.payUrl, key, price);
   await askToPay(ctx, command, {
     question: `Pay ${usd(price)} of Credits?`,
     declined: new Stop('Nothing was sent.', { notCharged: true }),

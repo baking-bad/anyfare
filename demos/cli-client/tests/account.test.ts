@@ -267,8 +267,10 @@ describe('balance', () => {
     expect(result.out).toMatch(/Left today\s+\$0\.97 of \$1/);
     expect(result.out).toMatch(/Allowance\s+none/);
     expect(result.out).toMatch(/Per call\s+at most \$0\.02/);
-    expect(result.out.match(/Available/g)).toHaveLength(1);
-    expect(fake.requests.map((item) => `${item.host} ${item.path}`)).toEqual(['api /v1/balance', 'pay /_/key']);
+    // The payment key's block has its own account's Credits too; the key is of the master key's account
+    expect(result.out.match(/Available\s+\$1\.25/g)).toHaveLength(2);
+    expect(result.out).not.toContain('another account');
+    expect(fake.requests.map((item) => `${item.host} ${item.path}`)).toEqual(['api /v1/balance', 'pay /_/key', 'api /v1/keys']);
     expect(fake.requests[1]?.headers['authorization']).toBe(`Bearer ${key.key}`);
   });
 

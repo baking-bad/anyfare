@@ -11,6 +11,7 @@ import { Stop, requireEnv } from './util.ts';
 type Env = Readonly<Record<string, string | undefined>>;
 
 export const BASE_PRIVATE_KEY = 'BASE_PRIVATE_KEY';
+export const BASE_RPC_URL = 'BASE_RPC_URL';
 export const NEAR_ACCOUNT_ID = 'NEAR_ACCOUNT_ID';
 export const NEAR_PRIVATE_KEY = 'NEAR_PRIVATE_KEY';
 export const NEAR_RPC_URL = 'NEAR_RPC_URL';
@@ -111,6 +112,32 @@ function readRpcUrl(env: Env, name: string, fallback: string): { readonly url: s
     throw new Stop(`${name} can't carry a user name or password: put an API key in its path or query. Check .env.local.`);
   }
   return { url: rpcUrl, host: url.host, own: own !== undefined };
+}
+
+/** An RPC the app reads from, and its host, the only part of it that is printed. */
+export interface RpcAddress {
+  /** Never printed: it may hold a key in its path or query. */
+  readonly url: string;
+  readonly host: string;
+}
+
+/** The Base RPC the app reads a balance from when `BASE_RPC_URL` is not set. */
+export const BASE_DEFAULT_RPC_URL = 'https://mainnet.base.org';
+
+/** `BASE_RPC_URL`, or Base's own public RPC: only balances are read from it. */
+export function readBaseRpc(env: Env): RpcAddress {
+  const rpc = readRpcUrl(env, BASE_RPC_URL, BASE_DEFAULT_RPC_URL);
+  return { url: rpc.url, host: rpc.host };
+}
+
+/** `NEAR_ACCOUNT_ID` and the NEAR RPC, for a read of its balance: it needs no key. */
+export function readNearAccount(env: Env): { readonly accountId: string; readonly rpc: RpcAddress } {
+  const accountId = requireEnv(env, NEAR_ACCOUNT_ID, 'It is the NEAR account that pays USDC on NEAR, such as name.near.');
+  if (!isNearAccountId(accountId)) {
+    throw new Stop(`${NEAR_ACCOUNT_ID} is not a NEAR account ID, such as name.near. Check .env.local.`);
+  }
+  const rpc = readRpcUrl(env, NEAR_RPC_URL, NEAR_RPC_URLS['near:mainnet']);
+  return { accountId, rpc: { url: rpc.url, host: rpc.host } };
 }
 
 /** `BASE_PRIVATE_KEY`: `0x` and 64 hex digits, a key of secp256k1. */

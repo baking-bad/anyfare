@@ -5,7 +5,7 @@
 import { Credential } from 'mppx';
 import { encodeFunctionData } from 'viem';
 import type { Hex } from 'viem';
-import { generatePrivateKey } from 'viem/accounts';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import type { PrivateKeyAccount } from 'viem/accounts';
 import { Abis, Transaction } from 'viem/tempo';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -68,9 +68,12 @@ async function payTempo(env: Record<string, string> = {}) {
   const app = tempAppDir();
   try {
     const { fetch } = forwardingFetch(toolRoutes());
+    const key = generatePrivateKey();
+    // Made up: the wallet holds 1 USDC.e, so the check before the question lets the call go on to sign
+    rpc.setBalance(privateKeyToAccount(key).address, 1_000_000n);
     const io = captureIo(
       fetch,
-      { ANYFARE_API_URL: fake.apiUrl, ANYFARE_PAY_URL: fake.payUrl, TEMPO_PRIVATE_KEY: generatePrivateKey(), TEMPO_RPC_URL: rpc.url, ...env },
+      { ANYFARE_API_URL: fake.apiUrl, ANYFARE_PAY_URL: fake.payUrl, TEMPO_PRIVATE_KEY: key, TEMPO_RPC_URL: rpc.url, ...env },
       { appDir: app.dir },
     );
     const code = await runCli(['call', '--tool', '3route', '--pay', 'tempo', '--yes'], io.io);

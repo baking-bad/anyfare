@@ -5,12 +5,14 @@ import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PassThrough } from 'node:stream';
-import { generatePrivateKey } from 'viem/accounts';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.ts';
 import { toAtomic } from '../src/util.ts';
 import { forwardingFetch, startFakeAnyfare, toolRoutes, toolTargets } from './fakeAnyfare.ts';
 import type { FakeAnyfare, FakeTarget } from './fakeAnyfare.ts';
+import { startFakeBaseRpc } from './fakeBaseRpc.ts';
+import type { FakeBaseRpc } from './fakeBaseRpc.ts';
 import { captureIo, tempAppDir, waitUntil } from './helpers.ts';
 
 const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
@@ -38,16 +40,18 @@ function baseTargets(): Record<'cmc' | '3route' | 'evidence', FakeTarget> {
 }
 
 let fake: FakeAnyfare;
+let baseRpc: FakeBaseRpc;
 let app: { dir: string; remove: () => void };
 
 beforeAll(async () => {
-  fake = await startFakeAnyfare();
+  [fake, baseRpc] = await Promise.all([startFakeAnyfare(), startFakeBaseRpc()]);
 });
 afterAll(async () => {
-  await fake.close();
+  await Promise.all([fake.close(), baseRpc.close()]);
 });
 beforeEach(() => {
   fake.reset();
+  baseRpc.reset();
   for (const target of Object.values(baseTargets())) fake.addTarget(target);
   app = tempAppDir();
 });
@@ -76,6 +80,12 @@ function funded(balance = '1'): Record<string, string> {
 
 const paidRequests = () => fake.routed().filter((item) => item.headers['authorization'] !== undefined);
 
+/** A Base wallet of a key made here, holding a made-up balance on the made-up Base RPC: 1 USDC unless said. */
+function baseWallet(key = generatePrivateKey(), micro = 1_000_000n): Record<string, string> {
+  baseRpc.setBalance(privateKeyToAccount(key).address, micro);
+  return { BASE_PRIVATE_KEY: key, BASE_RPC_URL: baseRpc.url };
+}
+
 function savedKeys(): Record<string, string> {
   const keys: Record<string, string> = {};
   for (const line of readFileSync(join(app.dir, '.env.local'), 'utf8').split('\n')) {
@@ -89,8 +99,8 @@ describe('the interactive mode', () => {
   it('goes from nothing to a paid call with Credits: sign-up, a payment key, the explain lines, the answer', async () => {
     fake.startingBalance = '1';
     fake.rewrite.signup = (body) => ({ ...body, freeCredits: '0.10' });
-    // CoinMarketCap, the default pair, Credits, sign up, make the key, pay, no more
-    const result = await session(['1', '', '1', 'y', 'y', 'y', 'n']);
+    // CoinMarketCap, the default pair, Credits, sign up: 1 and yes, make the key, pay, no more
+    const result = await session(['1', '', '1', '1', 'y', 'y', 'y', 'n']);
     expect(result.err).toBe('');
     expect(result.code).toBe(0);
     const { out } = result;
@@ -109,7 +119,8 @@ describe('the interactive mode', () => {
     expect(out).toMatch(/2 {2}USDC on NEAR {2}needs NEAR_ACCOUNT_ID and NEAR_PRIVATE_KEY {2}✘/);
     expect(out).toMatch(/3 {2}USDC on Base {2}needs BASE_PRIVATE_KEY {2}✘/);
     expect(out).toMatch(/4 {2}USDC\.e on Tempo {2}needs TEMPO_PRIVATE_KEY {2}✘/);
-    // Sign-up, its free Credits, the key
+    // The choice, sign-up, its free Credits, the key
+    expect(out).toContain('Credits need an Anyfare key, and none is set. How do you get one?\n  1  Sign up: a new account, free\n  2  Use keys I have\n');
     expect(out).toContain('Sign-up is one call, free, and gives a master key.');
     expect(out).toContain('Sign up creates an Anyfare account and a master key.');
     expect(out).toContain('You got $0.10 of free Credits');
@@ -133,7 +144,7 @@ describe('the interactive mode', () => {
   });
 
   it('offers a top-up when the balance is below the price, says the 404, and goes back to the way to pay', async () => {
-    const env = { ...funded('0.001'), BASE_PRIVATE_KEY: generatePrivateKey() };
+    const env = { ...funded('0.001'), ...baseWallet() };
     // CoinMarketCap, the default pair, Credits, yes to the top-up, then Base, pay, no more
     const result = await session(['1', '', '1', 'y', '3', 'y', 'n'], env);
     expect(result.code).toBe(0);
@@ -166,7 +177,7 @@ describe('the interactive mode', () => {
   it('says top-ups are off, and that the operator credits balances', async () => {
     fake.topups.enabled = true;
     fake.topups.unavailable = true;
-    const env = { ...funded('0.001'), BASE_PRIVATE_KEY: generatePrivateKey() };
+    const env = { ...funded('0.001'), ...baseWallet() };
     const result = await session(['1', '', '1', 'y', '3', 'y', 'n'], env);
     expect(result.code).toBe(0);
     expect(result.err).toContain('✘ Top-ups are off on this Anyfare now. Nothing was made that could take a transfer');
@@ -211,10 +222,11 @@ describe('the interactive mode', () => {
 
   it('pays on Base from a key made in the test, end to end, and shows no part of it', async () => {
     const key = generatePrivateKey();
-    const result = await session(['1', '', '3', 'y', 'n'], { BASE_PRIVATE_KEY: key });
+    const result = await session(['1', '', '3', 'y', 'n'], baseWallet(key));
     expect(result.err).toBe('');
     expect(result.code).toBe(0);
-    expect(result.out).toMatch(/3 {2}USDC on Base {2}needs BASE_PRIVATE_KEY {2}✔/);
+    // With the made-up balance of the wallet
+    expect(result.out).toMatch(/3 {2}USDC on Base {2}needs BASE_PRIVATE_KEY {2}✔ {2}1 USDC\n/);
     expect(result.out).toMatch(/You pay\s+0\.011 USDC on Base/);
     expect(fake.x402Settled).toHaveLength(1);
     const [settled] = fake.x402Settled;
@@ -264,8 +276,8 @@ describe('the interactive mode', () => {
   });
 
   it('goes back to the way to pay when the person declines the sign-up, and creates nothing', async () => {
-    const key = generatePrivateKey();
-    const result = await session(['1', '', '1', 'n', '3', 'y', 'n'], { BASE_PRIVATE_KEY: key });
+    // Credits, sign up: 1, then no
+    const result = await session(['1', '', '1', '1', 'n', '3', 'y', 'n'], baseWallet());
     expect(result.code).toBe(0);
     expect(result.err).toContain('✘ Nothing was created.');
     expect(fake.requests.some((item) => item.method === 'POST' && item.path === '/v1/accounts')).toBe(false);

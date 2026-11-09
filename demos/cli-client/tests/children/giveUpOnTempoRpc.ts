@@ -25,7 +25,7 @@ const ctx = createContext({
 });
 let code = 0;
 try {
-  code = await callWithTempo(ctx, { args: DEFAULT_ARGS['3route'], explain: false, yes: true }, { signingMs: 400 });
+  code = await callWithTempo(ctx, { args: DEFAULT_ARGS['3route'], explain: false, yes: true }, { signingMs: 400, balanceMs: 400 });
 } catch (error) {
   process.stderr.write(`${error instanceof Stop ? error.line() : String(error)}\n`);
   code = 1;

@@ -230,6 +230,8 @@ export interface Session {
   checkSavable(): void;
   /** Saves into `.env.local`, then uses the new values for the rest of the run. Returns warnings. */
   save(values: Readonly<Record<string, string>>): readonly string[];
+  /** Uses these values for the rest of the run, and saves nothing. */
+  use(values: Readonly<Record<string, string>>): void;
 }
 
 export function createSession(env: Readonly<Record<string, string | undefined>>, dir: string): Session {
@@ -248,6 +250,9 @@ export function createSession(env: Readonly<Record<string, string | undefined>>,
       const warnings = saveSecrets(dir, values);
       current = { ...current, ...values };
       return warnings;
+    },
+    use(values) {
+      current = { ...current, ...values };
     },
   };
 }

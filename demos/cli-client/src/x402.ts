@@ -11,6 +11,7 @@ import { ExactEvmScheme } from '@x402/evm/exact/client';
 import { decodeSignedDelegateB64, parseFtTransferArgs } from '@x402/near';
 import type { ClientNearSigner, DecodedDelegateAction } from '@x402/near';
 import { ExactNearScheme } from '@x402/near/exact/client';
+import { BALANCE_TIMEOUT_MS, checkWalletCovers, readBalanceOf, readWalletBalance } from './balances.ts';
 import { loadConfig } from './config.ts';
 import type { Context } from './context.ts';
 import { clip, retryIn } from './errors.ts';
@@ -23,9 +24,12 @@ import { amountText, networkName, sameAddress } from './networks.ts';
 import { isKnownUsdc, payWayOf } from './offers.ts';
 import { askToPay, callingLine, payerLines, printResult, readPaidPlan, sendOnce, shortPlan, stopForAnswer, storyLine } from './paid.ts';
 import type { CallCommand, Chosen } from './paid.ts';
+import { fetchFailure, raceLimit } from './rpc.ts';
 import { Stop, fromAtomic, isRecord } from './util.ts';
 import { EXPLORERS, isNearAccountId, readWallet } from './wallets.ts';
 import type { NearWallet, Wallet } from './wallets.ts';
+
+export { fetchFailure, raceLimit, scrubRpcUrl } from './rpc.ts';
 
 export type X402Way = 'base' | 'near';
 
@@ -144,55 +148,8 @@ export function nearClient(signer: ClientNearSigner, option: PaymentRequirements
   return new x402Client().setSpendControls(spendControlsFor(option, cap)).register(X402_NETWORKS.near, new ExactNearScheme(signer));
 }
 
-/**
- * A text with every part of the NEAR RPC's URL taken out but its host: the URL, its path, its query,
- * and each of their parts. Any of them may hold a key.
- */
-export function scrubRpcUrl(text: string, rpcUrl: string): string {
-  let url: URL | undefined;
-  try {
-    url = new URL(rpcUrl);
-  } catch {
-    url = undefined;
-  }
-  const parts = [rpcUrl, url?.href, url === undefined ? undefined : `${url.origin}${url.pathname}`, url?.pathname, url?.search];
-  for (const segment of url?.pathname.split('/') ?? []) {
-    parts.push(segment);
-    // A stray `%` is not an escape: the segment is scrubbed as it is
-    try {
-      parts.push(decodeURIComponent(segment));
-    } catch {
-      // Nothing more to scrub
-    }
-  }
-  for (const [name, value] of url?.searchParams ?? []) parts.push(name, value);
-  let scrubbed = text;
-  for (const part of parts.filter((item): item is string => item !== undefined && item.length >= 2 && item !== '/')) {
-    scrubbed = scrubbed.split(part).join('…');
-  }
-  return scrubbed;
-}
-
 /** A failure of the app's own read of the NEAR RPC. Its message is the app's own, and names nothing but a status. */
 class NearRpcFailure extends Error {}
-
-/**
- * The reason of a `fetch` to `rpcUrl` that failed before any answer, in the error or its causes, as a
- * code, or a few plain words with nothing of the URL in them; `undefined` when there is none.
- */
-export function fetchFailure(error: unknown, rpcUrl: string): string | undefined {
-  let item: unknown = error;
-  for (let depth = 0; item instanceof Error && depth < 5; depth += 1, item = item.cause) {
-    if (item instanceof TypeError && item.message === 'fetch failed') {
-      const cause = item.cause as { code?: unknown; message?: unknown } | undefined;
-      if (typeof cause?.code === 'string' && /^[A-Z][A-Z0-9_]{1,40}$/.test(cause.code)) return cause.code;
-      // A few plain words, such as "bad port", once anything of the URL is out of them
-      const words = typeof cause?.message === 'string' ? scrubRpcUrl(cause.message, rpcUrl) : '';
-      return /^[A-Za-z][A-Za-z ]{0,39}$/.test(words) ? words : '';
-    }
-  }
-  return undefined;
-}
 
 const SPEND_CONTROLS = /rejected by spendControls/;
 const NO_ACCESS_KEY = /UNKNOWN_ACCESS_KEY|AccessKeyDoesNotExist|access key .*(does ?n.t exist|not found|never been observed)/i;
@@ -247,23 +204,6 @@ interface Signed {
   readonly payload: PaymentPayload;
   /** NEAR: the final block's height the app read before signing. */
   readonly nearHeight?: bigint;
-}
-
-/**
- * What `work` gives, or `'late'` when `limitMs` runs out first. Its failure after the limit is no
- * one's to hear, and the timer is cleared either way, so it keeps no process alive.
- */
-export async function raceLimit<T>(work: Promise<T>, limitMs: number): Promise<T | 'late'> {
-  work.catch(() => undefined);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<'late'>((resolve) => {
-    timer = setTimeout(() => resolve('late'), limitMs);
-  });
-  try {
-    return await Promise.race([work, late]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 /**
@@ -507,18 +447,28 @@ export function validFor(way: X402Way, seconds: number): string {
   return way === 'base' ? time(seconds) : `${seconds} block${seconds === 1 ? '' : 's'}, about ${time(Math.max(1, Math.round(seconds * 0.6)))}`;
 }
 
-/** `call --pay base` and `call --pay near`. `signingMs` bounds the signing, 30 seconds unless a test says less. Returns the exit code. */
+/**
+ * `call --pay base` and `call --pay near`. `signingMs` bounds the signing, 30 seconds unless a test says
+ * less, and `balanceMs` the read of the wallet's balance, 10 seconds unless a test says less. Returns
+ * the exit code.
+ */
 export async function callWithX402(
   ctx: Context,
   command: CallCommand,
   way: X402Way,
-  limits: { readonly signingMs?: number } = {},
+  limits: { readonly signingMs?: number; readonly balanceMs?: number } = {},
 ): Promise<number> {
   const { style } = ctx;
   const config = loadConfig(ctx.session.env);
   const { plan, chosen } = await readPaidPlan(ctx, config, command, way, (read) => chooseX402(read, way));
   // Only now, so that a call this app can't pay never needs a wallet
   const wallet = readWallet(ctx.session.env, way);
+  // A read only, made while the plan is shown, and waited for before the question
+  const balanceLimit = { limitMs: limits.balanceMs ?? BALANCE_TIMEOUT_MS };
+  const balance =
+    wallet.way === 'near'
+      ? readBalanceOf(ctx.io.fetch, 'near', wallet.payer, { url: wallet.rpcUrl, host: wallet.rpcHost }, balanceLimit)
+      : readWalletBalance(ctx.io.fetch, ctx.session.env, 'base', balanceLimit);
   const { option, what } = chosen;
   const to: [string, string][] = [
     ['To', option.payTo],
@@ -526,6 +476,7 @@ export async function callWithX402(
     ['Valid for', validFor(way, option.maxTimeoutSeconds)],
   ];
   ctx.print(command.explain ? payerLines(ctx, what, to) : shortPlan(ctx, plan, chosen.micro, what, to));
+  await checkWalletCovers(ctx, balance, chosen.micro);
   await askToPay(ctx, command, {
     question: `Pay ${what} to ${option.payTo}?`,
     declined: new Stop('Nothing was signed or sent.', { notCharged: true }),

@@ -9,6 +9,7 @@ import { BaseError, createClient, decodeFunctionData, http, keccak256 } from 'vi
 import type { Hex } from 'viem';
 import { tempo } from 'viem/chains';
 import { Abis, Transaction } from 'viem/tempo';
+import { BALANCE_TIMEOUT_MS, checkCoversWithFee, checkWalletCovers, readBalanceOf } from './balances.ts';
 import { loadConfig } from './config.ts';
 import type { Context } from './context.ts';
 import { clip, retryIn } from './errors.ts';
@@ -448,8 +449,15 @@ export function mppLines(check: string): ErrorTable {
   };
 }
 
-/** `call --pay tempo`. `signingMs` bounds the signing, 30 seconds unless a test says less. Returns the exit code. */
-export async function callWithTempo(ctx: Context, command: CallCommand, limits: { readonly signingMs?: number } = {}): Promise<number> {
+/**
+ * `call --pay tempo`. `signingMs` bounds the signing, 30 seconds unless a test says less, and `balanceMs`
+ * the read of the wallet's balance, 10 seconds unless a test says less. Returns the exit code.
+ */
+export async function callWithTempo(
+  ctx: Context,
+  command: CallCommand,
+  limits: { readonly signingMs?: number; readonly balanceMs?: number } = {},
+): Promise<number> {
   const { style } = ctx;
   const config = loadConfig(ctx.session.env);
   const cap = config.maxPayment;
@@ -462,6 +470,8 @@ export async function callWithTempo(ctx: Context, command: CallCommand, limits: 
   const feeBound = room < MAX_TEMPO_FEE ? room : MAX_TEMPO_FEE;
   // Only now, so that a call this app can't pay never needs a wallet
   const wallet = readTempoWallet(ctx.session.env);
+  // A read only, made while the plan is shown, and waited for before the question
+  const balance = readBalanceOf(ctx.io.fetch, 'tempo', wallet.payer, { url: wallet.rpcUrl, host: wallet.rpcHost }, { limitMs: limits.balanceMs ?? BALANCE_TIMEOUT_MS });
   const { recipient, what } = chosen;
   const closesIn = Math.max(1, Math.ceil((chosen.expiresMs - Date.now()) / 1000));
   const to: [string, string][] = [
@@ -473,6 +483,8 @@ export async function callWithTempo(ctx: Context, command: CallCommand, limits: 
     ...(command.explain ? payerLines(ctx, what, to) : shortPlan(ctx, plan, chosen.micro, what, to)),
     `  The charge closes in ${windowText(closesIn)}.`,
   ]);
+  // The charge alone: the fee is known only once the transaction is signed
+  const held = await checkWalletCovers(ctx, balance, chosen.micro);
   await askToPay(ctx, command, {
     question: `Pay ${what} to ${recipient}, plus a network fee of at most ${usd(feeBound)}?`,
     declined: new Stop('Nothing was signed or sent.', { notCharged: true }),
@@ -482,6 +494,8 @@ export async function callWithTempo(ctx: Context, command: CallCommand, limits: 
   const header = await signCredential(ctx.io.fetch, chosen, wallet, limits.signingMs ?? SIGNING_TIMEOUT_MS);
   const nowSeconds = Math.floor(Date.now() / 1000);
   const { signed, maxFee, validBefore } = checkCredential(header, chosen, wallet.payer, cap, nowSeconds);
+  // The fee is paid in USDC.e too: the wallet must hold the charge and the most the signed fee can be
+  checkCoversWithFee(held, chosen.micro, maxFee);
   let hash: Hex;
   try {
     hash = await transactionHash(signed);

@@ -201,6 +201,11 @@ export interface FakeTopups {
   polls: number;
 }
 
+/** Whether the account of the last top-up got its credits: once, at the first answer that says credited. */
+interface TopupCredit {
+  done: boolean;
+}
+
 /** Made up, and shaped like a NEAR transaction hash: base58, 35 characters. */
 export const MADE_UP_HASH = 'MadeUpHashForTheTest111111111111111';
 /** Made up: the deposit address of the fake's top-ups. */
@@ -268,7 +273,16 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
   const next = (): number => (counter += 1);
 
   const topups: FakeTopups = { enabled: false, unavailable: false, memo: null, steps: [], refuse: null, failPolls: 0, created: [], polls: 0 };
+  const topupCredit: TopupCredit = { done: false };
+  /** As Anyfare credits a top-up: the account's balance goes up by what the answer says it credited, once. */
+  const creditTopup = (account: FakeAccount, step: Partial<Record<string, string | null>>): void => {
+    const credited = step['credited'];
+    if (topupCredit.done || step['status'] !== 'credited' || typeof credited !== 'string') return;
+    account.available += micro(credited);
+    topupCredit.done = true;
+  };
   const resetTopups = (): void => {
+    topupCredit.done = false;
     topups.enabled = false;
     topups.unavailable = false;
     topups.memo = null;
@@ -423,6 +437,27 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
       send(response, 201, state.rewrite.keys?.(created) ?? created);
       return;
     }
+    if (request.method === 'GET' && path === '/v1/keys') {
+      const account = master(request, response);
+      if (account === undefined) return;
+      // As the Platform API lists them: the account's own keys, never a key itself
+      const own = [...keys.values()].filter((key) => key.account === account);
+      send(response, 200, {
+        keys: own.map((key) => ({
+          ...keyView(key),
+          revokedAt: null,
+          remaining: { allowance: key.allowance === undefined ? null : left(key.allowance, key.spentTotal), dailyBudget: left(key.dailyBudget, key.spentToday) },
+        })),
+      });
+      return;
+    }
+    if (request.method === 'GET' && path === '/v1/account') {
+      const account = master(request, response);
+      if (account === undefined) return;
+      // As the Platform API answers it: the account, never a key
+      send(response, 200, { id: account.id, createdAt: new Date().toISOString() });
+      return;
+    }
     if (request.method === 'GET' && path === '/v1/balance') {
       const account = master(request, response);
       if (account === undefined) return;
@@ -502,6 +537,8 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
       }
       topups.created.push(input);
       topups.polls = 0;
+      topupCredit.done = false;
+      creditTopup(account, topups.steps[0] ?? {});
       send(response, 201, topupBody(input, topups.steps[0] ?? {}));
       return;
     }
@@ -514,6 +551,7 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
       topups.polls += 1;
       const input = topups.created.at(-1) ?? {};
       const step = topups.steps[Math.min(topups.polls, topups.steps.length - 1)] ?? {};
+      creditTopup(account, step);
       send(response, 200, topupBody(input, step));
       return;
     }

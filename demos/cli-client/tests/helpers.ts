@@ -169,3 +169,51 @@ export async function waitUntil(check: () => boolean, what: string, ms = 5_000):
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+// What an output may show that is public: addresses, the fakes' hosts and their request IDs
+const PUBLIC = /0x[0-9a-fA-F]{40}(?![0-9a-fA-F])|127\.0\.0\.1:[0-9]+|req-made-up-[0-9]+/g;
+
+/**
+ * Throws when a text holds a secret, or any part of one longer than 4 characters: of an Anyfare key,
+ * any 5 characters of its body, past `afm_live_` or `af_live_`, but the ones `short` shows; of a
+ * wallet's private key, any part of its body. The public values are taken out first, and `known`,
+ * such as made-up transaction hashes: they are not parts of a secret.
+ */
+export function expectNoSecretIn(text: string, secrets: readonly string[], known: readonly string[] = []): void {
+  let rest = text;
+  for (const part of known) rest = rest.split(part).join(' ');
+  rest = rest.replace(PUBLIC, ' ');
+  for (const secret of secrets) {
+    const anyfare = /^afm?_[a-z]+_/.test(secret);
+    const hex = secret.startsWith('0x');
+    const body = hex ? secret.slice(2).toLowerCase() : !anyfare && secret.includes(':') ? secret.slice(secret.indexOf(':') + 1) : secret;
+    const haystack = hex ? rest.toLowerCase() : rest;
+    // An Anyfare key's body starts after its second _: `short` shows its first character or two
+    const from = anyfare ? secret.indexOf('_', secret.indexOf('_') + 1) + 1 : 0;
+    for (let at = from; at + 5 <= body.length; at += 1) {
+      // The message never holds the part itself
+      if (haystack.includes(body.slice(at, at + 5))) throw new Error(`The output holds a part of a secret, at ${at}`);
+    }
+  }
+}
+
+/** A stdin that stands for a terminal: raw mode can be set on it, and each change is kept in `modes`. */
+export interface FakeTerminalInput extends PassThrough {
+  readonly isTTY: true;
+  isRaw: boolean;
+  readonly modes: boolean[];
+  setRawMode(mode: boolean): this;
+}
+
+export function fakeTerminalInput(): FakeTerminalInput {
+  const input = new PassThrough() as PassThrough & { isTTY: boolean; isRaw: boolean; modes: boolean[]; setRawMode(mode: boolean): unknown };
+  input.isTTY = true;
+  input.isRaw = false;
+  input.modes = [];
+  input.setRawMode = function setRawMode(mode: boolean) {
+    this.modes.push(mode);
+    this.isRaw = mode;
+    return this;
+  };
+  return input as unknown as FakeTerminalInput;
+}

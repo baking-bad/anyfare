@@ -35,6 +35,8 @@ import {
 } from '../src/x402.ts';
 import { CMC_URL, EVIDENCE_URL, forwardingFetch, startFakeAnyfare, toolRoutes, toolTargets } from './fakeAnyfare.ts';
 import type { FakeAnyfare, FakeTarget, PaidAnswer } from './fakeAnyfare.ts';
+import { startFakeBaseRpc } from './fakeBaseRpc.ts';
+import type { FakeBaseRpc } from './fakeBaseRpc.ts';
 import { startFakeNearRpc } from './fakeNearRpc.ts';
 import type { FakeNearRpc } from './fakeNearRpc.ts';
 import { answerOf, brokenAnswer, captureIo, expectResultShape, fakeFetch, tempAppDir } from './helpers.ts';
@@ -76,7 +78,13 @@ const BASE_PAYER = privateKeyToAccount(BASE_KEY).address;
 const { secretKey: NEAR_KEY, publicKey: NEAR_PUBLIC_KEY } = nearTestKey();
 // 127.0.0.1:9 is one that fetch refuses to connect to at all
 const NEAR_ENV = { NEAR_ACCOUNT_ID: NEAR_ACCOUNT, NEAR_PRIVATE_KEY: NEAR_KEY, NEAR_RPC_URL: 'http://127.0.0.1:9' };
-const BASE_ENV = { BASE_PRIVATE_KEY: BASE_KEY };
+// BASE_RPC_URL is the made-up Base RPC's, set once it runs: the app reads the wallet's balance from it
+const BASE_ENV: Record<string, string> = { BASE_PRIVATE_KEY: BASE_KEY };
+/** Made up: what the test's Base wallet holds, 1 USDC, enough for every call here. */
+const BASE_HOLDS = 1_000_000n;
+/** The warning when the NEAR RPC at 127.0.0.1:9, a port fetch refuses, can't be read for the balance. */
+const NEAR_BALANCE_UNREAD =
+  "Could not read your wallet's balance: the NEAR RPC at 127.0.0.1:9 could not be reached (bad port). The facilitator refuses a payment the wallet can't cover.\n";
 
 /** x402 options as the proxy builds them. The amounts are made up, dated 2026-11-09. */
 const baseOption = (amount: string, change: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -124,11 +132,13 @@ function x402Targets(): Record<'cmc' | '3route' | 'evidence', FakeTarget> {
 }
 
 let fake: FakeAnyfare;
+let baseRpc: FakeBaseRpc;
 let app: { dir: string; remove: () => void };
 const realFetch = globalThis.fetch;
 
 beforeAll(async () => {
-  fake = await startFakeAnyfare();
+  [fake, baseRpc] = await Promise.all([startFakeAnyfare(), startFakeBaseRpc()]);
+  BASE_ENV['BASE_RPC_URL'] = baseRpc.url;
   // The NEAR signer reads from its RPC with the global fetch: only 127.0.0.1 is reachable from here
   vi.stubGlobal('fetch', (input: string | URL | Request, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : String(input);
@@ -138,10 +148,12 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   vi.unstubAllGlobals();
-  await fake.close();
+  await Promise.all([fake.close(), baseRpc.close()]);
 });
 beforeEach(() => {
   fake.reset();
+  baseRpc.reset();
+  baseRpc.setBalance(BASE_PAYER, BASE_HOLDS);
   for (const target of Object.values(x402Targets())) fake.addTarget(target);
   app = tempAppDir();
 });
@@ -940,8 +952,18 @@ describe('call --pay near', () => {
     expect(code).toBe(1);
     expect(io.out()).toMatch(/You pay\s+0\.01 USDC on NEAR\n\s+To\s+pay\.anyfare\.near\n\s+From\s+buyer\.example\.near\n/);
     expect(io.out()).toContain('Pay 0.01 USDC on NEAR to pay.anyfare.near? [y/N]');
-    expect(io.err()).toBe('✘ Nothing was signed or sent. Not charged.\n');
-    expect(calls.map((item) => item.method)).toEqual(['POST', 'POST']);
+    // The NEAR RPC is not routed here: its balance can't be read, and the call goes on to the question
+    expect(io.err()).toBe(
+      "Could not read your wallet's balance: the NEAR RPC at 127.0.0.1:9 could not be reached (ENOTFOUND). The facilitator refuses a payment the wallet can't cover.\n" +
+        '✘ Nothing was signed or sent. Not charged.\n',
+    );
+    expect(calls.map((item) => `${item.method} ${new URL(item.url).host}`)).toEqual([
+      'POST merchant-near.mikedotexe.com',
+      'POST pay.example.test',
+      'POST 127.0.0.1:9',
+    ]);
+    // The read of the balance: a view call of the USDC contract, nothing signed
+    expect(JSON.parse(calls[2]?.body ?? '')).toMatchObject({ method: 'query', params: { request_type: 'call_function', method_name: 'ft_balance_of' } });
     expect(calls.some((item) => item.headers['payment-signature'] !== undefined)).toBe(false);
   });
 
@@ -1002,7 +1024,8 @@ describe('call --pay near', () => {
     // Taken, then not reached: no host but 127.0.0.1 answers here
     const https = await call(['--tool', 'evidence', '--pay', 'near', '--yes'], { ...NEAR_ENV, NEAR_RPC_URL: 'https://rpc.example.test/made-up-key' });
     expect(https.err).toBe(
-      '✘ Could not sign the payment: the NEAR RPC at rpc.example.test could not be reached (ENOTFOUND). Nothing was sent. Not charged.\n',
+      "Could not read your wallet's balance: the NEAR RPC at rpc.example.test could not be reached (ENOTFOUND). The facilitator refuses a payment the wallet can't cover.\n" +
+        '✘ Could not sign the payment: the NEAR RPC at rpc.example.test could not be reached (ENOTFOUND). Nothing was sent. Not charged.\n',
     );
     expect(fake.x402Requests()).toEqual([]);
   });
@@ -1020,7 +1043,8 @@ describe('call --pay near', () => {
     const blocked = await call(['--tool', 'evidence', '--pay', 'near', '--yes'], NEAR_ENV);
     expect(blocked.code).toBe(1);
     expect(blocked.out).toContain('▸ Signing 0.002 USDC on NEAR to pay.anyfare.near');
-    expect(blocked.err).toMatch(
+    expect(blocked.err.startsWith(NEAR_BALANCE_UNREAD)).toBe(true);
+    expect(blocked.err.slice(NEAR_BALANCE_UNREAD.length)).toMatch(
       /^✘ Could not sign the payment: the NEAR RPC at 127\.0\.0\.1:9 could not be reached( \([^)\n]+\))?\. Nothing was sent\. Not charged\.\n$/,
     );
     expect(blocked.out).not.toContain('Calling');
@@ -1028,7 +1052,8 @@ describe('call --pay near', () => {
     const port = await closedPort();
     const refused = await call(['--tool', 'evidence', '--pay', 'near', '--yes'], { ...NEAR_ENV, NEAR_RPC_URL: `http://127.0.0.1:${port}` });
     expect(refused.err).toBe(
-      `✘ Could not sign the payment: the NEAR RPC at 127.0.0.1:${port} could not be reached (ECONNREFUSED). Nothing was sent. Not charged.\n`,
+      `Could not read your wallet's balance: the NEAR RPC at 127.0.0.1:${port} could not be reached (ECONNREFUSED). The facilitator refuses a payment the wallet can't cover.\n` +
+        `✘ Could not sign the payment: the NEAR RPC at 127.0.0.1:${port} could not be reached (ECONNREFUSED). Nothing was sent. Not charged.\n`,
     );
     expect(fake.x402Requests()).toEqual([]);
     // Each call sent only its unpaid request to the routed path
@@ -1064,8 +1089,9 @@ describe('call --pay near, signed against a made-up NEAR RPC', () => {
     rpc.nextHeights.length = 0;
     rpc.failing = undefined;
     rpc.calls.length = 0;
-    // Made up: the buyer's account holds the test's key, at a made-up nonce
+    // Made up: the buyer's account holds the test's key, at a made-up nonce, and 1 USDC
     rpc.addAccessKey(NEAR_ACCOUNT, NEAR_PUBLIC_KEY, 41n);
+    rpc.setBalance(NEAR_ACCOUNT, 1_000_000n);
     fake.nearChain = rpc;
   });
 
@@ -1101,8 +1127,9 @@ describe('call --pay near, signed against a made-up NEAR RPC', () => {
     expect(paid).toHaveLength(1);
     expect(paid[0]?.method).toBe('POST');
     expect(paid[0]?.body).toBe('{"accountId":"anyfare.near"}');
-    // The app's own read of the height, then the signer's two reads; nothing sent to the chain
-    expect(rpc.calls.map((item) => item.method).sort()).toEqual(['block', 'block', 'query']);
+    // The app's read of the balance and of the height, then the signer's two reads; nothing sent to the chain
+    expect(rpc.calls.map((item) => item.method).sort()).toEqual(['block', 'block', 'query', 'query']);
+    expect(rpc.balanceReads().map((item) => (item.params as Record<string, unknown>)['method_name'])).toEqual(['ft_balance_of']);
   });
 
   it('is refused by the fake when the same NEAR payment comes again', async () => {
@@ -1154,11 +1181,14 @@ describe('call --pay near, signed against a made-up NEAR RPC', () => {
     rpc.failing = { status: 503 };
     const result = await payNear(KEYED);
     expect(result.code).toBe(1);
+    const host = new URL(rpc.url).host;
     expect(result.err).toBe(
-      `✘ Could not sign the payment: the NEAR RPC at ${new URL(rpc.url).host} answered 503. Nothing was sent. Not charged.\n`,
+      `Could not read your wallet's balance: the NEAR RPC at ${host} answered 503. The facilitator refuses a payment the wallet can't cover.\n` +
+        `✘ Could not sign the payment: the NEAR RPC at ${host} answered 503. Nothing was sent. Not charged.\n`,
     );
     for (const part of KEYED_PARTS) expect(`${result.out}${result.err}`).not.toContain(part);
-    expect(rpc.calls.map((item) => item.path)).toEqual([KEYED]);
+    // The read of the balance, then the app's read of the height
+    expect(rpc.calls.map((item) => item.path)).toEqual([KEYED, KEYED]);
     expect(fake.x402Requests()).toEqual([]);
   });
 

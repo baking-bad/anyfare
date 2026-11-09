@@ -63,6 +63,7 @@ You choose one with `--pay`. Each way needs its own settings in `.env.local`.
 4. Put secrets in `.env.local`. Git ignores that file. **Never commit `.env.local`.**
 5. To fill `.env.local` by hand, run `touch .env.local && chmod 600 .env.local`.
 6. The app writes Anyfare keys to `.env.local` itself, at mode 600, after you say yes.
+7. Have Anyfare keys already? Run `npm run demo -- key save`. It asks for them and saves them. See "Keys from the command line".
 
 - The app writes to `.env.local` and nowhere else.
 - Node may print a short notice that `.env.local` is missing. This is harmless.
@@ -76,6 +77,7 @@ You choose one with `--pay`. Each way needs its own settings in `.env.local`.
 - **Not deployed yet on 2026-11-09.** Until it is, use a local Anyfare.
 - To use a local Anyfare, set `ANYFARE_API_URL` and `ANYFARE_PAY_URL` in `.env.local` or in the shell.
 - The app also reads each API's own unpaid answer, and the NEAR and Tempo RPCs when it signs. Reads send no payment.
+- It reads your wallets' balances from the NEAR, Base and Tempo RPCs. These are reads only. Nothing is signed or sent for them.
 
 ## The variables
 
@@ -84,19 +86,55 @@ You choose one with `--pay`. Each way needs its own settings in `.env.local`.
 | `ANYFARE_API_URL` | The Platform API address | An `http://` or `https://` URL | Optional (hosted demo) |
 | `ANYFARE_PAY_URL` | The proxy address | An `http://` or `https://` URL | Optional (hosted demo) |
 | `MAX_PAYMENT_USD` | The cap on one call | A plain decimal above zero, such as `0.02` | Optional (`0.02`) |
-| `ANYFARE_MASTER_KEY` | `key create`, `balance`, `topup` | `afm_live_…`; the app saves it after `signup` | For those commands |
-| `ANYFARE_PAYMENT_KEY` | `--pay credits`; `balance` | `af_live_…`; the app saves it after `key create` | For `--pay credits` |
+| `ANYFARE_MASTER_KEY` | `key create`, `balance`, `topup` | `afm_live_…`; the app saves it after `signup` or `key save` | For those commands |
+| `ANYFARE_PAYMENT_KEY` | `--pay credits`; `balance` | `af_live_…`; the app saves it after `key create` or `key save` | For `--pay credits` |
 | `NEAR_ACCOUNT_ID` | `--pay near` | A NEAR account, such as `name.near` | For `--pay near` |
 | `NEAR_PRIVATE_KEY` | `--pay near` | A full-access key of that account: `ed25519:` and base58 | For `--pay near` |
 | `NEAR_RPC_URL` | `--pay near` | A NEAR RPC. `https://`, or `http://` to this machine only | Optional (the SDK's own) |
 | `BASE_PRIVATE_KEY` | `--pay base` | `0x` and 64 hex digits | For `--pay base` |
+| `BASE_RPC_URL` | The Base wallet's balance | A Base RPC. `https://`, or `http://` to this machine only | Optional (`https://mainnet.base.org`) |
 | `TEMPO_PRIVATE_KEY` | `--pay tempo` | `0x` and 64 hex digits | For `--pay tempo` |
 | `TEMPO_RPC_URL` | `--pay tempo` | A Tempo RPC. `https://`, or `http://` to this machine only | Optional (the chain's own) |
 
 - Wallet keys go only in `.env.local`.
 - The app never prints a key in full. It prints the first 10 characters, then `…`. A wallet private key is hidden whole.
 - The app prints an RPC URL only by its host. Why: the URL may hold an API key.
+- The app reads the Base wallet's balance from `BASE_RPC_URL`. It never sends a payment there: Anyfare's facilitator settles it.
 - An RPC URL can't carry a user name or password. Put an API key in its path or query.
+- Put `ANYFARE_MASTER_KEY` and `ANYFARE_PAYMENT_KEY` in `.env.local`, or let `key save` put them there. A key given as a flag shows on screen and in npm's log, your shell's history and the process list. See "Keys from the command line".
+
+## Keys from the command line
+
+### The two flags
+
+- `--master-key <afm_…>` gives the master key for one run. `key create`, `balance`, `topup` and `key save` take it.
+- `--payment-key <af_…>` gives the payment key for one run. `call --pay credits`, `balance` and `key save` take it.
+- A command that does not use a key refuses its flag. Bad usage, exit code 2.
+- A flag wins over `.env.local` and the shell, for that run only.
+- The app never saves a flag's key by itself. Only `key save` saves it.
+- The app checks the key's shape before any request. A master key in `--payment-key`, or a payment key in `--master-key`, is bad usage. The line names the flag. It never shows the key.
+- With no command, a key flag starts the interactive mode with that key.
+- **A key in a flag shows on screen and in npm's log, your shell's history and the process list. Use `.env.local` or `key save`.**
+  - npm prints the command line before it runs it, the key with it. It also writes the command line into its log files, in `~/.npm/_logs`. `npm run --silent` hides the printed line, but not the log.
+  - While the app runs, the key is in the process list, such as `ps`.
+- If you must give a key as a flag, run node directly, without npm: `node --env-file-if-exists=.env --env-file-if-exists=.env.local src/main.ts --payment-key …`. The key is still in your shell's history and the process list.
+- When a key comes from a flag, the app's first line on stderr says so: "A key from a flag can show in npm's output and log, your shell's history and the process list. Prefer key save."
+
+### `key save`
+
+- Command: `npm run demo -- key save`
+- It asks for the payment key, then the master key. Press Enter to skip the payment key. For the master key, Enter asks once more: "Skip the master key? [y/N]". Only a `y` skips it. Why: a stray Enter must not skip it, or you would type the key at the next question, where it shows.
+- On a terminal, nothing you type shows: no characters, no stars. Backspace works. Ctrl-C stops, and nothing is saved.
+- On a terminal, a line typed before a question appeared answers nothing. A second Enter is not taken as an answer.
+- In a console that shows what you type and can't hide it, it asks for nothing. It says: "This console can't hide what you type. Give the keys with .env.local, or run in a terminal."
+- With piped input and no terminal at all, as in a script, it reads one line for each key.
+- It also takes the keys as flags, then it asks for none. A flag shows the key: see "The two flags". Without npm: `node --env-file-if-exists=.env --env-file-if-exists=.env.local src/main.ts key save --payment-key …`.
+- It checks each key's shape. Then it checks that each key works, for free: the master key with `GET /v1/account`, the payment key with `GET <pay>/_/key`.
+- A key that Anyfare refuses stops it. Nothing is saved, not even the other key.
+- Then it asks "Save to .env.local? [y/N]" and saves at mode 600. Only a `y` saves. `--yes` skips the question. Without a terminal, `--yes` is required.
+- A question that shows what you type never takes a key. An answer that looks like one is refused: "That looks like a key. It was not used or saved; type y or n." The app adds that it showed on your screen: if the key is real, revoke it and make a new one.
+- It prints only the first 10 characters of each key.
+- Cost: free.
 
 ## Do X, see Y
 
@@ -106,7 +144,10 @@ Run every command from `demos/cli-client`. Add `--` after `npm run demo`, so npm
 
 - Command: `npm run demo`
 - You see: questions. Pick a tool, give its data, pick a way to pay, then confirm.
-- For Credits, it offers to run `signup`, `key create` and a top-up when something is missing.
+- The list of ways to pay shows `✔` when a way's settings are present. After `✔` it shows the balance, such as `✔  0.979 USDC`, when it can read it within 5 seconds. For Credits, it is the Credits of the payment key's account, from `GET <pay>/_/key`. A balance it can't read leaves `✔` alone.
+- For Credits with no Anyfare key, it asks: `1` Sign up: a new account, free; `2` Use keys I have.
+- `2` runs the steps of `key save`: hidden input, the free check, then "Save to .env.local? [y/N]". Anything but a `y`, Enter too, uses the keys for this session only.
+- For Credits, it also offers `key create` and a top-up when something is missing. It offers a top-up only when the payment key is of the master key's account. Why: a top-up adds to the master key's account, and the payment key pays from its own.
 - It needs a terminal. After each call it asks "Another call?".
 - While it waits for a deposit, press Enter, or Ctrl-C once, to stop waiting. It goes back to "How do you pay?". A second Ctrl-C ends the app.
 - Cost: free until you confirm a call. Then the cost is the call's.
@@ -134,8 +175,16 @@ Run every command from `demos/cli-client`. Add `--` after `npm run demo`, so npm
 ### `balance`
 
 - Command: `npm run demo -- balance`
-- You see: your Credits with the master key; the payment key's limits with the payment key. It uses the keys that are set.
-- Cost: free.
+- You see: your Credits with the master key; the payment key's limits and its own account's Credits with the payment key. It uses the keys that are set.
+- When the payment key is not of the master key's account, it says so in one line. It checks with `GET /v1/keys`, for free.
+- Then a "Wallets" block: one line for each wallet whose settings are present.
+  - USDC on NEAR: the USDC and the NEAR of `NEAR_ACCOUNT_ID`, from `NEAR_RPC_URL` or the default NEAR RPC.
+  - USDC on Base: the USDC of the address of `BASE_PRIVATE_KEY`, from `BASE_RPC_URL` or `https://mainnet.base.org`.
+  - USDC.e on Tempo: the USDC.e of the address of `TEMPO_PRIVATE_KEY`, from `TEMPO_RPC_URL` or the chain's own RPC.
+- It reads the wallets at the same time, each for at most 10 seconds. A read that fails is one line, such as "not read: the NEAR RPC at <host> answered 503". It names the RPC by its host only.
+- It works with only wallet settings and no Anyfare key.
+- Takes `--master-key` and `--payment-key`. A flag shows the key: see "The two flags".
+- Cost: free. The reads sign and send nothing.
 
 ### `call`
 
@@ -203,6 +252,7 @@ Run every command from `demos/cli-client`. Add `--` after `npm run demo`, so npm
 - **One request per call, never retried.** Why: a retry could pay twice.
 - **A question before each paid call, unless `--yes`.** Why: you see the price first.
 - **The app checks what it signed** before it sends it: the amount, the recipient, the asset and the time limit. Why: the signing library could change what it signs.
+- **The balance before the question.** Before it asks you to pay, the app reads your balance: the wallet's for `near`, `base` and `tempo`, the Credits from `GET <pay>/_/key` for `credits`. On Tempo it checks the charge before it signs, and the charge with the signed transaction's highest network fee after it signs, before it sends anything. When the balance is below that, it stops: "Your wallet holds 0.005 USDC on Base, less than the 0.01 USDC this call pays. Nothing was signed." Not charged. When it can't read the balance, it warns in one line and goes on. Why go on: the facilitator, the Tempo node or Anyfare refuses a payment that the balance can't cover, before anything moves.
 - **"Not charged" only when nothing could have moved.** Why: when the line doesn't say it, you know to check.
 
 ## Exit codes and errors
@@ -248,14 +298,16 @@ Run every command from `demos/cli-client`. Add `--` after `npm run demo`, so npm
 | `src/anyfare.ts` | The routing link, `GET /_/check` and the unpaid 402 |
 | `src/offers.ts` | Reads a 402 into one list of payment options |
 | `src/networks.ts` | Names of networks and assets |
-| `src/platform.ts` | The Platform API: sign-up, keys, balance |
-| `src/account.ts` | `signup`, `key create` and `balance` |
+| `src/platform.ts` | The Platform API: sign-up, keys, the account, balance |
+| `src/account.ts` | `signup`, `key create`, `key save` and `balance`; the shape of a key |
+| `src/balances.ts` | The wallets' balances, and the check before a wallet payment |
+| `src/rpc.ts` | What the RPC reads share: the host only, and a time limit |
 | `src/topup.ts` | `topup`: the deposit address and the wait |
 | `src/wallets.ts` | Reads and checks the wallet settings; block explorer links |
 | `src/envLocal.ts` | Saves keys to `.env.local` at mode 600 |
 | `src/errors.ts` | One plain line for each Anyfare error; hides keys |
 | `src/http.ts` | One request with a time limit; how far a failed request got |
-| `src/prompt.ts` | The questions on a terminal |
+| `src/prompt.ts` | The questions on a terminal, and the hidden input for keys |
 | `src/style.ts` | Colors and line shapes |
 | `src/util.ts` | Amounts as exact integers, the error types, small helpers |
 | `src/exit.ts` | Ends the run once all output is written |
@@ -269,6 +321,6 @@ Run every command from `demos/cli-client`. Add `--` after `npm run demo`, so npm
 ## Tests
 
 - Command: `npm test`
-- The tests are offline. They run against fakes of Anyfare, the NEAR RPC and the Tempo RPC.
+- The tests are offline. They run against fakes of Anyfare, the NEAR RPC, the Base RPC and the Tempo RPC.
 - They use no network and no money.
 - `npm run typecheck` checks the types.

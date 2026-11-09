@@ -36,15 +36,19 @@ function funded(balance = '1', limits: KeyLimits = { label: 'demo', dailyBudget:
   return { account, key: fake.addKey(account, limits) };
 }
 
-async function call(argv: readonly string[], env: Record<string, string> = {}, options: IoOptions = {}) {
+async function call(argv: readonly string[], env: Record<string, string> = {}, options: IoOptions & { readonly fetch?: typeof fetch } = {}) {
   const { fetch, calls } = forwardingFetch(toolRoutes());
-  const io = captureIo(fetch, { ANYFARE_API_URL: fake.apiUrl, ANYFARE_PAY_URL: fake.payUrl, ...env }, { appDir: app.dir, ...options });
+  const io = captureIo(options.fetch ?? fetch, { ANYFARE_API_URL: fake.apiUrl, ANYFARE_PAY_URL: fake.payUrl, ...env }, { appDir: app.dir, ...options });
   const code = await runCli(['call', ...argv], io.io);
   return { code, out: io.out(), err: io.err(), calls };
 }
 
 /** The routed requests that carried a payment. */
 const paidRequests = () => fake.routed().filter((item) => item.headers['authorization'] !== undefined);
+
+/** Whether a request is the paid one: it carries the key, and is not the free GET /_/key before it. */
+const isPaid = (input: string | URL | Request, init?: RequestInit): boolean =>
+  new Headers(init?.headers).has('authorization') && !String(input).endsWith('/_/key');
 
 describe('call --pay credits', () => {
   it('pays a CoinMarketCap call from Credits, with the receipt and the story line', async () => {
@@ -239,13 +243,19 @@ describe('call --pay credits', () => {
     expect(account.available).toBe(1000000n);
   });
 
-  it("says so when the Credits don't cover the call", async () => {
+  it("says so when Anyfare refuses a call the Credits don't cover, after their balance could not be read", async () => {
     const { key } = funded('0');
-    const result = await call(['--tool', 'cmc', '--pay', 'credits', '--yes'], { ANYFARE_PAYMENT_KEY: key.key });
+    // GET /_/key answers 503, made up: the check before the question can't read the balance
+    const { fetch } = forwardingFetch(toolRoutes());
+    const wrapped = (async (input: string | URL | Request, init?: RequestInit) =>
+      String(input).endsWith('/_/key') ? new Response('', { status: 503 }) : fetch(input, init)) as typeof fetch;
+    const result = await call(['--tool', 'cmc', '--pay', 'credits', '--yes'], { ANYFARE_PAYMENT_KEY: key.key }, { fetch: wrapped });
     expect(result.code).toBe(1);
-    expect(result.err).toMatch(
-      /^✘ Your Credits don't cover this call\. Top up, or ask the operator \(request req-made-up-\d+\)\. Not charged\.\n$/,
+    expect(result.err).toBe(
+      "Could not read the Credits balance: Anyfare answered 503. Anyfare refuses a call the Credits can't cover.\n" +
+        `✘ Your Credits don't cover this call. Top up, or ask the operator (request ${/request (req-made-up-\d+)/.exec(result.err)?.[1] ?? ''}). Not charged.\n`,
     );
+    expect(paidRequests()).toHaveLength(1);
   });
 
   it("passes the API's own 400 through, not charged", async () => {
@@ -364,7 +374,7 @@ describe('a paid request that fails on the way', () => {
     const { fetch } = forwardingFetch(toolRoutes());
     const sent: string[] = [];
     const wrapped = (async (input: string | URL | Request, init?: RequestInit) => {
-      if (new Headers(init?.headers).has('authorization')) {
+      if (isPaid(input, init)) {
         sent.push(String(input));
         failure();
       }
@@ -386,7 +396,7 @@ describe('a paid request that fails on the way', () => {
     const { fetch } = forwardingFetch(toolRoutes());
     const wrapped = (async (input: string | URL | Request, init?: RequestInit) => {
       const response = await fetch(input, init);
-      if (!new Headers(init?.headers).has('authorization')) return response;
+      if (!isPaid(input, init)) return response;
       await response.arrayBuffer();
       return brokenAnswer(response.status, code, response.headers);
     }) as typeof fetch;

@@ -1,7 +1,8 @@
 // The interactive mode: pick a tool, give its data, pick a way to pay, get ready to pay, then call.
 // Every step that does something is a function of the flags mode, run here with its own question.
 
-import { MASTER_KEY, PAYMENT_KEY, createPaymentKey, masterKeyOf, paymentKeyOf, signUp } from './account.ts';
+import { MASTER_KEY, OTHER_ACCOUNT, PAYMENT_KEY, createPaymentKey, keyOfAccount, masterKeyOf, paymentKeyOf, signUp, useKeysYouHave } from './account.ts';
+import { readWalletBalance, tokenText } from './balances.ts';
 import { runCall } from './call.ts';
 import type { PayWay, ToolArgs } from './cli.ts';
 import { loadConfig } from './config.ts';
@@ -16,6 +17,7 @@ import { createStyle } from './style.ts';
 import { DEFAULT_TIMING, OPERATOR_CREDITS, TOPUPS_NOT_YET, isPositiveAmount, minimumRefusal, runTopup, topupOptions } from './topup.ts';
 import { DEFAULT_ARGS, TOOLS } from './tools/index.ts';
 import type { ToolId } from './tools/types.ts';
+import { raceLimit } from './rpc.ts';
 import { Stop, UsageError, usd } from './util.ts';
 import {
   BASE_PRIVATE_KEY,
@@ -25,6 +27,8 @@ import {
 } from './wallets.ts';
 
 const MAX_TRIES = 3;
+/** How long the list of ways to pay waits for the balances it shows after ✔. */
+export const LIST_BALANCE_MS = 5_000;
 
 interface Way {
   readonly way: PayWay;
@@ -90,13 +94,42 @@ async function askToolArgs(ctx: Context, tool: ToolId): Promise<ToolArgs> {
   throw new Stop(`No valid value after ${MAX_TRIES} tries.`);
 }
 
-/** Step 4: the way to pay. A way whose settings are missing says which to add, and asks again. */
-async function chooseWay(ctx: Context): Promise<PayWay> {
-  const options = WAYS.map((way) => ({
-    label: way.label,
-    note: `needs ${joined(way.needs)}  ${way.needs.every((name) => isSet(ctx, name)) ? '✔' : '✘'}`,
-    value: way,
-  }));
+/**
+ * The balance a way shows after ✔, read within `LIST_BALANCE_MS`: the Credits balance, or the
+ * wallet's. `undefined` when it can't be read in time: the ✔ stands alone.
+ */
+async function listBalance(ctx: Context, config: Config, way: PayWay): Promise<string | undefined> {
+  if (way !== 'credits') {
+    const balance = await readWalletBalance(ctx.io.fetch, ctx.session.env, way, { limitMs: LIST_BALANCE_MS });
+    return balance.kind === 'read' ? tokenText(way, balance.token) : undefined;
+  }
+  // The payment key's own Credits: the master key may be of another account
+  const read = (async () => (await platform.keyStatus(ctx.io.fetch, config.payUrl, paymentKeyOf(ctx.session.env))).remaining.balance)();
+  try {
+    const available = await raceLimit(read, LIST_BALANCE_MS);
+    return available === 'late' ? undefined : usd(available);
+  } catch (error) {
+    if (!(error instanceof Stop)) throw error;
+    return undefined;
+  }
+}
+
+/**
+ * Step 4: the way to pay, each with what it needs, ✔ or ✘, and after a ✔ the balance when it can be
+ * read in time. A way whose settings are missing says which to add, and asks again.
+ */
+async function chooseWay(ctx: Context, config: Config): Promise<PayWay> {
+  const ready = (way: Way): boolean => way.needs.every((name) => isSet(ctx, name));
+  // Read at the same time: the list waits for the slowest, and no longer than its limit
+  const balances = await Promise.all(WAYS.map((way) => (ready(way) ? listBalance(ctx, config, way.way) : undefined)));
+  const options = WAYS.map((way, index) => {
+    const balance = balances[index];
+    return {
+      label: way.label,
+      note: `needs ${joined(way.needs)}  ${ready(way) ? `✔${balance === undefined ? '' : `  ${balance}`}` : '✘'}`,
+      value: way,
+    };
+  });
   for (;;) {
     const chosen = await ctx.prompter().choose('How do you pay?', options);
     // Credits can be set up in the next step
@@ -113,12 +146,14 @@ function topupsAway(error: Stop): boolean {
   return error.message === TOPUPS_NOT_YET || error.message.startsWith('Top-ups are off on this Anyfare');
 }
 
-/** The Credits balance: with the master key when there is one, else with the payment key. */
-async function creditsBalance(ctx: Context, config: Config): Promise<bigint | undefined> {
+/**
+ * The Credits the payment key pays from, by `GET <pay>/_/key`, and the key's ID. Not the master key's
+ * balance: the two keys may be of two accounts, and the payment key's is the one a call takes.
+ */
+async function creditsBalance(ctx: Context, config: Config): Promise<{ readonly available: bigint; readonly keyId: string } | undefined> {
   try {
-    if (isSet(ctx, MASTER_KEY)) return (await platform.balance(ctx.io.fetch, config.apiUrl, masterKeyOf(ctx.session.env))).available;
     const status = await platform.keyStatus(ctx.io.fetch, config.payUrl, paymentKeyOf(ctx.session.env));
-    return status.remaining.balance;
+    return { available: status.remaining.balance, keyId: status.id };
   } catch (error) {
     if (!(error instanceof Stop)) throw error;
     ctx.warn(`Could not read the balance: ${error.message}`);
@@ -216,11 +251,20 @@ async function offerTopup(ctx: Context, config: Config): Promise<boolean> {
  */
 async function readyCredits(ctx: Context, config: Config, args: ToolArgs): Promise<boolean> {
   try {
-    if (!isSet(ctx, PAYMENT_KEY)) {
-      if (!isSet(ctx, MASTER_KEY)) {
-        ctx.print('You have no account yet. Sign-up is one call, free, and gives a master key.');
+    if (!isSet(ctx, PAYMENT_KEY) && !isSet(ctx, MASTER_KEY)) {
+      const how = await ctx.prompter().choose('Credits need an Anyfare key, and none is set. How do you get one?', [
+        { label: 'Sign up: a new account, free', value: 'signup' as const },
+        { label: 'Use keys I have', value: 'keys' as const },
+      ]);
+      if (how === 'signup') {
+        ctx.print('Sign-up is one call, free, and gives a master key.');
         await signUp(ctx, { yes: false });
+      } else {
+        await useKeysYouHave(ctx);
       }
+    }
+    // A new account, or keys that hold a master key only
+    if (!isSet(ctx, PAYMENT_KEY)) {
       ctx.print('A payment key pays the calls, with a daily budget and a limit for each call.');
       await createPaymentKey(ctx, { ...KEY_DEFAULTS, yes: false });
     }
@@ -229,13 +273,23 @@ async function readyCredits(ctx: Context, config: Config, args: ToolArgs): Promi
     printFailure(ctx, error);
     return false;
   }
-  const available = await creditsBalance(ctx, config);
+  const credits = await creditsBalance(ctx, config);
   const price = await creditsCost(ctx, config, args);
-  if (available === undefined || price === undefined || available >= price) return true;
+  if (credits === undefined || price === undefined || credits.available >= price) return true;
 
-  ctx.print(`Your balance is ${usd(available)}, and this call costs ${usd(price)} of Credits.`);
+  ctx.print(`Your balance is ${usd(credits.available)}, and this call costs ${usd(price)} of Credits.`);
   if (!isSet(ctx, MASTER_KEY)) {
     ctx.print(`A top-up needs ${MASTER_KEY}, and it is not set. ${OPERATOR_CREDITS}`);
+    return false;
+  }
+  // A top-up adds to the master key's account: only of use when the payment key pays from it
+  const ofAccount = await keyOfAccount(ctx, config, masterKeyOf(ctx.session.env), credits.keyId);
+  if (ofAccount !== true) {
+    ctx.print(
+      ofAccount === false
+        ? `${OTHER_ACCOUNT} A top-up with the master key would not reach it.`
+        : "Could not check that the payment key is of the master key's account, so the app offers no top-up.",
+    );
     return false;
   }
   if (!(await ctx.prompter().confirm('Add Credits with a top-up?', true))) return false;
@@ -252,7 +306,7 @@ async function oneCall(ctx: Context, config: Config): Promise<void> {
   const args = await askToolArgs(ctx, tool);
   let pay: PayWay;
   for (;;) {
-    pay = await chooseWay(ctx);
+    pay = await chooseWay(ctx, config);
     if (pay !== 'credits' || (await readyCredits(ctx, config, args))) break;
   }
   await runCall(ctx, { args, pay, explain: true, yes: false });

@@ -3,11 +3,13 @@
 // gas, fees, the nonce key and a fee token. With the fill refused, the client asks the rest one by one:
 // the chain ID, the latest block and its base fee, the priority fee and a gas estimate. It takes no
 // transaction: a raw one sent to it is logged and refused, so a test can see that nothing was
-// broadcast. Everything it answers is made up: the block, the gas and the fees.
+// broadcast. It answers `eth_call` of `balanceOf` on USDC.e from balances a test sets. Everything it
+// answers is made up: the block, the gas, the fees and the balances.
 
 import { createServer } from 'node:http';
 import type { ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { balanceOfAnswer } from './fakeBaseRpc.ts';
 
 export interface TempoRpcCall {
   readonly path: string;
@@ -24,10 +26,17 @@ export const PATH_USD = '0x20c0000000000000000000000000000000000000';
 export const HONEST_GAS = 52_000n;
 export const HONEST_MAX_FEE_PER_GAS = 1_000_000_000n;
 
+/** USDC.e on Tempo, the token the app reads a Tempo wallet's balance in. */
+const TEMPO_USDCE = '0x20C000000000000000000000b9537d11c60E8b50';
+
 export interface FakeTempoRpc {
   /** `http://127.0.0.1:<port>`, with no path. */
   readonly url: string;
   readonly calls: TempoRpcCall[];
+  /** Made-up balances of USDC.e, in micro-USD, by address in lowercase. `reset` clears them. */
+  readonly balances: Map<string, bigint>;
+  /** Sets a made-up balance of USDC.e, in micro-USD. */
+  setBalance(address: string, micro: bigint): void;
   /** The calls that would have broadcast a transaction. */
   sent(): TempoRpcCall[];
   /** Answer with this HTTP status and an empty body: every call, or with `only`, the calls of that method. */
@@ -81,6 +90,7 @@ function filled(request: Record<string, unknown>, change: FillChange): Record<st
 
 export async function startFakeTempoRpc(): Promise<FakeTempoRpc> {
   const calls: TempoRpcCall[] = [];
+  const balances = new Map<string, bigint>();
   const held = new Set<ServerResponse>();
   const errors: FakeTempoRpc['errors'] = {};
   const state = {
@@ -179,6 +189,11 @@ export async function startFakeTempoRpc(): Promise<FakeTempoRpc> {
         case 'eth_estimateGas':
           send({ result: '0x186a0' });
           return;
+        case 'eth_call': {
+          const result = balanceOfAnswer(params, TEMPO_USDCE, balances);
+          send(result === undefined ? { error: { code: -32601, message: 'Only balanceOf of USDC.e is faked' } } : { result });
+          return;
+        }
         default:
           // A raw transaction is refused
           send({ error: { code: SENDING.has(method) ? -32003 : -32601, message: `${method} is not faked` } });
@@ -191,6 +206,10 @@ export async function startFakeTempoRpc(): Promise<FakeTempoRpc> {
   return {
     url: `http://127.0.0.1:${port}`,
     calls,
+    balances,
+    setBalance: (address, micro) => {
+      balances.set(address.toLowerCase(), micro);
+    },
     sent: () => calls.filter((call) => SENDING.has(call.method)),
     errors,
     get failing() {
@@ -222,6 +241,7 @@ export async function startFakeTempoRpc(): Promise<FakeTempoRpc> {
     },
     reset: () => {
       calls.length = 0;
+      balances.clear();
       state.failing = undefined;
       state.fill = 'honest';
       state.hanging = false;

@@ -78,9 +78,13 @@ afterAll(async () => {
   rpc.reset();
   await Promise.all([fake.close(), rpc.close()]);
 });
+/** Made up: what the test's Tempo wallet holds, 1 USDC.e, enough for every call and fee here. */
+const TEMPO_HOLDS = 1_000_000n;
+
 beforeEach(() => {
   fake.reset();
   rpc.reset();
+  rpc.setBalance(TEMPO_PAYER, TEMPO_HOLDS);
   for (const target of Object.values(tempoTargets())) fake.addTarget(target);
   app = tempAppDir();
 });
@@ -325,7 +329,8 @@ describe('call --pay tempo', () => {
     expect(result.out).toContain(`Pay 0.0012 USDC.e on Tempo to ${FAKE_TEMPO_RECIPIENT}, plus a network fee of at most $0.01? [y/N]`);
     expect(result.out).not.toContain('Signing');
     expect(result.err).toBe('✘ Nothing was signed or sent. Not charged.\n');
-    expect(rpc.calls).toEqual([]);
+    // Before the question, only the read of the balance: nothing filled, estimated or signed
+    expect(rpc.calls.map((item) => item.method)).toEqual(['eth_call']);
     expect(fake.mppRequests()).toEqual([]);
   });
 
@@ -576,7 +581,8 @@ describe('call --pay tempo: the wallet', () => {
     // Taken, then not reached: no host but 127.0.0.1 answers here
     const https = await payTempo({ TEMPO_RPC_URL: 'https://rpc.example.test/made-up-key' });
     expect(https.err).toBe(
-      '✘ Could not sign the payment: the Tempo RPC at rpc.example.test could not be reached (ENOTFOUND). Nothing was sent. Not charged.\n',
+      "Could not read your wallet's balance: the Tempo RPC at rpc.example.test could not be reached (ENOTFOUND). The Tempo node refuses a payment the wallet can't cover.\n" +
+        '✘ Could not sign the payment: the Tempo RPC at rpc.example.test could not be reached (ENOTFOUND). Nothing was sent. Not charged.\n',
     );
     expect(https.out).toContain('▸ Signing 0.0012 USDC.e on Tempo');
     expect(https.out).not.toContain('Calling');
@@ -586,7 +592,10 @@ describe('call --pay tempo: the wallet', () => {
   it("uses the chain's own RPC when TEMPO_RPC_URL is not set, and names it by its host", async () => {
     expect(readTempoWallet({ TEMPO_PRIVATE_KEY: TEMPO_KEY })).toMatchObject({ rpcUrl: 'https://rpc.tempo.xyz', rpcHost: 'rpc.tempo.xyz', payer: TEMPO_PAYER });
     const result = await call(['--tool', '3route', '--pay', 'tempo', '--yes'], { TEMPO_PRIVATE_KEY: TEMPO_KEY });
-    expect(result.err).toBe('✘ Could not sign the payment: the Tempo RPC at rpc.tempo.xyz could not be reached (ENOTFOUND). Nothing was sent. Not charged.\n');
+    expect(result.err).toBe(
+      "Could not read your wallet's balance: the Tempo RPC at rpc.tempo.xyz could not be reached (ENOTFOUND). The Tempo node refuses a payment the wallet can't cover.\n" +
+        '✘ Could not sign the payment: the Tempo RPC at rpc.tempo.xyz could not be reached (ENOTFOUND). Nothing was sent. Not charged.\n',
+    );
   });
 });
 
@@ -609,7 +618,10 @@ describe('call --pay tempo: the Tempo RPC, failing', () => {
     rpc.failing = { status: 503 };
     const result = await payTempo(tempoEnv(KEYED));
     expect(result.code).toBe(1);
-    expect(result.err).toBe(`✘ Could not sign the payment: the Tempo RPC at ${rpcHost()} answered 503. Nothing was sent. Not charged.\n`);
+    expect(result.err).toBe(
+      `Could not read your wallet's balance: the Tempo RPC at ${rpcHost()} answered 503. The Tempo node refuses a payment the wallet can't cover.\n` +
+        `✘ Could not sign the payment: the Tempo RPC at ${rpcHost()} answered 503. Nothing was sent. Not charged.\n`,
+    );
     for (const part of KEYED_PARTS) expect(`${result.out}${result.err}`).not.toContain(part);
     expect(rpc.calls.length).toBeGreaterThan(0);
     for (const item of rpc.calls) expect(item.path).toBe(KEYED);
@@ -620,7 +632,8 @@ describe('call --pay tempo: the Tempo RPC, failing', () => {
     const port = await closedPort();
     const result = await payTempo({ TEMPO_RPC_URL: `http://127.0.0.1:${port}${KEYED}` });
     expect(result.err).toBe(
-      `✘ Could not sign the payment: the Tempo RPC at 127.0.0.1:${port} could not be reached (ECONNREFUSED). Nothing was sent. Not charged.\n`,
+      `Could not read your wallet's balance: the Tempo RPC at 127.0.0.1:${port} could not be reached (ECONNREFUSED). The Tempo node refuses a payment the wallet can't cover.\n` +
+        `✘ Could not sign the payment: the Tempo RPC at 127.0.0.1:${port} could not be reached (ECONNREFUSED). Nothing was sent. Not charged.\n`,
     );
     for (const part of KEYED_PARTS) expect(`${result.out}${result.err}`).not.toContain(part);
   });
@@ -666,13 +679,17 @@ describe('call --pay tempo: the Tempo RPC, failing', () => {
     const started = Date.now();
     let stop: unknown;
     try {
-      await callWithTempo(ctx, { args: DEFAULT_ARGS['3route'], explain: false, yes: true }, { signingMs: 400 });
+      await callWithTempo(ctx, { args: DEFAULT_ARGS['3route'], explain: false, yes: true }, { signingMs: 400, balanceMs: 400 });
     } catch (error) {
       stop = error;
     } finally {
       ctx.close();
     }
     expect(Date.now() - started).toBeLessThan(4_000);
+    // The read of the balance gave up first, and the call went on to sign
+    expect(io.err()).toBe(
+      `Could not read your wallet's balance: the Tempo RPC at ${rpcHost()} did not answer in 400 ms. The Tempo node refuses a payment the wallet can't cover.\n`,
+    );
     expect(stop).toBeInstanceOf(Stop);
     const line = (stop as Stop).line();
     expect(line).toBe(`Could not sign the payment: the Tempo RPC at ${rpcHost()} did not answer in 400 ms. Nothing was sent. Not charged.`);
@@ -687,7 +704,8 @@ describe('call --pay tempo: the Tempo RPC, failing', () => {
     rpc.redirecting = '/elsewhere';
     const result = await payTempo();
     expect(result.err).toBe(
-      `✘ Could not sign the payment: the Tempo RPC at ${rpcHost()} could not be reached (unexpected redirect). Nothing was sent. Not charged.\n`,
+      `Could not read your wallet's balance: the Tempo RPC at ${rpcHost()} could not be reached (unexpected redirect). The Tempo node refuses a payment the wallet can't cover.\n` +
+        `✘ Could not sign the payment: the Tempo RPC at ${rpcHost()} could not be reached (unexpected redirect). Nothing was sent. Not charged.\n`,
     );
     expect(rpc.calls.some((item) => item.path === '/elsewhere')).toBe(false);
     expect(fake.mppRequests()).toEqual([]);

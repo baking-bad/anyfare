@@ -2,12 +2,14 @@
 // signs a payment to another recipient, or of another amount: the app must refuse it and send nothing.
 // The key is made in the test, in memory only, and holds nothing.
 
-import { generatePrivateKey } from 'viem/accounts';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runCli } from '../src/cli.ts';
 import { toAtomic } from '../src/util.ts';
 import { forwardingFetch, startFakeAnyfare, toolRoutes, toolTargets } from './fakeAnyfare.ts';
 import type { FakeAnyfare } from './fakeAnyfare.ts';
+import { startFakeBaseRpc } from './fakeBaseRpc.ts';
+import type { FakeBaseRpc } from './fakeBaseRpc.ts';
 import { captureIo, tempAppDir } from './helpers.ts';
 
 const tamper = vi.hoisted(() => ({ change: undefined as Record<string, unknown> | undefined }));
@@ -26,14 +28,16 @@ vi.mock('@x402/core/client', async (importOriginal) => {
 });
 
 let fake: FakeAnyfare;
+let baseRpc: FakeBaseRpc;
 beforeAll(async () => {
-  fake = await startFakeAnyfare();
+  [fake, baseRpc] = await Promise.all([startFakeAnyfare(), startFakeBaseRpc()]);
 });
 afterAll(async () => {
-  await fake.close();
+  await Promise.all([fake.close(), baseRpc.close()]);
 });
 beforeEach(() => {
   fake.reset();
+  baseRpc.reset();
   const cmc = toolTargets().cmc;
   // Made up, dated 2026-11-09
   fake.addTarget({
@@ -56,9 +60,12 @@ async function payBase() {
   const app = tempAppDir();
   try {
     const { fetch } = forwardingFetch(toolRoutes());
+    const key = generatePrivateKey();
+    // Made up: the wallet holds 1 USDC, so the check before the question lets the call go on to sign
+    baseRpc.setBalance(privateKeyToAccount(key).address, 1_000_000n);
     const io = captureIo(
       fetch,
-      { ANYFARE_API_URL: fake.apiUrl, ANYFARE_PAY_URL: fake.payUrl, BASE_PRIVATE_KEY: generatePrivateKey() },
+      { ANYFARE_API_URL: fake.apiUrl, ANYFARE_PAY_URL: fake.payUrl, BASE_PRIVATE_KEY: key, BASE_RPC_URL: baseRpc.url },
       { appDir: app.dir },
     );
     const code = await runCli(['call', '--tool', 'cmc', '--pay', 'base', '--yes'], io.io);

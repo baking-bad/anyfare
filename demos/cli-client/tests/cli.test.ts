@@ -102,7 +102,7 @@ describe('parseCommand', () => {
     );
     expect(usageMessage('signup --pay near')).toBe("signup doesn't take --pay");
     expect(usageMessage('balance --yes')).toBe("balance doesn't take --yes");
-    expect(usageMessage('key --label x')).toBe('key needs the word create: key create');
+    expect(usageMessage('key --label x')).toBe('key needs the word create or save: key create, or key save');
     expect(usageMessage('key create --pay near')).toBe("key create doesn't take --pay");
     expect(usageMessage('--yes')).toBe('Name a command. See --help');
     expect(usageMessage('fly')).toBe('Unknown command: fly. See --help');

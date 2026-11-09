@@ -209,6 +209,40 @@ export async function balance(fetchFn: Fetch, apiUrl: string, masterKey: string)
   return { available: read.usd(read.root, 'available'), held: read.usd(read.root, 'held') };
 }
 
+/** `GET /v1/account` with the master key: free, and it proves the key works. The account's ID. */
+export async function account(fetchFn: Fetch, apiUrl: string, masterKey: string): Promise<{ readonly id: string }> {
+  const body = await send(
+    fetchFn,
+    {
+      method: 'GET',
+      url: `${base(apiUrl)}/v1/account`,
+      headers: { authorization: `Bearer ${masterKey}` },
+      timeoutMs: PLATFORM_TIMEOUT_MS,
+    },
+    { side: 'api' },
+  );
+  const read = reader('GET /v1/account', body);
+  return { id: read.text(read.root, 'id') };
+}
+
+/** `GET /v1/keys` with the master key: the IDs of its account's payment keys. Free. */
+export async function keyIds(fetchFn: Fetch, apiUrl: string, masterKey: string): Promise<readonly string[]> {
+  const body = await send(
+    fetchFn,
+    {
+      method: 'GET',
+      url: `${base(apiUrl)}/v1/keys`,
+      headers: { authorization: `Bearer ${masterKey}` },
+      timeoutMs: PLATFORM_TIMEOUT_MS,
+    },
+    { side: 'api' },
+  );
+  const read = reader('GET /v1/keys', body);
+  const keys = read.root['keys'];
+  if (!Array.isArray(keys)) throw new Stop("Anyfare's answer to GET /v1/keys was not understood: keys is missing or not valid");
+  return keys.map((key) => (isRecord(key) ? read.text(key, 'id') : read.text({}, 'id')));
+}
+
 /** `GET <pay>/_/key` with a payment key: its limits, what is left of them, and the balance. */
 export async function keyStatus(fetchFn: Fetch, payUrl: string, paymentKey: string): Promise<KeyStatus> {
   const body = await send(

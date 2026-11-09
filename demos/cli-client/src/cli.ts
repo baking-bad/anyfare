@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import type { Readable, Writable } from 'node:stream';
-import { createPaymentKey, showBalance, signUp } from './account.ts';
+import { createPaymentKey, keySettings, keyShapeProblem, saveKeys, showBalance, signUp } from './account.ts';
+import type { FlagKeys, KeyKind } from './account.ts';
 import { createContext } from './context.ts';
 import type { Context } from './context.ts';
 import { runCall } from './call.ts';
@@ -29,8 +30,9 @@ export type ToolArgs =
     }
   | { readonly tool: 'evidence'; readonly account: string };
 
+/** `keys`: the Anyfare keys given as flags, for this run only. Absent when none was given. */
 export type Command =
-  | { readonly kind: 'interactive' }
+  | { readonly kind: 'interactive'; readonly keys?: FlagKeys }
   | { readonly kind: 'help' }
   | {
       readonly kind: 'call';
@@ -38,6 +40,7 @@ export type Command =
       readonly pay: PayWay;
       readonly explain: boolean;
       readonly yes: boolean;
+      readonly keys?: FlagKeys;
     }
   | { readonly kind: 'explain'; readonly args: ToolArgs }
   | { readonly kind: 'signup'; readonly yes: boolean }
@@ -47,14 +50,17 @@ export type Command =
       readonly daily: string;
       readonly maxPrice: string;
       readonly yes: boolean;
+      readonly keys?: FlagKeys;
     }
-  | { readonly kind: 'balance' }
+  | { readonly kind: 'key-save'; readonly yes: boolean; readonly keys?: FlagKeys }
+  | { readonly kind: 'balance'; readonly keys?: FlagKeys }
   | {
       readonly kind: 'topup';
       readonly network: string;
       readonly token: string;
       readonly amount: string;
       readonly yes: boolean;
+      readonly keys?: FlagKeys;
     };
 
 export interface Io {
@@ -91,7 +97,11 @@ const OPTIONS = {
   'max-price': { type: 'string' },
   network: { type: 'string' },
   token: { type: 'string' },
+  'master-key': { type: 'string' },
+  'payment-key': { type: 'string' },
 } as const;
+
+const KEY_FLAGS: readonly string[] = ['master-key', 'payment-key'];
 
 type Flags = Partial<Record<keyof typeof OPTIONS, string | boolean>>;
 
@@ -210,6 +220,30 @@ function requireValue(name: string, flags: Flags, flag: 'network' | 'token' | 'a
   return value;
 }
 
+/**
+ * The key flags' values, each checked for its shape before any request: a master key where a payment
+ * key belongs, or the other way round, is a `UsageError` that names the flag and never quotes it.
+ */
+function keyFlags(flags: Flags): FlagKeys | undefined {
+  const read = (flag: 'master-key' | 'payment-key', kind: KeyKind): string | undefined => {
+    const value = str(flags, flag)?.trim();
+    if (value === undefined) return undefined;
+    const problem = keyShapeProblem(value, kind);
+    if (problem !== undefined) throw new UsageError(`--${flag} ${problem}`);
+    return value;
+  };
+  const master = read('master-key', 'master');
+  const payment = read('payment-key', 'payment');
+  if (master === undefined && payment === undefined) return undefined;
+  return { ...(master !== undefined && { master }), ...(payment !== undefined && { payment }) };
+}
+
+/** The command, with the key flags when any was given. */
+function keyed<T extends Command>(command: T, flags: Flags): T {
+  const keys = keyFlags(flags);
+  return keys === undefined ? command : { ...command, keys };
+}
+
 /** Turns the arguments into a command, or throws a `UsageError`. */
 export function parseCommand(argv: readonly string[]): Command {
   if (argv.includes('--help') || argv.includes('-h')) return { kind: 'help' };
@@ -221,8 +255,12 @@ export function parseCommand(argv: readonly string[]): Command {
 
   const [command, ...rest] = positionals;
   if (command === undefined) {
-    if (Object.keys(flags).length === 0) return { kind: 'interactive' };
-    throw new UsageError('Name a command. See --help');
+    const names = Object.keys(flags);
+    if (names.length === 0) return { kind: 'interactive' };
+    // The interactive mode takes the keys for its run, and nothing else
+    if (!names.some((name) => KEY_FLAGS.includes(name))) throw new UsageError('Name a command. See --help');
+    rejectOther('The interactive mode', flags, KEY_FLAGS);
+    return keyed({ kind: 'interactive' }, flags);
   }
 
   const yes = bool(flags, 'yes');
@@ -233,10 +271,14 @@ export function parseCommand(argv: readonly string[]): Command {
   switch (command) {
     case 'call': {
       extra(0);
-      rejectOther('call', flags, ['tool', 'pay', 'explain', 'yes', ...Object.values(TOOL_FLAGS).flat()]);
+      rejectOther('call', flags, ['tool', 'pay', 'explain', 'yes', 'payment-key', ...Object.values(TOOL_FLAGS).flat()]);
       const args = toolArgs('call', flags);
       const pay = requireChoice('call', flags, 'pay', PAY_WAYS);
-      return { kind: 'call', args, pay, explain: bool(flags, 'explain'), yes };
+      // Only Credits pay with the payment key
+      if (pay !== 'credits' && flags['payment-key'] !== undefined) {
+        throw new UsageError(`--payment-key is for --pay credits, not --pay ${pay}`);
+      }
+      return keyed({ kind: 'call', args, pay, explain: bool(flags, 'explain'), yes }, flags);
     }
     case 'explain':
       extra(0);
@@ -247,28 +289,36 @@ export function parseCommand(argv: readonly string[]): Command {
       rejectOther('signup', flags, ['yes']);
       return { kind: 'signup', yes };
     case 'key': {
-      if (rest[0] !== 'create') throw new UsageError('key needs the word create: key create');
+      if (rest[0] === 'save') {
+        extra(1);
+        rejectOther('key save', flags, ['master-key', 'payment-key', 'yes']);
+        return keyed({ kind: 'key-save', yes }, flags);
+      }
+      if (rest[0] !== 'create') throw new UsageError('key needs the word create or save: key create, or key save');
       extra(1);
-      rejectOther('key create', flags, ['label', 'daily', 'max-price', 'yes']);
+      rejectOther('key create', flags, ['label', 'daily', 'max-price', 'yes', 'master-key']);
       const label = str(flags, 'label') ?? 'demo';
       if (label.length > MAX_LABEL_LENGTH) {
         throw new UsageError(`--label is at most ${MAX_LABEL_LENGTH} characters`);
       }
-      return {
-        kind: 'key-create',
-        label,
-        daily: usdFlag(flags, 'daily', '1'),
-        maxPrice: usdFlag(flags, 'max-price', '0.02'),
-        yes,
-      };
+      return keyed(
+        {
+          kind: 'key-create',
+          label,
+          daily: usdFlag(flags, 'daily', '1'),
+          maxPrice: usdFlag(flags, 'max-price', '0.02'),
+          yes,
+        },
+        flags,
+      );
     }
     case 'balance':
       extra(0);
-      rejectOther('balance', flags, []);
-      return { kind: 'balance' };
+      rejectOther('balance', flags, KEY_FLAGS);
+      return keyed({ kind: 'balance' }, flags);
     case 'topup': {
       extra(0);
-      rejectOther('topup', flags, ['network', 'token', 'amount', 'yes']);
+      rejectOther('topup', flags, ['network', 'token', 'amount', 'yes', 'master-key']);
       const network = requireValue('topup', flags, 'network');
       const token = requireValue('topup', flags, 'token');
       const amount = requireValue('topup', flags, 'amount');
@@ -279,7 +329,7 @@ export function parseCommand(argv: readonly string[]): Command {
         throw new UsageError(`--amount: ${error instanceof Stop ? error.message : 'not an amount'}`);
       }
       if (atomic === 0n) throw new UsageError('--amount must be more than zero');
-      return { kind: 'topup', network, token, amount, yes };
+      return keyed({ kind: 'topup', network, token, amount, yes }, flags);
     }
     default:
       throw new UsageError(`Unknown command: ${command}. See --help`);
@@ -299,7 +349,9 @@ Commands:
   signup [--yes]                     Create an Anyfare account and its master key.
   key create [--label demo] [--daily 1] [--max-price 0.02] [--yes]
                                      Create a payment key. Amounts are in US dollars.
-  balance                            Show the Credits balance.
+  key save [--yes]                   Check keys you have, for free, and save them to .env.local.
+                                     On a terminal, it asks for them and shows nothing you type.
+  balance                            Show the Credits balance, and the balance of each wallet.
   topup --network <n> --token <t> --amount <a> [--yes]
                                      Add Credits. Works only when the Anyfare it talks to has top-ups.
   --help, -h                         Show this help.
@@ -317,9 +369,14 @@ Ways to pay (--pay):
   tempo      USDC.e on Tempo
 
 Flags:
-  --explain  Show the plan and the price before the call.
-  --yes      Do not ask for confirmation.
-  --help     Show this help.
+  --explain               Show the plan and the price before the call.
+  --yes                   Do not ask for confirmation.
+  --master-key <afm_…>    The master key, for this run only: key create, balance, topup, key save.
+  --payment-key <af_…>    The payment key, for this run only: call --pay credits, balance, key save.
+                          With no command, either one starts the interactive mode with that key.
+                          A key in a flag wins over the settings, and is not saved but by key save.
+  A key in a flag shows on screen and in npm's log, your shell's history and the process list. Use .env.local or key save. If you must, run node directly: node --env-file-if-exists=.env --env-file-if-exists=.env.local src/main.ts --payment-key …
+  --help                  Show this help.
 
 Settings come from .env, then .env.local, then the shell. The last one wins.
   ANYFARE_API_URL    The Platform API address.
@@ -327,6 +384,7 @@ Settings come from .env, then .env.local, then the shell. The last one wins.
   MAX_PAYMENT_USD    The most one call may cost, in US dollars. Default 0.02.
 Wallets for --pay base, --pay near and --pay tempo, in .env.local only:
   BASE_PRIVATE_KEY   The key of the wallet that pays USDC on Base: 0x and 64 hex digits.
+  BASE_RPC_URL       A Base RPC to read the wallet's balance from. Optional.
   NEAR_ACCOUNT_ID    The NEAR account that pays USDC on NEAR, such as name.near.
   NEAR_PRIVATE_KEY   A full-access key of that account: ed25519: and base58.
   NEAR_RPC_URL       A NEAR RPC to read the account from. Optional.
@@ -373,6 +431,10 @@ const HANDLERS: { [K in Command['kind']]: Handler<K> } = {
     await createPaymentKey(ctx, command);
     return 0;
   },
+  'key-save': async (command, ctx) => {
+    await saveKeys(ctx, { yes: command.yes, ...(command.keys !== undefined && { keys: command.keys }) });
+    return 0;
+  },
   balance: async (_command, ctx) => {
     await showBalance(ctx);
     return 0;
@@ -388,12 +450,37 @@ async function dispatch(command: Command, ctx: Context): Promise<number> {
   return handler(command, ctx);
 }
 
+/** What stderr says first when the command line holds a key. */
+export const FLAG_KEY_WARNING =
+  "A key from a flag can show in npm's output and log, your shell's history and the process list. Prefer key save.";
+
+/** Whether the command line gives a key flag a value, as `--payment-key <key>` or `--payment-key=<key>`. */
+function keyOnCommandLine(argv: readonly string[]): boolean {
+  for (let at = 0; at < argv.length; at += 1) {
+    const arg = argv[at] ?? '';
+    // After --, everything is a positional
+    if (arg === '--') return false;
+    for (const flag of ['--master-key', '--payment-key']) {
+      const next = argv[at + 1];
+      if (arg === flag && next !== undefined && next !== '' && !next.startsWith('-')) return true;
+      if (arg.startsWith(`${flag}=`) && arg.length > flag.length + 1) return true;
+    }
+  }
+  return false;
+}
+
 /** Runs the app and returns the exit code: 0 success, 1 expected failure, 2 bad usage. */
 export async function runCli(argv: readonly string[], io: Io): Promise<number> {
   const style = createStyle(io.stderr);
-  const ctx = createContext(io);
+  // Before anything else, whatever the command line does next: the key is out already
+  if (keyOnCommandLine(argv)) io.stderr.write(`${style.styles.warn(FLAG_KEY_WARNING)}\n`);
+  let ctx: Context | undefined;
   try {
-    return await dispatch(parseCommand(argv), ctx);
+    const command = parseCommand(argv);
+    // A key given as a flag wins over the settings, for this run only
+    const keys = 'keys' in command ? keySettings(command.keys) : {};
+    ctx = createContext({ ...io, env: { ...io.env, ...keys } });
+    return await dispatch(command, ctx);
   } catch (error) {
     if (error instanceof Stop) {
       io.stderr.write(`${style.fail(hideKeys(error.line()))}\n`);
@@ -403,6 +490,6 @@ export async function runCli(argv: readonly string[], io: Io): Promise<number> {
     io.stderr.write(`${style.fail(hideKeys(message))}\n`);
     return 1;
   } finally {
-    ctx.close();
+    ctx?.close();
   }
 }
