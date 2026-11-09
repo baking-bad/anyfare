@@ -27,6 +27,10 @@ export {
 export type {
   FakeTempoRpc, FakeTempoRpcOptions, TempoBroadcast, TempoRpcCall, TempoSimulation, TempoTransactionChange, TestTempoPayer, TestTempoPayerOptions,
 } from './tempoRpc.js';
+export { defaultOneClickTokens, fakeOneClickStatuses, startFakeOneClick, testnetNearUsdcAddress } from './oneClick.js';
+export type {
+  FakeOneClick, FakeOneClickAnswer, FakeOneClickOptions, FakeOneClickPath, FakeOneClickQuote, FakeOneClickRequest, FakeOneClickScript, FakeOneClickStatus, FakeOneClickToken,
+} from './oneClick.js';
 export { createTestNearPayer, generateNearKey, nearEmptyCodeHash, startFakeNearRpc } from './nearRpc.js';
 export type {
   FakeNearAccount, FakeNearRpc, FakeNearRpcOptions, FakeNearToken, NearAccessKeyPermission, NearBroadcast, NearBroadcastOptions, NearDelegate, NearNetwork, NearRpcCall,

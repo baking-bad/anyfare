@@ -14,13 +14,14 @@ const allowedImports: Readonly<Record<string, readonly string[]>> = {
   core: ['common'],
   db: ['core', 'common'],
   payments: ['core', 'common'],
+  topups: ['core', 'common'],
 };
 
 // Where a package's source lives
 const sourceDirectories = ['src'];
 
 // Domain code takes the Clock and IdGenerator ports. Crypto randomness such as randomBytes is allowed.
-const domainPackages = ['core', 'payments'];
+const domainPackages = ['core', 'payments', 'topups'];
 const bannedCalls: readonly (readonly [RegExp, string])[] = [
   [/\bDate\.now\s*\(/g, 'Date.now()'],
   [/\bnew\s+Date\s*\(\s*\)/g, 'new Date()'],
@@ -228,14 +229,14 @@ describe('architecture rules', () => {
   it('reads every package', () => {
     const packages = new Set(sources.map(file => file.path.split('/')[0]));
 
-    expect([...packages].sort()).toEqual(['api', 'common', 'core', 'db', 'facilitator', 'payments', 'proxy', 'signer', 'testing', 'workers']);
+    expect([...packages].sort()).toEqual(['api', 'common', 'core', 'db', 'facilitator', 'payments', 'proxy', 'signer', 'testing', 'topups', 'workers']);
   });
 
   it('keeps every import within the dependency rules, and testing out of src', () => {
     expect(format(findViolations(sources).filter(violation => violation.message.startsWith('imports')))).toEqual([]);
   });
 
-  it('keeps Date.now(), new Date(), Math.random(), and randomUUID() out of core and payments', () => {
+  it('keeps Date.now(), new Date(), Math.random(), and randomUUID() out of core, payments and topups', () => {
     expect(format(findViolations(sources).filter(violation => violation.message.startsWith('calls')))).toEqual([]);
   });
 

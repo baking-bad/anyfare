@@ -14,6 +14,9 @@
       "path": "packages/payments"
     },
     {
+      "path": "packages/topups"
+    },
+    {
       "path": "packages/testing"
     },
     {
