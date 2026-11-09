@@ -60,6 +60,8 @@ facilitators:
       type: cdp
       apiKeyId: CDP_API_KEY_ID
       apiKeySecret: CDP_API_KEY_SECRET
+    # Off until Base or Solana has a payTo: until then it offers buyers nothing, and its keys aren't needed
+    enabled: false
   - name: near
     url: http://facilitator:8084
     networks: [near:mainnet]

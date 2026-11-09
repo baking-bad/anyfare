@@ -77,7 +77,7 @@ describe('config/production.yaml', () => {
     expect(config.sizeLimits).toEqual({ requestBodyBytes: 1_048_576, bufferedResponseBytes: 10_485_760 });
   });
 
-  it('settles x402 through the CDP facilitator on both mainnets and our own on NEAR, with keys named by environment variable', async () => {
+  it('names the CDP facilitator for both mainnets, off until they have a payTo, and settles NEAR through our own, with keys named by environment variable', async () => {
     const config = await loadText(text);
 
     expect(config.facilitators).toEqual([{
@@ -85,7 +85,7 @@ describe('config/production.yaml', () => {
       url: 'https://api.cdp.coinbase.com/platform/v2/x402',
       networks: ['eip155:8453', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'],
       auth: { type: 'cdp', apiKeyId: 'CDP_API_KEY_ID', apiKeySecret: 'CDP_API_KEY_SECRET' },
-      enabled: true,
+      enabled: false,
     }, {
       name: 'near',
       url: 'http://facilitator:8084',
@@ -101,8 +101,8 @@ describe('config/production.yaml', () => {
     expect(config.mpp).toMatchObject({ network: { id: 'eip155:4217', chain: 'tempo', testnet: false }, recipient: undefined, enabled: true, rpcUrl: undefined });
     expect(platformSummary(config).rails).toEqual({
       credits: true,
+      // CDP is off, so the startup line lists only our own facilitator
       x402: [
-        { facilitator: 'cdp', networks: ['eip155:8453', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'] },
         { facilitator: 'near', networks: ['near:mainnet'] },
       ],
       mpp: false,
