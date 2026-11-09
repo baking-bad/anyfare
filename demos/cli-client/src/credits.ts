@@ -1,19 +1,12 @@
 // A call paid from Credits: the quote, the cap, the confirmation, one request, and the receipt.
 
 import { paymentKeyOf } from './account.ts';
-import type { ToolArgs } from './cli.ts';
 import { loadConfig } from './config.ts';
 import type { Context } from './context.ts';
-import { httpErrorOf, stopFor } from './errors.ts';
-import { apiPrice, explainLines, planFailure, readPlan } from './explain.ts';
 import type { Plan } from './explain.ts';
-import { failureOf, request } from './http.ts';
-import type { Answer } from './http.ts';
-import { TOOLS } from './tools/index.ts';
+import { NO_TERMINAL, callingLine, readPaidPlan, sendOnce, shortPlan, stopForAnswer, storyLine } from './paid.ts';
+import type { CallCommand } from './paid.ts';
 import { Stop, toAtomic, usd } from './util.ts';
-
-/** The paid request's time limit. */
-export const PAID_TIMEOUT_MS = 60_000;
 
 export const RECEIPT_HEADER = 'anyfare-receipt';
 
@@ -47,11 +40,6 @@ export function parseReceipt(value: string | null): ReceiptRead {
   } catch {
     return unreadable;
   }
-}
-
-/** The API's name inside a sentence: "the evidence API", "CoinMarketCap". */
-function nameInSentence(plan: Plan): string {
-  return TOOLS[plan.prepared.tool].name.replace(/^The /, 'the ');
 }
 
 const notUsd = (what: string, currency: string | undefined): Stop =>
@@ -88,103 +76,29 @@ function creditsPrice(ctx: Context, plan: Plan): bigint {
   return price;
 }
 
-/** The plan in short: what the API asks, Anyfare's quote and fee, and what you pay. */
-function shortPlan(ctx: Context, plan: Plan, quote: bigint): string[] {
-  const field = (label: string, value: string): string => ctx.style.field(label, value, 15);
-  const price = apiPrice(plan);
-  const where = [price?.asset, price?.network].every((part) => part !== undefined)
-    ? ` in ${price?.asset} on ${price?.network}`
-    : '';
-  const asks = price?.micro === undefined ? 'not known' : `${usd(price.micro)}${where}`;
-  const fee = price?.micro === undefined || price.micro > quote ? 'not known' : usd(quote - price.micro);
-  return [
-    field('The API asks', asks),
-    field("Anyfare's quote", `${usd(quote)}, with a fee of ${fee}`),
-    field('You pay', ctx.style.styles.money(`${usd(quote)} of Credits`)),
-    ...(plan.prepared.slow ? ['  This one takes a while.'] : []),
-  ];
-}
-
-function storyLine(plan: Plan): string {
-  const price = apiPrice(plan);
-  const how =
-    price?.asset !== undefined && price.network !== undefined ? ` in ${price.asset} on ${price.network}` : '';
-  return `You paid with Credits. Anyfare paid ${nameInSentence(plan)}${how} from its own wallet.`;
-}
+const BALANCE_SHOWS = 'npm run demo -- balance shows the Credits';
 
 /** `call --pay credits`. Returns the exit code. */
-export async function callWithCredits(
-  ctx: Context,
-  command: { readonly args: ToolArgs; readonly explain: boolean; readonly yes: boolean },
-): Promise<number> {
-  const { io, style } = ctx;
+export async function callWithCredits(ctx: Context, command: CallCommand): Promise<number> {
   const config = loadConfig(ctx.session.env);
   const key = paymentKeyOf(ctx.session.env);
-  ctx.requireAnswerable(command.yes, 'call asks before it pays. Add --yes to pay without a terminal');
-
-  const prepared = await TOOLS[command.args.tool].prepare(command.args, { fetch: io.fetch });
-  const plan = await readPlan({ fetch: io.fetch, config, prepared });
-  ctx.print(style.styles.title(`${TOOLS[prepared.tool].name}: ${prepared.summary}`));
-  const failure = planFailure(plan);
-  // The one amount, before the explain block, so that the block shows what the call pays
-  let price: bigint | undefined;
-  let refusal: unknown;
-  if (failure === undefined) {
-    try {
-      price = creditsPrice(ctx, plan);
-    } catch (error) {
-      refusal = error;
-    }
-  }
-  if (command.explain) ctx.print(explainLines(plan, 'credits', style, price));
-  if (failure !== undefined) throw new Stop(/[.!?]$/.test(failure) ? failure : `${failure}.`, { notCharged: true });
-  if (price === undefined) throw refusal;
-  if (price > config.maxPayment) {
-    throw new Stop(`Anyfare quotes ${usd(price)}, above your cap MAX_PAYMENT_USD of ${usd(config.maxPayment)}.`, {
-      notCharged: true,
-    });
-  }
-  if (!command.explain) ctx.print(shortPlan(ctx, plan, price));
+  const { plan, chosen } = await readPaidPlan(ctx, config, command, 'credits', (read) => {
+    const micro = creditsPrice(ctx, read);
+    return { micro, asks: `Anyfare quotes ${usd(micro)}` };
+  });
+  const price = chosen.micro;
+  if (!command.explain) ctx.print(shortPlan(ctx, plan, price, `${usd(price)} of Credits`));
   await ctx.approve({
     yes: command.yes,
     question: `Pay ${usd(price)} of Credits?`,
-    noTerminal: 'call asks before it pays. Add --yes to pay without a terminal',
+    noTerminal: NO_TERMINAL,
     declined: new Stop('Nothing was sent.', { notCharged: true }),
   });
 
-  ctx.print(style.step(`Calling ${TOOLS[prepared.tool].name} through Anyfare`));
-  const call = prepared.request;
-  let answer: Answer;
-  try {
-    // One request, never retried and never redirected, so a call is never paid twice
-    answer = await request(io.fetch, {
-      method: call.method,
-      url: plan.link,
-      headers: { ...call.headers, authorization: `Bearer ${key}` },
-      ...(call.body !== undefined && { body: call.body }),
-      timeoutMs: PAID_TIMEOUT_MS,
-      redirect: 'manual',
-    });
-  } catch (error) {
-    if (!(error instanceof Stop)) throw error;
-    const failure = failureOf(error);
-    // No answer came and no connection was made, so the request never left: nothing could be held
-    if (failure?.stage === 'not_sent') {
-      throw new Stop(`${error.message}. The request was never sent.`, { notCharged: true });
-    }
-    // A 2xx is captured even when its body breaks on the way
-    if (failure?.status !== undefined && failure.status >= 200 && failure.status < 300) {
-      throw new Stop(
-        `${error.message}. The call was most likely paid, and its answer is lost: npm run demo -- balance shows the Credits.`,
-      );
-    }
-    throw new Stop(`${error.message}. Whether the call was paid is not known: npm run demo -- balance shows the Credits.`);
-  }
-
-  if (answer.status < 200 || answer.status >= 300) {
-    throw stopFor(httpErrorOf(answer), { side: 'proxy', paid: { way: 'credits', apiName: TOOLS[prepared.tool].name } });
-  }
-  ctx.print(prepared.format(answer.body).map((line) => `  ${line}`));
+  ctx.print(callingLine(ctx, plan));
+  const answer = await sendOnce(ctx, plan, { authorization: `Bearer ${key}` }, BALANCE_SHOWS);
+  if (answer.status < 200 || answer.status >= 300) throw stopForAnswer(answer, plan, 'credits');
+  ctx.print(plan.prepared.format(answer.body).map((line) => `  ${line}`));
   const receipt = parseReceipt(answer.headers.get(RECEIPT_HEADER));
   if (receipt.kind === 'ok') {
     ctx.print(`  Receipt ${receipt.id}: ${usd(receipt.amount)} of Credits`);
@@ -194,6 +108,6 @@ export async function callWithCredits(
   } else {
     ctx.warn('The receipt that came with the answer is unreadable.');
   }
-  ctx.print(style.done(storyLine(plan)));
+  ctx.print(ctx.style.done(storyLine(plan, 'You paid with Credits.')));
   return 0;
 }
