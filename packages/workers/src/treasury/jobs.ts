@@ -96,10 +96,11 @@ export interface TreasuryBalancesOptions {
 }
 
 /**
- * The balance monitor: each wallet's holdings as a metric. Warns when a Signer wallet holds less than
- * a day's spend limit, the NEAR hot wallet included where it is a `payTo` noted as the Signer's, and
- * when a Solana `payTo` has no token account. A balance that can't be read fails the run, so the job
- * goes stale.
+ * The balance monitor: each wallet's holdings as a metric, the account top-ups deliver to included.
+ * Warns when a Signer wallet holds less than a day's spend limit, the NEAR hot wallet included where it
+ * is a `payTo` noted as the Signer's, and when a Solana `payTo` has no token account. The top-up
+ * account gets no low-balance warning: nothing pays out of it. A balance that can't be read fails the
+ * run, so the job goes stale.
  */
 export const createTreasuryBalancesJob = ({ wallets, readerFor, signerDailyLimit, metrics, logger }: TreasuryBalancesOptions) =>
   async (): Promise<{ readonly wallets: number; readonly balances: number }> => {
@@ -160,9 +161,10 @@ const distinctHoldings = (wallets: readonly TreasuryWallet[]): readonly Treasury
 
 /**
  * Reconciliation: per asset, the ledger's view of what the platform holds against the chain's, every
- * wallet counted: the `payTo` wallets that buyers pay, and the Signer's hot wallets that pay targets.
- * The ledger books each target payment out of the treasury of its asset, and the operator's funding of
- * a hot wallet as a treasury transfer, so both sides move together. Each run is recorded. A drift
+ * wallet counted: the `payTo` wallets that buyers pay, the Signer's hot wallets that pay targets, and
+ * the account top-ups deliver to. The ledger books each target payment out of the treasury of its
+ * asset, the operator's funding of a hot wallet as a treasury transfer, and each top-up into the
+ * treasury of the asset 1Click delivered, so both sides move together. Each run is recorded. A drift
  * above the threshold alerts. A balance that can't be read fails the run, and nothing is recorded.
  */
 export const createReconciliationJob = ({ config, wallets, readerFor, ledger, treasury, metrics, clock, ids, logger }: ReconciliationOptions) =>

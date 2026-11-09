@@ -8,7 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { createLogger, randomIdGenerator, Secret } from '@anyfare/common';
 import { findAsset, loadPlatformConfig, treasuryWallets, type Asset, type PlatformConfig } from '@anyfare/core';
-import { createLedger, createPaymentRepository, createRoutingRepository, createTreasuryRepository, type Ledger } from '@anyfare/db';
+import { createAccountRepository, createLedger, createPaymentRepository, createRoutingRepository, createTreasuryRepository, type Ledger } from '@anyfare/db';
 import {
   createFakeClock, createTestDatabase, encodeBase58, startFakeNearRpc, startFakeSolanaRpc, type FakeNearRpc, type FakeSolanaRpc, type TestDatabase,
 } from '@anyfare/testing';
@@ -158,10 +158,16 @@ describe('the balance monitor', () => {
     const near = { balance: async () => 3_000_000n };
     const registry = new Registry();
 
-    expect(treasuryWallets(withHotWallet)).toEqual([expect.objectContaining({ name: 'payTo:near-usdc', role: 'pay_to', signer: 'signer:near' })]);
+    expect(treasuryWallets(withHotWallet)).toEqual([
+      expect.objectContaining({ name: 'payTo:near-usdc', role: 'pay_to', signer: 'signer:near' }),
+      expect.objectContaining({ name: 'treasury:near', role: 'treasury', addresses: [config.topups.recipient] }),
+    ]);
     await balances(withHotWallet, readerFor({ near }), registry, 5_000_000n);
 
-    expect(await registry.metrics()).toMatch(/treasury_balance_usd\{wallet="payTo:near-usdc",asset="near-usdc"\} 3\n/);
+    const text = await registry.metrics();
+    expect(text).toMatch(/treasury_balance_usd\{wallet="payTo:near-usdc",asset="near-usdc"\} 3\n/);
+    expect(text).toMatch(/treasury_balance_usd\{wallet="treasury:near",asset="near-usdc"\} 3\n/);
+    // The account top-ups deliver to holds as little, but nothing pays out of it
     expect(logs.filter(line => line['msg'] === lowWallet)).toEqual([expect.objectContaining({ level: 40, wallet: 'payTo:near-usdc', held: '3', dailyLimit: '5', alert: true })]);
   });
 
@@ -494,25 +500,32 @@ describe('the NEAR balance reader, and the treasury jobs on NEAR', () => {
     expect(JSON.stringify({ message: failure?.message, cause: String(failure?.cause) })).not.toContain('near-rpc-key-secret');
   });
 
-  it('reports the NEAR payTo\'s balance, and the reconciliation counts it', async () => {
+  it('reports the NEAR payTo\'s balance and the account top-ups deliver to, and the reconciliation counts both', async () => {
     const readers = readerFor({ near: nearReader() });
     nearRpc.setBalance(usdc().address, usdc().payTo!, 7_500_000n);
+    nearRpc.setBalance(usdc().address, config.topups.recipient!, 2_500_000n);
     const registry = new Registry();
 
-    expect(await balances(nearOnly(), readers, registry)).toEqual({ wallets: 1, balances: 1 });
+    expect(await balances(nearOnly(), readers, registry)).toEqual({ wallets: 2, balances: 2 });
 
-    expect(await registry.metrics()).toMatch(/treasury_balance_usd\{wallet="payTo:near-usdc",asset="near-usdc"\} 7\.5\n/);
+    const text = await registry.metrics();
+    expect(text).toMatch(/treasury_balance_usd\{wallet="payTo:near-usdc",asset="near-usdc"\} 7\.5\n/);
+    expect(text).toMatch(/treasury_balance_usd\{wallet="treasury:near",asset="near-usdc"\} 2\.5\n/);
+    // The ledger books a top-up into the treasury of its asset: the USDC sits in the account top-ups deliver to
     await ledger.treasuryTransfer({ reference: 'seed-near-usdc', from: { asset: 'seed', amount: 7_500_000n }, to: { asset: 'near-usdc', amount: 7_500_000n } });
+    await createAccountRepository({ db: database.db }).create({ id: 'acc_topped_up', createdAt: clock.now() });
+    await ledger.topUp({ accountId: 'acc_topped_up', asset: 'near-usdc', amount: 2_500_000n, reference: 'deposit-address-near' });
     expect(await reconciliation(nearOnly(), readers)).toEqual({ assets: 1, alerts: 0 });
-    expect((await latestRun()).results).toEqual({ 'near-usdc': { ledger: '7.5', chain: '7.5', drift: '0', alert: false } });
+    expect((await latestRun()).results).toEqual({ 'near-usdc': { ledger: '10', chain: '10', drift: '0', alert: false } });
   });
 
   it('fails the balance monitor when every NEAR RPC fails, logging their hosts only', async () => {
     logs.length = 0;
     const readers = readerFor({ near: nearReader([await closedUrl()]) });
 
-    await expect(balances(nearOnly(), readers)).rejects.toThrow('1 treasury balances couldn\'t be read');
+    await expect(balances(nearOnly(), readers)).rejects.toThrow('2 treasury balances couldn\'t be read');
 
+    expect(logs.filter(line => line['msg'] === 'Failed to read a treasury balance').map(line => line['wallet'])).toEqual(['payTo:near-usdc', 'treasury:near']);
     expect(logs.find(line => line['msg'] === 'Failed to read a treasury balance')).toMatchObject({
       level: 50, wallet: 'payTo:near-usdc', asset: 'near-usdc', network: 'near:testnet', error: { code: 'near_rpc_unavailable', message: expect.stringMatching(/^The NEAR RPC didn't answer ft_balance_of: fetch failed/) },
     });

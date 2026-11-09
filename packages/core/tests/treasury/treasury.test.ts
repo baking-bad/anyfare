@@ -16,12 +16,13 @@ describe('the treasury', () => {
       ['pay_to', ['solana-usdc']],
       ['pay_to', ['tempo-pathusd']],
       ['pay_to', ['near-usdc']],
+      ['treasury', ['near-usdc']],
     ]);
 
     const { payTo: _payTo, ...withoutPayTo } = findAsset(examplePlatform, 'base-usdc')!;
     const config = { ...examplePlatform, assets: [{ ...withoutPayTo, payTo: undefined }, ...examplePlatform.assets.slice(1)] };
 
-    expect(treasuryWallets(config).map(wallet => wallet.name)).toEqual(['payTo:solana-usdc', 'payTo:tempo-pathusd', 'payTo:near-usdc']);
+    expect(treasuryWallets(config).map(wallet => wallet.name)).toEqual(['payTo:solana-usdc', 'payTo:tempo-pathusd', 'payTo:near-usdc', 'treasury:near']);
   });
 
   it('lists the Signer\'s hot wallets from signer.wallets, each with its chain\'s assets: Base\'s, mpp.network\'s for Tempo, Solana\'s, and NEAR\'s', () => {
@@ -50,6 +51,7 @@ describe('the treasury', () => {
       ['payTo:solana-usdc', 'pay_to', undefined, ['11111111111111111111111111111111']],
       ['payTo:tempo-pathusd', 'pay_to', undefined, ['0x2222222222222222222222222222222222222222']],
       ['payTo:near-usdc', 'pay_to', 'signer:near', ['pay.anyfare.testnet']],
+      ['treasury:near', 'treasury', undefined, ['treasury.anyfare.testnet']],
     ]);
     // Each asset of the account once: its balance is never counted twice
     expect(listed.flatMap(wallet => wallet.addresses.flatMap(address => wallet.assets.map(asset => `${asset.name} ${address}`))).filter(entry => entry.endsWith(' pay.anyfare.testnet')))
@@ -70,6 +72,44 @@ describe('the treasury', () => {
       ['payTo:near-usdc', 'pay_to', 'signer:near', ['pay.anyfare.testnet'], ['near-usdc']],
       ['payTo:near-usdt', 'pay_to', undefined, ['other.anyfare.testnet'], ['near-usdt']],
       ['signer:near', 'signer', undefined, ['pay.anyfare.testnet'], ['near-usdt', 'near-dai']],
+      ['treasury:near', 'treasury', undefined, ['treasury.anyfare.testnet'], ['near-usdc']],
+    ]);
+  });
+
+  it('lists the account top-ups deliver to, with the asset 1Click delivers, whether or not top-ups are on', () => {
+    const recipient = (config: typeof examplePlatform) => treasuryWallets(config).filter(wallet => wallet.role === 'treasury')
+      .map(wallet => [wallet.name, wallet.signer, wallet.addresses, wallet.assets.map(asset => asset.name)]);
+    const expected = [['treasury:near', undefined, ['treasury.anyfare.testnet'], ['near-usdc']]];
+
+    expect(examplePlatform.topups.enabled).toBe(false);
+    expect(recipient(examplePlatform)).toEqual(expected);
+    expect(recipient({ ...examplePlatform, topups: { ...examplePlatform.topups, enabled: true } })).toEqual(expected);
+    expect(treasuryWallets(examplePlatform).find(wallet => wallet.role === 'treasury')?.assets).toEqual([findAsset(examplePlatform, 'near-usdc')]);
+  });
+
+  it('lists no top-up account without a recipient or an asset', () => {
+    expect(treasuryWallets({ ...examplePlatform, topups: { ...examplePlatform.topups, recipient: undefined } }).some(wallet => wallet.role === 'treasury')).toBe(false);
+    expect(treasuryWallets({ ...examplePlatform, topups: { ...examplePlatform.topups, asset: undefined } }).some(wallet => wallet.role === 'treasury')).toBe(false);
+  });
+
+  it('lists the top-up account once when a payTo already lists it with the asset', () => {
+    const nearUsdc = findAsset(examplePlatform, 'near-usdc')!;
+    const config = { ...examplePlatform, topups: { ...examplePlatform.topups, recipient: nearUsdc.payTo } };
+
+    expect(treasuryWallets(config).map(wallet => [wallet.name, wallet.role, wallet.addresses])).toEqual([
+      ['payTo:base-usdc', 'pay_to', ['0x1111111111111111111111111111111111111111']],
+      ['payTo:solana-usdc', 'pay_to', ['11111111111111111111111111111111']],
+      ['payTo:tempo-pathusd', 'pay_to', ['0x2222222222222222222222222222222222222222']],
+      ['payTo:near-usdc', 'pay_to', ['pay.anyfare.testnet']],
+    ]);
+  });
+
+  it('lists the top-up account once when it is the Signer\'s NEAR wallet holding the asset', () => {
+    const near = 'treasury.anyfare.testnet';
+    const config = { ...examplePlatform, signer: { ...examplePlatform.signer, wallets: { ...examplePlatform.signer.wallets, near } } };
+
+    expect(treasuryWallets(config).filter(wallet => wallet.addresses.includes(near)).map(wallet => [wallet.name, wallet.role, wallet.assets.map(asset => asset.name)])).toEqual([
+      ['signer:near', 'signer', ['near-usdc']],
     ]);
   });
 
