@@ -50,7 +50,7 @@ const notUsd = (what: string, currency: string | undefined): Stop =>
  * on the receipt. For a GET, the higher of the `/_/check` quote and the routing link's 402, which is
  * what the proxy holds; for a POST, the 402's. Both must be in US dollars.
  */
-function creditsPrice(ctx: Context, plan: Plan): bigint {
+export function creditsPrice(ctx: Context, plan: Plan): bigint {
   const credits =
     plan.anyfare.kind === 'ok' ? plan.anyfare.value.offers.find((offer) => offer.protocol === 'credits') : undefined;
   let checked: bigint | undefined;

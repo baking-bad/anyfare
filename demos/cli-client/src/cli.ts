@@ -3,17 +3,16 @@ import type { Readable, Writable } from 'node:stream';
 import { createPaymentKey, showBalance, signUp } from './account.ts';
 import { createContext } from './context.ts';
 import type { Context } from './context.ts';
-import { callWithCredits } from './credits.ts';
+import { runCall } from './call.ts';
 import { hideKeys } from './errors.ts';
 import { explainHeader, explainLines, planFailure, readPlan } from './explain.ts';
 import { loadConfig } from './config.ts';
 import type { Fetch } from './http.ts';
 import { createStyle } from './style.ts';
-import { callWithTempo } from './tempo.ts';
-import { runTopup } from './topup.ts';
 import { DEFAULT_ARGS, TOOLS as IMPLEMENTATIONS } from './tools/index.ts';
+import { runInteractive } from './interactive.ts';
+import { runTopup } from './topup.ts';
 import { Stop, UsageError, toAtomic } from './util.ts';
-import { callWithX402 } from './x402.ts';
 
 export type Tool = 'cmc' | '3route' | 'evidence';
 export type PayWay = 'credits' | 'near' | 'base' | 'tempo';
@@ -339,44 +338,19 @@ Exit codes:
 
 type Handler<K extends Command['kind']> = (command: Extract<Command, { kind: K }>, ctx: Context) => Promise<number>;
 
-const COMMAND_NAMES: Record<Command['kind'], string> = {
-  interactive: 'interactive mode',
-  help: 'help',
-  call: 'call',
-  explain: 'explain',
-  signup: 'signup',
-  'key-create': 'key create',
-  balance: 'balance',
-  topup: 'topup',
-};
-
-function notBuilt(kind: Command['kind']): never {
-  throw new Stop(`${COMMAND_NAMES[kind]} is not built yet`);
-}
-
 /** One handler per command kind. A later task replaces a stub in one place. */
 const HANDLERS: { [K in Command['kind']]: Handler<K> } = {
   help: async (_command, { io }) => {
     io.stdout.write(HELP_TEXT);
     return 0;
   },
-  interactive: async (_command, { io }) => {
-    if (!io.isTerminal) {
+  interactive: async (_command, ctx) => {
+    if (!ctx.io.isTerminal) {
       throw new UsageError('Interactive mode needs a terminal. Name a command; see --help');
     }
-    return notBuilt('interactive');
+    return runInteractive(ctx);
   },
-  call: async (command, ctx) => {
-    switch (command.pay) {
-      case 'credits':
-        return callWithCredits(ctx, command);
-      case 'base':
-      case 'near':
-        return callWithX402(ctx, command, command.pay);
-      case 'tempo':
-        return callWithTempo(ctx, command);
-    }
-  },
+  call: async (command, ctx) => runCall(ctx, command),
   explain: async (command, { io, session }) => {
     const config = loadConfig(session.env);
     const prepared = await IMPLEMENTATIONS[command.args.tool].prepare(command.args, { fetch: io.fetch });

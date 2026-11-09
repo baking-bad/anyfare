@@ -30,6 +30,8 @@ export interface Context {
     readonly noTerminal: string;
     readonly declined: Stop;
   }): Promise<void>;
+  /** The session's one prompter, made when first asked for: scripted answers are read in order. */
+  prompter(): Prompter;
   /** Ends the questions, if any were asked. */
   close(): void;
 }
@@ -38,6 +40,7 @@ export function createContext(io: Io): Context {
   const style = createStyle(io.stdout);
   const warnStyle = createStyle(io.stderr);
   let prompter: Prompter | undefined;
+  const prompterOf = (): Prompter => (prompter ??= createPrompter({ input: io.stdin, output: io.stdout }));
   const requireAnswerable = (yes: boolean, message: string): void => {
     if (!yes && !io.isTerminal) throw new UsageError(message);
   };
@@ -56,10 +59,9 @@ export function createContext(io: Io): Context {
     async approve({ yes, question, noTerminal, declined }) {
       if (yes) return;
       requireAnswerable(yes, noTerminal);
-      prompter ??= createPrompter({ input: io.stdin, output: io.stdout });
       let answer: boolean;
       try {
-        answer = await prompter.confirm(question, false);
+        answer = await prompterOf().confirm(question, false);
       } catch (error) {
         // The input ended, or three answers were neither yes nor no: the same as a "no"
         if (!(error instanceof Stop)) throw error;
@@ -67,6 +69,7 @@ export function createContext(io: Io): Context {
       }
       if (!answer) throw declined;
     },
+    prompter: prompterOf,
     close() {
       prompter?.close();
     },

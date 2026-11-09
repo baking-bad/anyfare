@@ -133,6 +133,7 @@ export async function signUp(ctx: Context, options: { readonly yes: boolean }): 
   );
   // Only now the rest of the answer, for display: nothing in it can lose the key
   const notice = platform.noticeOf(account.answer);
+  const free = platform.freeCreditsOf(account.answer);
   const { style } = ctx;
   ctx.print([
     style.done('Account created'),
@@ -140,6 +141,7 @@ export async function signUp(ctx: Context, options: { readonly yes: boolean }): 
     style.field('Master key', short(account.masterKey), FIELD_WIDTH),
     `  Saved to ${ENV_LOCAL}`,
     ...(notice === undefined ? [] : [`  ${oneLine(notice)}`]),
+    ...(free === undefined ? [] : [`  You got $${free} of free Credits`]),
   ]);
   await balanceAfterSignup(ctx, config);
 }

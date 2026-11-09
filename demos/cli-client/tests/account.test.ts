@@ -25,8 +25,15 @@ beforeEach(() => {
 afterEach(() => {
   chmodSync(app.dir, 0o700);
   app.remove();
+  for (const extra of extraDirs.splice(0)) extra.remove();
 });
 
+const extraDirs: { remove: () => void }[] = [];
+function tempAppDirOf(): string {
+  const extra = tempAppDir();
+  extraDirs.push(extra);
+  return extra.dir;
+}
 const envLocal = (): string => readFileSync(join(app.dir, '.env.local'), 'utf8');
 const savedValue = (name: string): string | undefined =>
   new RegExp(`^${name}=(.*)$`, 'm').exec(envLocal())?.[1];
@@ -44,6 +51,18 @@ async function run(
 }
 
 describe('signup', () => {
+  it('says the free Credits of the answer, only when they are above zero', async () => {
+    fake.rewrite.signup = (body) => ({ ...body, freeCredits: '0.10' });
+    const given = await run(['signup', '--yes']);
+    expect(given.code).toBe(0);
+    expect(given.out).toContain('You got $0.10 of free Credits');
+
+    fake.rewrite.signup = (body) => ({ ...body, freeCredits: '0' });
+    const none = await run(['signup', '--yes'], {}, { appDir: tempAppDirOf() });
+    expect(none.code).toBe(0);
+    expect(none.out).not.toContain('free Credits');
+  });
+
   it('creates the account, saves the key, prints the notice, the balance and the next step', async () => {
     const result = await run(['signup', '--yes']);
     expect(result.err).toBe('');

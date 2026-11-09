@@ -181,10 +181,12 @@ describe('runCli', () => {
     expect(fake.err()).toBe('✘ Interactive mode needs a terminal. Name a command; see --help\n');
   });
 
-  it('returns 1 for interactive mode on a terminal, which is not built yet', async () => {
+  it('returns 1 for interactive mode on a terminal whose input ends at once', async () => {
     const fake = fakeIo(true);
+    (fake.io.stdin as PassThrough).end();
     expect(await runCli([], fake.io)).toBe(1);
-    expect(fake.err()).toContain('not built yet');
+    expect(fake.err()).toContain('No more input');
+    expect(fake.out()).toContain('Which API do you call?');
   });
 });
 
