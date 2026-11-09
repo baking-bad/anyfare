@@ -20,3 +20,10 @@ export type { LedgerRoutesOptions } from './ledger/routes.js';
 export { createInternalAuth, internalCallerHeader, internalSecretHeader, registerInternalRoutes } from './internal/routes.js';
 export type { InternalRoutesOptions } from './internal/routes.js';
 export { internalSecretVariable, minimumInternalSecretLength, readInternalSecret } from './internal/secret.js';
+export { registerTopupRoutes } from './topups/routes.js';
+export type { TopupRoutesOptions } from './topups/routes.js';
+export {
+  AmountTooSmallError, createTopupsCounter, createTopupService, formatTokenAmount, KeyAsTokenError, toNearestCent, TopupMismatchError, topupIdPrefix,
+  TopupRefusedError, topupResults, TopupsUnavailableError, UnsupportedNetworkError,
+} from './topups/service.js';
+export type { NewTopupInput, TopupNetworkOptions, TopupResult, TopupService, TopupServiceOptions } from './topups/service.js';

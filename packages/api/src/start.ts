@@ -3,6 +3,7 @@ import {
 } from '@anyfare/common';
 import { loadPlatformConfig, platformSummary } from '@anyfare/core';
 import { createPostgres, createRedis } from '@anyfare/db';
+import { createOneClickClient } from '@anyfare/topups';
 
 import { createApp } from './app.js';
 import { readInternalSecret } from './internal/secret.js';
@@ -29,13 +30,20 @@ export const startApi = async ({ env, logger }: AppContext): Promise<RunningApp>
   const redisUrl = readSecret('REDIS_URL', env);
   // Missing or too short, the app stops here with the reason
   const internalSecret = readInternalSecret(env);
+  const { topups } = config;
+  const oneClick = createOneClickClient({
+    url: topups.url,
+    // Read only while top-ups are on, so a deployment that has them off needs no key. Missing, the app stops here.
+    apiKey: topups.enabled && topups.apiKey !== undefined ? readSecret(topups.apiKey, env) : undefined,
+    timeoutMs: topups.timeoutMs,
+  });
 
   const postgres = createPostgres({ url: databaseUrl, logger });
   const redis = createRedis({ url: redisUrl, logger });
   const closeConnections = async () => {
     await Promise.all([postgres.close(), redis.close()]);
   };
-  const server = createApp({ config, logger, postgres, redis, trustProxy, internalSecret });
+  const server = createApp({ config, logger, postgres, redis, trustProxy, internalSecret, oneClick });
   let ports;
   try {
     ports = await server.listen(listen);

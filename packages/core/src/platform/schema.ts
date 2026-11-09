@@ -75,7 +75,7 @@ export const platformConfigSchema: SchemaObject = {
     }, ['name', 'url', 'networks']), { minItems: 1 }),
     mpp: object({ network: networkId, recipient: addressText, enabled: boolean, rpcUrl: httpsUrl }, ['network']),
     rateLimits: object(
-      { paymentKey: rateLimit, unpaidIp: rateLimit, signup: rateLimit, documents: rateLimit, probeIp: rateLimit },
+      { paymentKey: rateLimit, unpaidIp: rateLimit, signup: rateLimit, documents: rateLimit, probeIp: rateLimit, topups: rateLimit },
       ['paymentKey', 'unpaidIp', 'signup'],
     ),
     timeouts: object({ connectMs: positive, requestMs: positive, settleMs: positive }),

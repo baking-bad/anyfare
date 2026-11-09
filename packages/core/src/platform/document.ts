@@ -72,6 +72,7 @@ export interface RateLimitsDocument {
   readonly signup: RateLimitDocument;
   readonly documents?: RateLimitDocument;
   readonly probeIp?: RateLimitDocument;
+  readonly topups?: RateLimitDocument;
 }
 
 export interface TimeoutsDocument {

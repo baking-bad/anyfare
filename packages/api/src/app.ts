@@ -12,6 +12,7 @@ import {
 import {
   createApiKeyRepository, createRedisInvalidationBus, createRedisRateLimiter, type Postgres, type Redis,
 } from '@anyfare/db';
+import { createOneClickClient, createTokenCatalog, type OneClickClient, type TokenCatalog } from '@anyfare/topups';
 
 import { createMasterKeyAuth, decorateAccount } from './accounts/auth.js';
 import { createFreeCredits, createFreeCreditsCounter } from './accounts/freeCredits.js';
@@ -24,6 +25,8 @@ import { registerInternalRoutes } from './internal/routes.js';
 import { registerKeyRoutes } from './keys/routes.js';
 import { createPaymentKeyService } from './keys/service.js';
 import { registerLedgerRoutes } from './ledger/routes.js';
+import { registerTopupRoutes } from './topups/routes.js';
+import { createTopupsCounter, createTopupService } from './topups/service.js';
 
 export interface ApiDependencies {
   readonly config: PlatformConfig;
@@ -48,6 +51,11 @@ export interface ApiDependencies {
   readonly limiter?: RateLimiter;
   // INTERNAL_API_SECRET, the shared secret of the internal API. Without it, every internal call is refused.
   readonly internalSecret?: Secret;
+  // The 1Click API of NEAR Intents, which makes top-ups' deposit addresses. Default: a client of
+  // config.topups's URL, without a key.
+  readonly oneClick?: OneClickClient;
+  // The tokens 1Click takes. Default: a catalog over `oneClick`.
+  readonly tokenCatalog?: TokenCatalog;
 }
 
 export interface ApiListenOptions extends ListenOptions {
@@ -93,6 +101,12 @@ export const createApp = ({
   invalidation = createRedisInvalidationBus({ redis, logger }),
   limiter = createRedisRateLimiter({ redis }),
   internalSecret,
+  oneClick = createOneClickClient({ url: config.topups.url, timeoutMs: config.topups.timeoutMs }),
+  tokenCatalog = createTokenCatalog({
+    client: oneClick,
+    clock,
+    onStale: ({ error, ageMs }) => logger.warn({ error, ageMs }, 'The 1Click token list could not be refreshed, so top-ups use the older list'),
+  }),
 }: ApiDependencies): ApiServer => {
   const server = createServer({
     logger,
@@ -130,7 +144,26 @@ export const createApp = ({
     clock,
   });
   registerLedgerRoutes(app, { db: postgres.db, clock, ids, authenticate });
-  registerCatalogRoutes(app, { db: postgres.db, config, limit: createIpLimit({ limiter, limit: config.rateLimits.documents, name: 'documents' }) });
+  // Public documents share one limit per client IP
+  const documentsLimit = createIpLimit({ limiter, limit: config.rateLimits.documents, name: 'documents' });
+  registerCatalogRoutes(app, { db: postgres.db, config, limit: documentsLimit });
+  registerTopupRoutes(app, {
+    topups: createTopupService({
+      db: postgres.db,
+      clock,
+      ids,
+      config: config.topups,
+      keyPrefixes: config.keyPrefixes,
+      oneClick,
+      tokens: tokenCatalog,
+      record: createTopupsCounter(server.metrics.registry),
+    }),
+    enabled: config.topups.enabled,
+    authenticate,
+    documentsLimit,
+    limiter,
+    limit: config.rateLimits.topups,
+  });
 
   // The internal API on a listener of its own, with the same request IDs, logs, and error envelope
   const internal = createServer({ logger, errorStatuses, requestIds });

@@ -29,7 +29,7 @@ const issues = (build: () => unknown): readonly { readonly path: string; readonl
 
 const minimalOptionalFields = {
   logger: undefined, ownHosts: undefined, paymentKeyDefaults: undefined, timeouts: undefined,
-  sizeLimits: undefined, signer: undefined, rateLimits: { documents: undefined, probeIp: undefined }, freeCredits: undefined, topups: undefined,
+  sizeLimits: undefined, signer: undefined, rateLimits: { documents: undefined, probeIp: undefined, topups: undefined }, freeCredits: undefined, topups: undefined,
 };
 
 type MutableDocument = { facilitators: Record<string, unknown>[] };
@@ -79,6 +79,7 @@ describe('buildPlatformConfig', () => {
     expect(config.sizeLimits).toEqual({ requestBodyBytes: 1_048_576, bufferedResponseBytes: 10_485_760 });
     expect(config.rateLimits.documents).toEqual({ requests: 120, windowSeconds: 60 });
     expect(config.rateLimits.probeIp).toEqual({ requests: 600, windowSeconds: 60 });
+    expect(config.rateLimits.topups).toEqual({ requests: 20, windowSeconds: 3_600 });
     expect(config.signer).toEqual({
       maxPerCall: 1_000_000n, maxPerNetworkPerHour: undefined, maxPerNetworkPerDay: 100_000_000n,
       wallets: { base: undefined, tempo: undefined, solana: undefined, near: undefined },
@@ -89,13 +90,14 @@ describe('buildPlatformConfig', () => {
 
   it('takes the limits from the document when it sets them', () => {
     const config = buildPlatformConfig(document({
-      rateLimits: { documents: { requests: 5, windowSeconds: 10 }, probeIp: { requests: 50, windowSeconds: 30 } },
+      rateLimits: { documents: { requests: 5, windowSeconds: 10 }, probeIp: { requests: 50, windowSeconds: 30 }, topups: { requests: 3, windowSeconds: 60 } },
       sizeLimits: { requestBodyBytes: 100 },
       signer: { maxPerCall: '0.1', maxPerNetworkPerHour: '5', maxPerNetworkPerDay: '20' },
     }));
 
     expect(config.rateLimits.documents).toEqual({ requests: 5, windowSeconds: 10 });
     expect(config.rateLimits.probeIp).toEqual({ requests: 50, windowSeconds: 30 });
+    expect(config.rateLimits.topups).toEqual({ requests: 3, windowSeconds: 60 });
     expect(config.rateLimits.paymentKey).toEqual({ requests: 600, windowSeconds: 60 });
     expect(config.sizeLimits).toEqual({ requestBodyBytes: 100, bufferedResponseBytes: 10_485_760 });
     expect(config.signer).toMatchObject({ maxPerCall: 100_000n, maxPerNetworkPerHour: 5_000_000n, maxPerNetworkPerDay: 20_000_000n });
@@ -429,6 +431,7 @@ describe('top-ups', () => {
     ['a recipient that isn\'t a NEAR account', { recipient: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU' }, '/topups/recipient', 'is not a NEAR account ID'],
     ['a refundTo that isn\'t a NEAR account', { refundTo: 'Treasury.Anyfare.testnet' }, '/topups/refundTo', 'is not a NEAR account ID'],
     ['a minimum of 0', { networks: [{ name: 'base', blockchain: 'base', minimum: '0' }] }, '/topups/networks/0/minimum', 'must be more than 0: the least a top-up on this network must be worth'],
+    ['a minimum that isn\'t whole cents', { networks: [{ name: 'base', blockchain: 'base', minimum: '1.001' }] }, '/topups/networks/0/minimum', 'must be whole cents, at most 2 decimals, such as 1 or 2.5: a top-up\'s worth is rounded to the cent'],
     ['a minimum that overflows', { networks: [{ name: 'base', blockchain: 'base', minimum: '99999999999999' }] }, '/topups/networks/0/minimum', 'The USD amount is too large'],
     ['duplicate network names', { networks: [{ name: 'base', blockchain: 'base', minimum: '1' }, { name: 'base', blockchain: 'arb', minimum: '1' }] }, '/topups/networks/1/name', 'duplicate network name "base"'],
   ])('refuse %s, even while off', (_name, changes, path, message) => {

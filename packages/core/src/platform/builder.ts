@@ -177,6 +177,9 @@ export const checkPlatformConfig = (document: PlatformConfigDocument): readonly 
     const minimum = checkAmount([...path, 'minimum'], network.minimum);
     if (minimum !== undefined && minimum <= 0n)
       add([...path, 'minimum'], 'must be more than 0: the least a top-up on this network must be worth');
+    // A top-up's worth is compared in whole cents, so a minimum between two cents could never be met exactly
+    else if (minimum !== undefined && minimum % 10_000n !== 0n)
+      add([...path, 'minimum'], 'must be whole cents, at most 2 decimals, such as 1 or 2.5: a top-up\'s worth is rounded to the cent');
   }
   if (topups.enabled) {
     for (const field of ['asset', 'recipient', 'refundTo', 'networks'] as const) {
@@ -249,6 +252,7 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
       signup: { ...document.rateLimits.signup },
       documents: { ...document.rateLimits.documents ?? platformDefaults.documentsRateLimit },
       probeIp: { ...document.rateLimits.probeIp ?? platformDefaults.probeIpRateLimit },
+      topups: { ...document.rateLimits.topups ?? platformDefaults.topupsRateLimit },
     },
     timeouts: { ...timeouts, ...document.timeouts },
     sizeLimits: { ...sizeLimits, ...document.sizeLimits },
