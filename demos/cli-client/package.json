@@ -1,0 +1,20 @@
+{
+  "name": "anyfare-cli-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A console app that calls three paid APIs through Anyfare.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "demo": "node --env-file-if-exists=.env --env-file-if-exists=.env.local src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  }
+}
