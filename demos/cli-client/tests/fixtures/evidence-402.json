@@ -1,0 +1,8 @@
+{
+  "note": "Recorded 2026-11-09 from an unpaid request. The extensions field of the payment-required header is left out to keep the file short.",
+  "status": 402,
+  "headers": {
+    "payment-required": "eyJ4NDAyVmVyc2lvbiI6MiwiZXJyb3IiOiJQYXltZW50IHJlcXVpcmVkIiwicmVzb3VyY2UiOnsidXJsIjoiaHR0cHM6Ly9tZXJjaGFudC1uZWFyLm1pa2Vkb3RleGUuY29tL3YxL2V2aWRlbmNlL2FjY291bnQiLCJkZXNjcmlwdGlvbiI6IkZpbmFsIGFjY291bnQgZXZpZGVuY2UgZnJvbSB0aGUgY29uZmlndXJlZCBjaGFpbiIsIm1pbWVUeXBlIjoiYXBwbGljYXRpb24vanNvbiJ9LCJhY2NlcHRzIjpbeyJzY2hlbWUiOiJleGFjdCIsIm5ldHdvcmsiOiJuZWFyOm1haW5uZXQiLCJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIxNzIwODYyOGY4NGY1ZDZhZDMzZjBkYTNiYmJlYjI3ZmZjYjM5OGVhYzUwMWEzMWJkNmFkMjAxMWUzNjEzM2ExIiwicGF5VG8iOiJjb3VudC5taWtlLm5lYXIiLCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJleHRyYSI6e319XX0="
+  },
+  "body": {}
+}

@@ -139,6 +139,9 @@ function fakeIo(isTerminal: boolean): { io: Io; out: () => string; err: () => st
     stdin: new PassThrough(),
     isTerminal,
     env: {},
+    fetch: async () => {
+      throw new Error('These tests use no network');
+    },
   };
   return { io, out: () => out, err: () => err };
 }

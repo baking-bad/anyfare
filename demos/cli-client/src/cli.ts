@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util';
 import type { Readable, Writable } from 'node:stream';
+import type { Fetch } from './http.ts';
 import { createStyle } from './style.ts';
 import { Stop, UsageError, toAtomic } from './util.ts';
 
@@ -52,6 +53,7 @@ export interface Io {
   /** True when both stdin and stdout are terminals. */
   readonly isTerminal: boolean;
   readonly env: Readonly<Record<string, string | undefined>>;
+  readonly fetch: Fetch;
 }
 
 const TOOLS: readonly Tool[] = ['cmc', '3route', 'evidence'];

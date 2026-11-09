@@ -1,0 +1,126 @@
+{
+  "note": "Recorded 2026-11-09 from an unpaid request.",
+  "status": 402,
+  "headers": {
+    "payment-required": "eyJ4NDAyVmVyc2lvbiI6MiwicmVzb3VyY2UiOnsidXJsIjoiaHR0cHM6Ly9wcm8tYXBpLmNvaW5tYXJrZXRjYXAuY29tL3g0MDIvdjMvY3J5cHRvY3VycmVuY3kvcXVvdGVzL2xhdGVzdCIsImRlc2NyaXB0aW9uIjoiR2V0IHRoZSBsYXRlc3QgbWFya2V0IHF1b3RlcyBmb3Igb25lIG9yIG1vcmUgY3J5cHRvY3VycmVuY2llcy4iLCJtaW1lVHlwZSI6ImFwcGxpY2F0aW9uL2pzb24ifSwiYWNjZXB0cyI6W3sic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoiZWlwMTU1OjU2IiwiYXNzZXQiOiIweGNFMjQ0MzlGMkQ5QzZhMjI4OUY3NDExMjBGRTIwMjI0OEI2NjY2NjYiLCJwYXlUbyI6IjB4M0M1ZjNhNmNFMjI0QkI4OUQ3MmY1RUI0MjMyZWNDMjdGNjdCM2VlQSIsIm1heFRpbWVvdXRTZWNvbmRzIjozMCwiZXh0cmEiOnsibmFtZSI6IlVuaXRlZCBTdGFibGVzIiwidmVyc2lvbiI6IjEiLCJ4NDAyUGF5bWVudENvbmZpZ0lkIjoiNjllZjI0MmU1MDQ1NWRjY2UwMmYzMDYxIiwiYXNzZXRUcmFuc2Zlck1ldGhvZCI6InBlcm1pdDItZXhhY3QiLCJzaWduZXJBZGRyZXNzIjoiMHgzNEY3YTY2MTE2MDc4MENlMTM0NmU2RDdCOTZEMmJFMjQ0NTkwODk5Iiwic3BlbmRlckFkZHJlc3MiOiIweDMwMzhmN2FjM2I0RDFhM2ZlODg2QmRDQjVjRDAxZTlmNkJEZDg2MzMifSwiYW1vdW50IjoiMTAwMDAwMDAwMDAwMDAwMDAifSx7InNjaGVtZSI6ImV4YWN0IiwibmV0d29yayI6ImVpcDE1NTo1NiIsImFzc2V0IjoiMHhjRTI0NDM5RjJEOUM2YTIyODlGNzQxMTIwRkUyMDIyNDhCNjY2NjY2IiwicGF5VG8iOiIweDNDNWYzYTZjRTIyNEJCODlENzJmNUVCNDIzMmVjQzI3RjY3QjNlZUEiLCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAsImV4dHJhIjp7Im5hbWUiOiJVbml0ZWQgU3RhYmxlcyIsInZlcnNpb24iOiIxIiwieDQwMlBheW1lbnRDb25maWdJZCI6IjY5ZWYyNDJlNTA0NTVkY2NlMDJmMmU3NyIsImFzc2V0VHJhbnNmZXJNZXRob2QiOiJlaXAzMDA5Iiwic2lnbmVyQWRkcmVzcyI6IjB4MzRGN2E2NjExNjA3ODBDZTEzNDZlNkQ3Qjk2RDJiRTI0NDU5MDg5OSJ9LCJhbW91bnQiOiIxMDAwMDAwMDAwMDAwMDAwMCJ9LHsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoiZWlwMTU1Ojg0NTMiLCJhc3NldCI6IjB4ODMzNTg5ZkNENmVEYjZFMDhmNGM3QzMyRDRmNzFiNTRiZEEwMjkxMyIsInBheVRvIjoiMHgzQzVmM2E2Y0UyMjRCQjg5RDcyZjVFQjQyMzJlY0MyN0Y2N0IzZWVBIiwibWF4VGltZW91dFNlY29uZHMiOjMwLCJleHRyYSI6eyJuYW1lIjoiVVNEIENvaW4iLCJ2ZXJzaW9uIjoiMiIsIng0MDJQYXltZW50Q29uZmlnSWQiOiI2OTlkYmFiNzlmMzJmZmRlNjUwMTA0YWEiLCJhc3NldFRyYW5zZmVyTWV0aG9kIjoiZWlwMzAwOSJ9LCJhbW91bnQiOiIxMDAwMCJ9LHsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoiZWlwMTU1OjU2IiwiYXNzZXQiOiIweDhBQzc2YTUxY2M5NTBkOTgyMkQ2OGI4M2ZFMUFkOTdCMzJDZDU4MGQiLCJwYXlUbyI6IjB4M0M1ZjNhNmNFMjI0QkI4OUQ3MmY1RUI0MjMyZWNDMjdGNjdCM2VlQSIsIm1heFRpbWVvdXRTZWNvbmRzIjozMCwiZXh0cmEiOnsibmFtZSI6IlVTRCBDb2luIiwidmVyc2lvbiI6IjEiLCJ4NDAyUGF5bWVudENvbmZpZ0lkIjoiNjllZjI0MmY1MDQ1NWRjY2UwMmY0NTMwIiwiYXNzZXRUcmFuc2Zlck1ldGhvZCI6InBlcm1pdDItZXhhY3QiLCJzaWduZXJBZGRyZXNzIjoiMHgzNEY3YTY2MTE2MDc4MENlMTM0NmU2RDdCOTZEMmJFMjQ0NTkwODk5Iiwic3BlbmRlckFkZHJlc3MiOiIweDMwMzhmN2FjM2I0RDFhM2ZlODg2QmRDQjVjRDAxZTlmNkJEZDg2MzMifSwiYW1vdW50IjoiMTAwMDAwMDAwMDAwMDAwMDAifSx7InNjaGVtZSI6ImV4YWN0IiwibmV0d29yayI6ImVpcDE1NTo1NiIsImFzc2V0IjoiMHg4ZDBEMDAwRWU0NDk0OEZDOThjOUI5OEE0RkE0OTIxNDc2ZjA4QjBkIiwicGF5VG8iOiIweDNDNWYzYTZjRTIyNEJCODlENzJmNUVCNDIzMmVjQzI3RjY3QjNlZUEiLCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAsImV4dHJhIjp7Im5hbWUiOiJXb3JsZCBMaWJlcnR5IEZpbmFuY2lhbCBVU0QiLCJ2ZXJzaW9uIjoiMSIsIng0MDJQYXltZW50Q29uZmlnSWQiOiI2YTBjMDAxOWYzN2QwZTJmNmM5YTM2MTAiLCJhc3NldFRyYW5zZmVyTWV0aG9kIjoicGVybWl0Mi1leGFjdCIsInNpZ25lckFkZHJlc3MiOiIweDM0RjdhNjYxMTYwNzgwQ2UxMzQ2ZTZEN0I5NkQyYkUyNDQ1OTA4OTkiLCJzcGVuZGVyQWRkcmVzcyI6IjB4MzAzOGY3YWMzYjREMWEzZmU4ODZCZENCNWNEMDFlOWY2QkRkODYzMyJ9LCJhbW91bnQiOiIxMDAwMDAwMDAwMDAwMDAwMCJ9LHsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoiZWlwMTU1OjU2IiwiYXNzZXQiOiIweDhkMEQwMDBFZTQ0OTQ4RkM5OGM5Qjk4QTRGQTQ5MjE0NzZmMDhCMGQiLCJwYXlUbyI6IjB4M0M1ZjNhNmNFMjI0QkI4OUQ3MmY1RUI0MjMyZWNDMjdGNjdCM2VlQSIsIm1heFRpbWVvdXRTZWNvbmRzIjozMCwiZXh0cmEiOnsibmFtZSI6IldvcmxkIExpYmVydHkgRmluYW5jaWFsIFVTRCIsInZlcnNpb24iOiIxIiwieDQwMlBheW1lbnRDb25maWdJZCI6IjZhMGMwMDYyZjM3ZDBlMmY2YzlhMzYxMiIsImFzc2V0VHJhbnNmZXJNZXRob2QiOiJlaXAzMDA5Iiwic2lnbmVyQWRkcmVzcyI6IjB4MzRGN2E2NjExNjA3ODBDZTEzNDZlNkQ3Qjk2RDJiRTI0NDU5MDg5OSJ9LCJhbW91bnQiOiIxMDAwMDAwMDAwMDAwMDAwMCJ9LHsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoiZWlwMTU1OjU2IiwiYXNzZXQiOiIweDU1ZDM5ODMyNmY5OTA1OWZGNzc1NDg1MjQ2OTk5MDI3QjMxOTc5NTUiLCJwYXlUbyI6IjB4M0M1ZjNhNmNFMjI0QkI4OUQ3MmY1RUI0MjMyZWNDMjdGNjdCM2VlQSIsIm1heFRpbWVvdXRTZWNvbmRzIjozMCwiZXh0cmEiOnsibmFtZSI6IlRldGhlciBVU0QiLCJ2ZXJzaW9uIjoiMSIsIng0MDJQYXltZW50Q29uZmlnSWQiOiI2OWVmMjQyZjUwNDU1ZGNjZTAyZjNjMmYiLCJhc3NldFRyYW5zZmVyTWV0aG9kIjoicGVybWl0Mi1leGFjdCIsInNpZ25lckFkZHJlc3MiOiIweDM0RjdhNjYxMTYwNzgwQ2UxMzQ2ZTZEN0I5NkQyYkUyNDQ1OTA4OTkiLCJzcGVuZGVyQWRkcmVzcyI6IjB4MzAzOGY3YWMzYjREMWEzZmU4ODZCZENCNWNEMDFlOWY2QkRkODYzMyJ9LCJhbW91bnQiOiIxMDAwMDAwMDAwMDAwMDAwMCJ9XSwiZXJyb3IiOiJQYXltZW50IHJlcXVpcmVkIn0="
+  },
+  "body": {
+    "x402Version": 2,
+    "resource": {
+      "url": "https://pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest",
+      "description": "Get the latest market quotes for one or more cryptocurrencies.",
+      "mimeType": "application/json"
+    },
+    "accepts": [
+      {
+        "scheme": "exact",
+        "network": "eip155:56",
+        "asset": "0xcE24439F2D9C6a2289F741120FE202248B666666",
+        "payTo": "0x3C5f3a6cE224BB89D72f5EB4232ecC27F67B3eeA",
+        "maxTimeoutSeconds": 30,
+        "extra": {
+          "name": "United Stables",
+          "version": "1",
+          "x402PaymentConfigId": "69ef242e50455dcce02f3061",
+          "assetTransferMethod": "permit2-exact",
+          "signerAddress": "0x34F7a661160780Ce1346e6D7B96D2bE244590899",
+          "spenderAddress": "0x3038f7ac3b4D1a3fe886BdCB5cD01e9f6BDd8633"
+        },
+        "amount": "10000000000000000"
+      },
+      {
+        "scheme": "exact",
+        "network": "eip155:56",
+        "asset": "0xcE24439F2D9C6a2289F741120FE202248B666666",
+        "payTo": "0x3C5f3a6cE224BB89D72f5EB4232ecC27F67B3eeA",
+        "maxTimeoutSeconds": 30,
+        "extra": {
+          "name": "United Stables",
+          "version": "1",
+          "x402PaymentConfigId": "69ef242e50455dcce02f2e77",
+          "assetTransferMethod": "eip3009",
+          "signerAddress": "0x34F7a661160780Ce1346e6D7B96D2bE244590899"
+        },
+        "amount": "10000000000000000"
+      },
+      {
+        "scheme": "exact",
+        "network": "eip155:8453",
+        "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "payTo": "0x3C5f3a6cE224BB89D72f5EB4232ecC27F67B3eeA",
+        "maxTimeoutSeconds": 30,
+        "extra": {
+          "name": "USD Coin",
+          "version": "2",
+          "x402PaymentConfigId": "699dbab79f32ffde650104aa",
+          "assetTransferMethod": "eip3009"
+        },
+        "amount": "10000"
+      },
+      {
+        "scheme": "exact",
+        "network": "eip155:56",
+        "asset": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+        "payTo": "0x3C5f3a6cE224BB89D72f5EB4232ecC27F67B3eeA",
+        "maxTimeoutSeconds": 30,
+        "extra": {
+          "name": "USD Coin",
+          "version": "1",
+          "x402PaymentConfigId": "69ef242f50455dcce02f4530",
+          "assetTransferMethod": "permit2-exact",
+          "signerAddress": "0x34F7a661160780Ce1346e6D7B96D2bE244590899",
+          "spenderAddress": "0x3038f7ac3b4D1a3fe886BdCB5cD01e9f6BDd8633"
+        },
+        "amount": "10000000000000000"
+      },
+      {
+        "scheme": "exact",
+        "network": "eip155:56",
+        "asset": "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
+        "payTo": "0x3C5f3a6cE224BB89D72f5EB4232ecC27F67B3eeA",
+        "maxTimeoutSeconds": 30,
+        "extra": {
+          "name": "World Liberty Financial USD",
+          "version": "1",
+          "x402PaymentConfigId": "6a0c0019f37d0e2f6c9a3610",
+          "assetTransferMethod": "permit2-exact",
+          "signerAddress": "0x34F7a661160780Ce1346e6D7B96D2bE244590899",
+          "spenderAddress": "0x3038f7ac3b4D1a3fe886BdCB5cD01e9f6BDd8633"
+        },
+        "amount": "10000000000000000"
+      },
+      {
+        "scheme": "exact",
+        "network": "eip155:56",
+        "asset": "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
+        "payTo": "0x3C5f3a6cE224BB89D72f5EB4232ecC27F67B3eeA",
+        "maxTimeoutSeconds": 30,
+        "extra": {
+          "name": "World Liberty Financial USD",
+          "version": "1",
+          "x402PaymentConfigId": "6a0c0062f37d0e2f6c9a3612",
+          "assetTransferMethod": "eip3009",
+          "signerAddress": "0x34F7a661160780Ce1346e6D7B96D2bE244590899"
+        },
+        "amount": "10000000000000000"
+      },
+      {
+        "scheme": "exact",
+        "network": "eip155:56",
+        "asset": "0x55d398326f99059fF775485246999027B3197955",
+        "payTo": "0x3C5f3a6cE224BB89D72f5EB4232ecC27F67B3eeA",
+        "maxTimeoutSeconds": 30,
+        "extra": {
+          "name": "Tether USD",
+          "version": "1",
+          "x402PaymentConfigId": "69ef242f50455dcce02f3c2f",
+          "assetTransferMethod": "permit2-exact",
+          "signerAddress": "0x34F7a661160780Ce1346e6D7B96D2bE244590899",
+          "spenderAddress": "0x3038f7ac3b4D1a3fe886BdCB5cD01e9f6BDd8633"
+        },
+        "amount": "10000000000000000"
+      }
+    ],
+    "error": "Payment required"
+  }
+}

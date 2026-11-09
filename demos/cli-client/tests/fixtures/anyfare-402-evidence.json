@@ -1,0 +1,61 @@
+{
+  "note": "Made up for the test, dated 2026-11-09. Shaped like the proxy's combined 402.",
+  "status": 402,
+  "headers": {
+    "payment-required": "eyJ4NDAyVmVyc2lvbiI6MiwiZXJyb3IiOiJQYXltZW50IHJlcXVpcmVkIiwicmVzb3VyY2UiOnsidXJsIjoiaHR0cHM6Ly9wYXkuZXhhbXBsZS50ZXN0L21lcmNoYW50LW5lYXIubWlrZWRvdGV4ZS5jb20vdjEvZXZpZGVuY2UvYWNjb3VudCIsImRlc2NyaXB0aW9uIjoiUGF5bWVudCByZXF1aXJlZCJ9LCJhY2NlcHRzIjpbeyJzY2hlbWUiOiJleGFjdCIsIm5ldHdvcmsiOiJlaXAxNTU6ODQ1MyIsImFzc2V0IjoiMHg4MzM1ODlmQ0Q2ZURiNkUwOGY0YzdDMzJENGY3MWI1NGJkQTAyOTEzIiwiYW1vdW50IjoiMjAwMCIsInBheVRvIjoiMHgwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMGIxIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsibmFtZSI6IlVTRCBDb2luIiwidmVyc2lvbiI6IjIiLCJhc3NldFRyYW5zZmVyTWV0aG9kIjoiZWlwMzAwOSJ9fSx7InNjaGVtZSI6ImV4YWN0IiwibmV0d29yayI6InNvbGFuYTo1ZXlrdDRVc0Z2OFA4TkpkVFJFcFkxdnpxS3FaS3ZkcCIsImFzc2V0IjoiRVBqRldkZDVBdWZxU1NxZU0ycU4xeHp5YmFwQzhHNHdFR0drWnd5VER0MXYiLCJhbW91bnQiOiIyMDAwIiwicGF5VG8iOiJNYWRlVXBTb2xhbmFSZWNpcGllbnRGb3JUaGVUZXN0IiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsiZmVlUGF5ZXIiOiJNYWRlVXBGZWVQYXllckZvclRoZVRlc3QifX0seyJzY2hlbWUiOiJleGFjdCIsIm5ldHdvcmsiOiJuZWFyOm1haW5uZXQiLCJhc3NldCI6IjE3MjA4NjI4Zjg0ZjVkNmFkMzNmMGRhM2JiYmViMjdmZmNiMzk4ZWFjNTAxYTMxYmQ2YWQyMDExZTM2MTMzYTEiLCJhbW91bnQiOiIyMDAwIiwicGF5VG8iOiJob3QuZXhhbXBsZS5uZWFyIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnt9fV19",
+    "www-authenticate": "Payment id=\"made-up-id\", realm=\"pay.example.test\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiIyMDAwIiwiY3VycmVuY3kiOiIweDIwQzAwMDAwMDAwMDAwMDAwMDAwMDAwMGI5NTM3ZDExYzYwRThiNTAiLCJtZXRob2REZXRhaWxzIjp7ImNoYWluSWQiOjQyMTd9LCJyZWNpcGllbnQiOiIweDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwYzMifQ\", expires=\"2026-11-09T23:59:59.000Z\"",
+    "cache-control": "no-store"
+  },
+  "body": {
+    "x402Version": 2,
+    "error": "Payment required",
+    "resource": {
+      "url": "https://pay.example.test/merchant-near.mikedotexe.com/v1/evidence/account",
+      "description": "Payment required"
+    },
+    "accepts": [
+      {
+        "scheme": "exact",
+        "network": "eip155:8453",
+        "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "amount": "2000",
+        "payTo": "0x00000000000000000000000000000000000000b1",
+        "maxTimeoutSeconds": 300,
+        "extra": {
+          "name": "USD Coin",
+          "version": "2",
+          "assetTransferMethod": "eip3009"
+        }
+      },
+      {
+        "scheme": "exact",
+        "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+        "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "amount": "2000",
+        "payTo": "MadeUpSolanaRecipientForTheTest",
+        "maxTimeoutSeconds": 300,
+        "extra": {
+          "feePayer": "MadeUpFeePayerForTheTest"
+        }
+      },
+      {
+        "scheme": "exact",
+        "network": "near:mainnet",
+        "asset": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+        "amount": "2000",
+        "payTo": "hot.example.near",
+        "maxTimeoutSeconds": 300,
+        "extra": {}
+      }
+    ],
+    "credits": {
+      "price": "0.002",
+      "currency": "USD",
+      "authorization": "Bearer <payment key>",
+      "signup": {
+        "method": "POST",
+        "url": "https://api.example.test/signup"
+      }
+    }
+  }
+}
