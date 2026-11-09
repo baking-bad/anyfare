@@ -28,6 +28,11 @@ export interface Offer {
 export interface Offers {
   readonly x402Version: number | undefined;
   readonly offers: readonly Offer[];
+  /**
+   * The x402 part as the 402 gave it: the decoded `payment-required` header, or the JSON body when the
+   * header is missing. A payer signs from it. `undefined` when the 402 has no x402 options.
+   */
+  readonly paymentRequired: Readonly<Record<string, unknown>> | undefined;
 }
 
 export interface AnswerParts {
@@ -52,7 +57,11 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined;
 }
 
-function x402Offers(parts: AnswerParts): { version: number | undefined; offers: Offer[] } {
+function x402Offers(parts: AnswerParts): {
+  version: number | undefined;
+  offers: Offer[];
+  required: Record<string, unknown> | undefined;
+} {
   const header = parts.headers.get('payment-required');
   let required: unknown;
   if (header !== null) {
@@ -64,7 +73,7 @@ function x402Offers(parts: AnswerParts): { version: number | undefined; offers: 
   } else if (isRecord(parts.body) && Array.isArray(parts.body['accepts'])) {
     required = parts.body;
   }
-  if (!isRecord(required) || !Array.isArray(required['accepts'])) return { version: undefined, offers: [] };
+  if (!isRecord(required) || !Array.isArray(required['accepts'])) return { version: undefined, offers: [], required: undefined };
 
   const offers: Offer[] = [];
   for (const item of required['accepts'] as unknown[]) {
@@ -88,7 +97,7 @@ function x402Offers(parts: AnswerParts): { version: number | undefined; offers: 
     });
   }
   const version = typeof required['x402Version'] === 'number' ? required['x402Version'] : undefined;
-  return { version, offers };
+  return { version, offers, required };
 }
 
 function mppOffers(headers: Headers): Offer[] {
@@ -145,20 +154,29 @@ export function readOffers(parts: AnswerParts): Offers {
   return {
     x402Version: x402.version,
     offers: [...x402.offers, ...mppOffers(parts.headers), ...creditsOffers(parts.body)],
+    paymentRequired: x402.required,
   };
+}
+
+/** Whether an asset is the USDC this app knows on that network, with 6 decimals: its atomic unit is a micro-USD. */
+export function isKnownUsdc(network: string | undefined, asset: string | undefined): boolean {
+  const known = findAsset(network, asset);
+  return (
+    known?.symbol === 'USDC' &&
+    known.decimals === 6 &&
+    network !== undefined &&
+    asset !== undefined &&
+    sameAddress(network, known.address, asset)
+  );
 }
 
 /** The `--pay` value of this app that pays an offer of Anyfare's, or `undefined` when none does. */
 export function payWayOf(offer: Offer): PayWay | undefined {
   if (offer.protocol === 'credits') return 'credits';
-  if (offer.protocol === 'x402' && offer.scheme === 'exact') {
+  // Only the known USDC of each network: any other asset on it is never picked
+  if (offer.protocol === 'x402' && offer.scheme === 'exact' && isKnownUsdc(offer.network, offer.asset)) {
     if (offer.network === 'near:mainnet') return 'near';
-    if (offer.network === 'eip155:8453') {
-      const base = findAsset('eip155:8453', offer.asset);
-      if (base?.symbol === 'USDC' && offer.asset !== undefined && sameAddress('eip155:8453', base.address, offer.asset)) {
-        return 'base';
-      }
-    }
+    if (offer.network === 'eip155:8453') return 'base';
   }
   if (
     offer.protocol === 'mpp' &&

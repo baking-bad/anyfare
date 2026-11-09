@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ERROR_LINES, PROXY_CODES, clip, httpErrorOf, stopFor } from '../src/errors.ts';
+import { ERROR_LINES, PROXY_CODES, clip, hideKeys, httpErrorOf, stopFor } from '../src/errors.ts';
 import type { ErrorContext } from '../src/errors.ts';
 import { HttpError } from '../src/util.ts';
 
@@ -149,6 +149,24 @@ describe('stopFor', () => {
     expect(stopFor(errorOf(undefined, 404, { body: '' }), paid).line()).toBe('CoinMarketCap answered 404. Not charged.');
   });
 
+  it("says \"Not charged\" for the API's own answer below 500 when Credits or x402 paid, which Anyfare gives back", () => {
+    const answer = errorOf(undefined, 404, { body: 'No such symbol' });
+    for (const way of ['credits', 'base', 'near'] as const) {
+      expect(stopFor(answer, { side: 'proxy', paid: { way, apiName: 'CoinMarketCap' } }).notCharged).toBe(true);
+    }
+    // Tempo is not built yet: nothing is said for it
+    expect(stopFor(answer, { side: 'proxy', paid: { way: 'tempo', apiName: 'CoinMarketCap' } }).notCharged).toBe(false);
+  });
+
+  it("lets a payer's line decide from the answer's message whether it was charged", () => {
+    const extra = { payment_invalid: { line: () => 'A later line', notCharged: (error: HttpError) => !error.message.includes('used') } };
+    const near: ErrorContext = { side: 'proxy', paid: { way: 'near', apiName: 'CoinMarketCap' } };
+    expect(stopFor(new HttpError(402, 'Declined', { code: 'payment_invalid' }), near, extra).notCharged).toBe(true);
+    expect(stopFor(new HttpError(402, 'It was used before', { code: 'payment_invalid' }), near, extra).notCharged).toBe(false);
+    // Never for a call that paid nothing
+    expect(stopFor(new HttpError(402, 'Declined', { code: 'payment_invalid' }), { side: 'proxy' }, extra).notCharged).toBe(false);
+  });
+
   it('reads a 402 with no code after a paid request as the payment not taken', () => {
     const stop = stopFor(errorOf(undefined, 402, { body: { credits: { price: '0.01' } } }), paid);
     expect(stop.line()).toBe('Anyfare asked for a payment again: the key was not accepted. Not charged.');
@@ -230,6 +248,20 @@ describe('httpErrorOf', () => {
   it('has no code when the body is not the envelope', () => {
     expect(httpErrorOf({ status: 400, headers: new Headers(), body: 'Bad request' }).code).toBeUndefined();
     expect(httpErrorOf({ status: 400, headers: new Headers(), body: { error: 'Bad request' } }).code).toBeUndefined();
+  });
+});
+
+describe('hideKeys', () => {
+  it('hides a private key whole, EVM or NEAR, and leaves addresses and other hex alone', () => {
+    // Made up, shaped like keys so that they are hidden
+    const evm = `0x${'a1'.repeat(32)}`;
+    const near = `ed25519:${'3Bq'.repeat(29)}`;
+    expect(hideKeys(`one ${evm}, two ${near}.`)).toBe('one 0x…, two ed25519:….');
+    expect(hideKeys(`${evm.toUpperCase().replace('0X', '0x')}`)).toBe('0x…');
+    const address = `0x${'b2'.repeat(20)}`;
+    expect(hideKeys(`from ${address}`)).toBe(`from ${address}`);
+    expect(hideKeys(`0x${'c'.repeat(66)}`)).toBe(`0x${'c'.repeat(66)}`);
+    expect(clip(`refused ${near}`)).toBe('refused ed25519:…');
   });
 });
 

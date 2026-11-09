@@ -95,6 +95,8 @@ export interface Unpaid {
   readonly x402Version: number | undefined;
   /** Empty unless the answer was a 402. */
   readonly offers: readonly Offer[];
+  /** The 402's x402 part as it gave it, for a payer that signs from it. See `Offers`. */
+  readonly paymentRequired: Readonly<Record<string, unknown>> | undefined;
   /** For an answer other than 402: what it said, in a few words. */
   readonly note: string | undefined;
 }
@@ -114,9 +116,17 @@ export async function readUnpaid(fetchFn: Fetch, url: string, call: ToolRequest)
       status: answer.status,
       x402Version: undefined,
       offers: [],
+      paymentRequired: undefined,
       note: answer.status >= 400 ? describeFailure(answer.status, answer.body) : `answered ${answer.status}`,
     };
   }
   const read = readOffers(answer);
-  return { url, status: 402, x402Version: read.x402Version, offers: read.offers, note: undefined };
+  return {
+    url,
+    status: 402,
+    x402Version: read.x402Version,
+    offers: read.offers,
+    paymentRequired: read.paymentRequired,
+    note: undefined,
+  };
 }

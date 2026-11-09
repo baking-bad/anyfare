@@ -101,7 +101,8 @@ function codeOf(error: unknown): { code: string | undefined; reason: string } {
   return { code, reason: code ?? cause?.message ?? (error instanceof Error ? error.message : 'unknown error') };
 }
 
-const limitText = (ms: number): string => (ms < 1000 ? `${ms} ms` : `${Math.round(ms / 1000)} seconds`);
+/** A time limit in words: "300 ms", "30 seconds". */
+export const limitText = (ms: number): string => (ms < 1000 ? `${ms} ms` : `${Math.round(ms / 1000)} seconds`);
 
 /**
  * One request with a time limit. A network failure or a timeout is a `Stop` that names the host and

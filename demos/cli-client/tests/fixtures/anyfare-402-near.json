@@ -1,0 +1,36 @@
+{
+  "note": "Made up for the test, dated 2026-11-09, at a made-up price of $0.01. Shaped as the proxy builds its combined 402 when only USDC on NEAR has a payTo: one x402 option to its NEAR account, and Credits.",
+  "status": 402,
+  "headers": {
+    "payment-required": "eyJ4NDAyVmVyc2lvbiI6MiwiZXJyb3IiOiJQYXltZW50IHJlcXVpcmVkIiwicmVzb3VyY2UiOnsidXJsIjoiaHR0cHM6Ly9wYXkuZXhhbXBsZS50ZXN0L21lcmNoYW50LW5lYXIubWlrZWRvdGV4ZS5jb20vdjEvZXZpZGVuY2UvYWNjb3VudCIsImRlc2NyaXB0aW9uIjoibWVyY2hhbnQtbmVhci5taWtlZG90ZXhlLmNvbS92MS9ldmlkZW5jZS9hY2NvdW50LCB0aHJvdWdoIEFueWZhcmUifSwiYWNjZXB0cyI6W3sic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoibmVhcjptYWlubmV0IiwiYXNzZXQiOiIxNzIwODYyOGY4NGY1ZDZhZDMzZjBkYTNiYmJlYjI3ZmZjYjM5OGVhYzUwMWEzMWJkNmFkMjAxMWUzNjEzM2ExIiwiYW1vdW50IjoiMTAwMDAiLCJwYXlUbyI6InBheS5hbnlmYXJlLm5lYXIiLCJtYXhUaW1lb3V0U2Vjb25kcyI6MzAwLCJleHRyYSI6e319XX0=",
+    "cache-control": "no-store"
+  },
+  "body": {
+    "x402Version": 2,
+    "error": "Payment required",
+    "resource": {
+      "url": "https://pay.example.test/merchant-near.mikedotexe.com/v1/evidence/account",
+      "description": "merchant-near.mikedotexe.com/v1/evidence/account, through Anyfare"
+    },
+    "accepts": [
+      {
+        "scheme": "exact",
+        "network": "near:mainnet",
+        "asset": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+        "amount": "10000",
+        "payTo": "pay.anyfare.near",
+        "maxTimeoutSeconds": 300,
+        "extra": {}
+      }
+    ],
+    "credits": {
+      "price": "0.01",
+      "currency": "USD",
+      "authorization": "Bearer <payment key>",
+      "signup": {
+        "method": "POST",
+        "url": "https://api.example.test/v1/accounts"
+      }
+    }
+  }
+}

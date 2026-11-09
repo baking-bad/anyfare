@@ -14,8 +14,11 @@ export interface ErrorContext {
 export interface ErrorLine {
   /** The line, without a final period. */
   readonly line: (error: HttpError, context: ErrorContext) => string;
-  /** `true`: a paid call that got this answer was not charged. `'credits'`: only when it paid with Credits. */
-  readonly notCharged: boolean | 'credits';
+  /**
+   * `true`: a paid call that got this answer was not charged. `'credits'`: only when it paid with Credits.
+   * A function: when the answer's own message decides it.
+   */
+  readonly notCharged: boolean | 'credits' | ((error: HttpError) => boolean);
 }
 
 export type ErrorTable = Readonly<Record<string, ErrorLine>>;
@@ -134,9 +137,18 @@ export const PROXY_CODES: ReadonlySet<string> = new Set([
   'request_too_large',
 ]);
 
-/** Any key in a text, cut to its first 10 characters. */
+/** The ways whose payment Anyfare gives back when it passes the API's own answer below 500 through. */
+const PASSED_THROUGH_NOT_CHARGED: ReadonlySet<PayWay> = new Set(['credits', 'base', 'near']);
+
+/**
+ * Any Anyfare key in a text, cut to its first 10 characters. Anything shaped like a wallet's private
+ * key, `0x` and 64 hex digits or a NEAR `ed25519:` one, is hidden whole: no part of it is shown.
+ */
 export function hideKeys(text: string): string {
-  return text.replace(/afm?_[A-Za-z0-9_]{12,}/g, (key) => `${key.slice(0, 10)}…`);
+  return text
+    .replace(/afm?_[A-Za-z0-9_]{12,}/g, (key) => `${key.slice(0, 10)}…`)
+    .replace(/0x[0-9A-Fa-f]{64}(?![0-9A-Fa-f])/g, '0x…')
+    .replace(/(?:ed25519|secp256k1):[1-9A-HJ-NP-Za-km-z]{32,}/g, (key) => `${key.slice(0, key.indexOf(':') + 1)}…`);
 }
 
 /** Text from an answer as one short line: no control characters, no keys, at most 200 characters. */
@@ -187,8 +199,10 @@ export function stopFor(error: HttpError, context: ErrorContext, extra: ErrorTab
     if (entry === undefined) {
       return finish(withText(`Anyfare answered ${error.status} ${clip(code)}`, clip(error.message)), error, false);
     }
+    const rule = entry.notCharged;
     const notCharged =
-      paid !== undefined && (entry.notCharged === true || (entry.notCharged === 'credits' && paid.way === 'credits'));
+      paid !== undefined &&
+      (typeof rule === 'function' ? rule(error) : rule === true || (rule === 'credits' && paid.way === 'credits'));
     return finish(entry.line(error, context), error, notCharged);
   }
   // On a paid call, a body without one of the proxy's codes is not Anyfare's own answer
@@ -198,10 +212,12 @@ export function stopFor(error: HttpError, context: ErrorContext, extra: ErrorTab
       const what = paid.way === 'credits' ? 'the key' : 'the payment';
       return finish(`Anyfare asked for a payment again: ${what} was not accepted`, error, true);
     }
-    // Anyfare passes the API's own answer through below 500, and Credits release the hold on it.
-    // A 5xx that is not Anyfare's envelope came from something in front of it: the outcome is not known.
+    // Anyfare passes the API's own answer through below 500: Credits release the hold on it, and an
+    // x402 payment is cancelled, never settled, since only a 2xx is billable. A 5xx that is not
+    // Anyfare's envelope came from something in front of it: the outcome is not known.
     if (error.status < 500) {
-      return finish(withText(`${paid.apiName} answered ${error.status}`, bodyText(error.body)), error, paid.way === 'credits');
+      const notCharged = PASSED_THROUGH_NOT_CHARGED.has(paid.way);
+      return finish(withText(`${paid.apiName} answered ${error.status}`, bodyText(error.body)), error, notCharged);
     }
   }
   return finish(withText(`Anyfare answered ${error.status}`, bodyText(error.body)), error, false);

@@ -59,6 +59,19 @@ describe('readOffers', () => {
     expect(offers[4]).toMatchObject({ scheme: 'credits', amount: 11000n });
   });
 
+  it('keeps the decoded payment-required header for a payer to sign from', async () => {
+    const { offers, paymentRequired } = await offersOf('anyfare-402-cmc.json');
+    expect(paymentRequired?.['x402Version']).toBe(2);
+    expect(paymentRequired?.['resource']).toEqual({
+      url: 'https://pay.example.test/pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest',
+      description: 'Payment required',
+    });
+    // Each x402 offer holds its own object of that header
+    const accepts = paymentRequired?.['accepts'] as unknown[];
+    expect(offers.filter((offer) => offer.protocol === 'x402').map((offer) => offer.raw)).toEqual(accepts);
+    expect(readOffers({ headers: new Headers(), body: { credits: { price: '0.01' } } }).paymentRequired).toBeUndefined();
+  });
+
   it('falls back to the JSON body when the header is missing', async () => {
     const { body } = fixture('cmc-402.json');
     const { x402Version, offers } = readOffers({ headers: new Headers(), body });
@@ -115,8 +128,13 @@ describe('payWayOf', () => {
     expect(payWayOf(offer({ protocol: 'credits', scheme: 'credits' }))).toBe('credits');
   });
 
-  it('pays x402 exact on NEAR with near', () => {
-    expect(payWayOf(offer({ protocol: 'x402', scheme: 'exact', network: 'near:mainnet' }))).toBe('near');
+  it('pays x402 exact USDC on NEAR with near, and no other asset on NEAR', () => {
+    const usdc = '17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1';
+    expect(payWayOf(offer({ protocol: 'x402', scheme: 'exact', network: 'near:mainnet', asset: usdc }))).toBe('near');
+    expect(payWayOf(offer({ protocol: 'x402', scheme: 'exact', network: 'near:mainnet' }))).toBeUndefined();
+    expect(payWayOf(offer({ protocol: 'x402', scheme: 'exact', network: 'near:mainnet', asset: 'usdt.tether-token.near' }))).toBeUndefined();
+    expect(payWayOf(offer({ protocol: 'x402', scheme: 'exact', network: 'near:mainnet', asset: usdc.toUpperCase() }))).toBeUndefined();
+    expect(payWayOf(offer({ protocol: 'x402', scheme: 'upto', network: 'near:mainnet', asset: usdc }))).toBeUndefined();
   });
 
   it('pays x402 exact USDC on Base with base, in any letter case', () => {

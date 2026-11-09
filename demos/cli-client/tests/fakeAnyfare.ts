@@ -1,15 +1,19 @@
 // A fake Anyfare for the tests: the Platform API and the proxy, each on its own port of 127.0.0.1.
 // Everything it answers is made up: the keys, the IDs, the prices, the balances and the paid answers.
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { encodePaymentRequiredHeader } from '@x402/core/http';
+import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from '@x402/core/http';
+import { decodeSignedDelegateB64 } from '@x402/near';
+import { verifyTypedData } from 'viem';
 import type { Fetch } from '../src/http.ts';
 import { fromAtomic, toAtomic } from '../src/util.ts';
 import { answerOf, fixture } from './helpers.ts';
 import type { Call } from './helpers.ts';
+import { base58 } from './fakeNearRpc.ts';
+import type { NearChain } from './fakeNearRpc.ts';
 
 const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 
@@ -21,6 +25,28 @@ export function madeUpKey(prefix: 'afm_live_' | 'af_live_'): string {
 }
 
 const usd = (micro: bigint): string => fromAtomic(micro, 6);
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** JSON with its object keys sorted, to compare two values field by field. */
+const canonical = (value: unknown): string =>
+  JSON.stringify(value, (_key, item: unknown) =>
+    isObject(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : item,
+  );
+
+// EIP-3009's transferWithAuthorization, as the USDC contract hashes it: written out here, not taken
+// from the SDK that signs, so the check does not share a mistake with the signer
+const TRANSFER_WITH_AUTHORIZATION = {
+  TransferWithAuthorization: [
+    { name: 'from', type: 'address' },
+    { name: 'to', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'validAfter', type: 'uint256' },
+    { name: 'validBefore', type: 'uint256' },
+    { name: 'nonce', type: 'bytes32' },
+  ],
+} as const;
 const micro = (dollars: string): bigint => toAtomic(dollars, 6);
 
 export interface Recorded {
@@ -87,13 +113,28 @@ export interface FakeTarget {
   readonly x402?: readonly Record<string, unknown>[];
 }
 
-/** The answer to the next paid call, after the key and the hold were checked. */
+/**
+ * The answer to the next paid call, after the key and the hold were checked, or after the x402 payment
+ * was verified. Anything but a `2xx` charges nothing.
+ */
 export interface PaidAnswer {
   readonly status: number;
   readonly body?: unknown;
   readonly headers?: Readonly<Record<string, string>>;
-  /** Leave out the Anyfare-Receipt header of a `2xx`. */
+  /** Leave out the Anyfare-Receipt header of a `2xx`, or its PAYMENT-RESPONSE when it was paid with x402. */
   readonly noReceipt?: boolean;
+}
+
+/** One of the proxy's own x402 failures, for the next payment: each charges nothing but `settlement_failed`, whose outcome is unknown. */
+export type X402Failure = 'settlement_failed' | 'payment_unavailable' | 'payer_busy';
+
+/** An x402 payment the fake verified and settled. Made up: nothing moved anywhere. */
+export interface X402Settled {
+  readonly network: string;
+  readonly payer: string;
+  readonly payTo: string;
+  readonly amount: string;
+  readonly transaction: string;
 }
 
 export interface FakeAnyfare {
@@ -106,6 +147,15 @@ export interface FakeAnyfare {
   rateLimitSignup: boolean;
   /** Replaces the answer to the next paid call. */
   nextPaid: PaidAnswer | undefined;
+  /**
+   * Makes the next x402 payment fail as the proxy would: settlement_failed, payment_unavailable, or the
+   * in-flight payment_invalid, which the proxy answers on NEAR only.
+   */
+  nextX402: X402Failure | undefined;
+  /** The made-up NEAR chain a NEAR payment is checked against. None: every NEAR payment is refused. */
+  nearChain: NearChain | undefined;
+  /** The x402 payments it verified and settled. */
+  readonly x402Settled: X402Settled[];
   /** Changes the body of a 201 before it is sent: of sign-up, or of key create. */
   rewrite: { signup?: (body: Record<string, unknown>) => unknown; keys?: (body: Record<string, unknown>) => unknown };
   /** Runs while a request is being answered, after the account or the key exists: of sign-up, or of key create. */
@@ -118,6 +168,8 @@ export interface FakeAnyfare {
   addTarget(target: FakeTarget): void;
   /** The requests to routed links, paid or not. */
   routed(): Recorded[];
+  /** The routed requests that carried an x402 payment. */
+  x402Requests(): Recorded[];
   /** Forgets every account, key, target and request. */
   reset(): void;
   close(): Promise<void>;
@@ -129,6 +181,9 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
   const accounts = new Map<string, FakeAccount>();
   const keys = new Map<string, FakeKey>();
   const targets = new Map<string, FakeTarget>();
+  const x402Settled: X402Settled[] = [];
+  // The payments it took, by network: each pays once
+  const usedPayments = new Set<string>();
   let counter = 0;
   const next = (): number => (counter += 1);
 
@@ -136,6 +191,8 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
     startingBalance: '0',
     rateLimitSignup: false,
     nextPaid: undefined as PaidAnswer | undefined,
+    nextX402: undefined as X402Failure | undefined,
+    nearChain: undefined as NearChain | undefined,
     rewrite: {} as FakeAnyfare['rewrite'],
     during: {} as FakeAnyfare['during'],
   };
@@ -302,6 +359,176 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
     };
   };
 
+  /** Why a Base payment is refused, or `undefined` when it is good: what the proxy checks before it would settle. */
+  /** The payment's own key, so that it pays once: the EIP-3009 nonce on Base, a hash of the signed delegate action on NEAR. */
+  const usedBefore = (key: string): boolean => {
+    if (usedPayments.has(key)) return true;
+    usedPayments.add(key);
+    return false;
+  };
+  const USED = 'This payment was already used. Request the resource again and sign a new one.';
+
+  /** The payer of a Base payment, or why it is refused: what the proxy checks before it would settle. */
+  const checkBase = async (offered: Record<string, unknown>, payload: Record<string, unknown>): Promise<{ payer: string } | string> => {
+    const signed = isObject(payload['payload']) ? payload['payload'] : {};
+    const authorization = isObject(signed['authorization']) ? signed['authorization'] : undefined;
+    const signature = signed['signature'];
+    const extra = isObject(offered['extra']) ? offered['extra'] : {};
+    if (authorization === undefined || typeof signature !== 'string') return 'The payment is not an EIP-3009 authorization';
+    const { from, to, value, validAfter, validBefore, nonce } = authorization;
+    if (
+      typeof from !== 'string' || typeof to !== 'string' || typeof value !== 'string' || typeof validAfter !== 'string' ||
+      typeof validBefore !== 'string' || typeof nonce !== 'string' || !/^[0-9]+$/.test(validAfter) || !/^[0-9]+$/.test(validBefore)
+    ) {
+      return 'The authorization is missing a field';
+    }
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    if (to.toLowerCase() !== String(offered['payTo']).toLowerCase()) return 'The authorization pays another recipient';
+    if (value !== offered['amount']) return 'The authorization pays another amount';
+    if (BigInt(validAfter) > now) return 'The authorization is not valid yet';
+    if (BigInt(validBefore) <= now) return 'The authorization has expired';
+    const valid = await verifyTypedData({
+      address: from as `0x${string}`,
+      domain: {
+        name: String(extra['name']),
+        version: String(extra['version']),
+        chainId: 8453,
+        verifyingContract: offered['asset'] as `0x${string}`,
+      },
+      types: TRANSFER_WITH_AUTHORIZATION,
+      primaryType: 'TransferWithAuthorization',
+      message: {
+        from: from as `0x${string}`,
+        to: to as `0x${string}`,
+        value: BigInt(value),
+        validAfter: BigInt(validAfter),
+        validBefore: BigInt(validBefore),
+        nonce: nonce as `0x${string}`,
+      },
+      signature: signature as `0x${string}`,
+    }).catch(() => false);
+    if (!valid) return 'The signature is not the payer\'s';
+    if (usedBefore(`eip155:8453:${nonce.toLowerCase()}`)) return USED;
+    return { payer: from };
+  };
+
+  /**
+   * The payer of a NEAR payment, or why it is refused, as a facilitator checks it against the chain:
+   * one ft_transfer of the asset, of the amount, to the payTo, with one yoctoNEAR, signed with an access
+   * key of its sender, and valid for at most the option's blocks.
+   */
+  const checkNear = (offered: Record<string, unknown>, payload: Record<string, unknown>): { payer: string } | string => {
+    const chain = state.nearChain;
+    if (chain === undefined) return 'The fake has no NEAR chain to check the payment against';
+    const signed = isObject(payload['payload']) ? payload['payload']['signedDelegateAction'] : undefined;
+    if (typeof signed !== 'string') return 'The payment holds no signed delegate action';
+    let decoded: ReturnType<typeof decodeSignedDelegateB64>;
+    try {
+      decoded = decodeSignedDelegateB64(signed);
+    } catch {
+      return "The signed delegate action can't be read";
+    }
+    const { delegate } = decoded;
+    if (!decoded.verifySignature()) return "The signature is not made with the delegate action's key";
+    if (chain.keyOf(delegate.senderId) !== delegate.publicKey) return 'The key is not an access key of the payer';
+    const call = delegate.functionCall;
+    if (delegate.receiverId !== offered['asset'] || delegate.actionCount !== 1 || call === null || call.methodName !== 'ft_transfer') {
+      return 'The delegate action is not one ft_transfer of the asset';
+    }
+    if (call.deposit !== 1n) return 'The transfer attaches more than one yoctoNEAR';
+    let args: unknown;
+    try {
+      args = JSON.parse(new TextDecoder().decode(call.args));
+    } catch {
+      args = undefined;
+    }
+    if (!isObject(args) || args['receiver_id'] !== offered['payTo'] || args['amount'] !== offered['amount']) {
+      return 'The transfer pays another recipient or amount';
+    }
+    const remaining = delegate.maxBlockHeight - chain.height;
+    if (remaining <= 0n) return 'The delegate action has expired';
+    if (remaining > BigInt(Number(offered['maxTimeoutSeconds']))) return 'The delegate action stays valid for more blocks than the option';
+    if (usedBefore(`near:mainnet:${createHash('sha256').update(Buffer.from(signed, 'base64')).digest('hex')}`)) return USED;
+    return { payer: delegate.senderId };
+  };
+
+  /** A request with PAYMENT-SIGNATURE: checked as the proxy checks it, then settled, made up, before the answer. */
+  const payX402 = async (target: FakeTarget, header: string, response: ServerResponse): Promise<void> => {
+    const invalid = (message: string): void => fail(response, 402, 'payment_invalid', message);
+    let payload: Record<string, unknown>;
+    try {
+      payload = decodePaymentSignatureHeader(header) as unknown as Record<string, unknown>;
+    } catch {
+      invalid("PAYMENT-SIGNATURE isn't an x402 payment: base64 of its JSON");
+      return;
+    }
+    const accepted = isObject(payload['accepted']) ? payload['accepted'] : undefined;
+    if (payload['x402Version'] !== 2 || accepted === undefined) {
+      invalid("PAYMENT-SIGNATURE isn't an x402 v2 payment");
+      return;
+    }
+    const same = (a: unknown, b: unknown): boolean => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
+    const offered = (target.x402 ?? []).find(
+      (option) =>
+        option['scheme'] === accepted['scheme'] &&
+        option['network'] === accepted['network'] &&
+        same(option['asset'], accepted['asset']) &&
+        option['amount'] === accepted['amount'] &&
+        same(option['payTo'], accepted['payTo']) &&
+        option['maxTimeoutSeconds'] === accepted['maxTimeoutSeconds'] &&
+        canonical(option['extra'] ?? {}) === canonical(accepted['extra'] ?? {}),
+    );
+    if (offered === undefined) {
+      invalid("The payment doesn't match an option for this price. Request the resource again for the current options.");
+      return;
+    }
+    const near = offered['network'] === 'near:mainnet';
+    const failure = state.nextX402;
+    // The rail claims a payer only on NEAR: the in-flight refusal is NEAR's alone
+    if (failure !== 'payer_busy' || near) state.nextX402 = undefined;
+    if (failure === 'payer_busy' && near) {
+      invalid("This payer has another NEAR payment in flight, which this one's nonce would collide with. Pay again once it has settled.");
+      return;
+    }
+    const checked =
+      offered['network'] === 'eip155:8453' ? await checkBase(offered, payload) : near ? checkNear(offered, payload) : 'The fake checks Base and NEAR only';
+    if (typeof checked === 'string') {
+      invalid(checked);
+      return;
+    }
+    if (failure === 'payment_unavailable') {
+      fail(response, 503, 'payment_unavailable', 'A payment on NEAR is in flight: retry in a moment', { 'retry-after': '2' });
+      return;
+    }
+    if (failure === 'settlement_failed') {
+      fail(response, 502, 'settlement_failed', "The payment couldn't be settled, so the response wasn't sent. Retry the request.");
+      return;
+    }
+    const paid = state.nextPaid ?? { status: 200 };
+    state.nextPaid = undefined;
+    // Anything but a 2xx cancels the payment: nothing settles
+    if (paid.status < 200 || paid.status >= 300) {
+      send(response, paid.status, paid.body ?? '', paid.headers);
+      return;
+    }
+    const settled: X402Settled = {
+      network: String(offered['network']),
+      payer: checked.payer,
+      payTo: String(offered['payTo']),
+      amount: String(offered['amount']),
+      // A made-up transaction hash, in the network's own form
+      transaction: near ? base58(randomBytes(32)) : `0x${randomBytes(32).toString('hex')}`,
+    };
+    x402Settled.push(settled);
+    const proof = encodePaymentResponseHeader({
+      success: true,
+      transaction: settled.transaction,
+      network: settled.network as `${string}:${string}`,
+      payer: settled.payer,
+    });
+    send(response, paid.status, paid.body ?? target.answer, { ...(paid.noReceipt === true ? {} : { 'payment-response': proof }), ...paid.headers });
+  };
+
   const pay = (request: IncomingMessage, response: ServerResponse, path: string, urls: { pay: string; api: string }): void => {
     const url = new URL(path, 'http://fake.invalid');
     if (request.method === 'GET' && url.pathname === '/_/check') {
@@ -342,6 +569,15 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
     const target = targets.get(`https://${path.slice(1)}`);
     if (target === undefined || target.method !== request.method) {
       fail(response, 400, 'not_payable', "The target didn't ask for a payment: Anyfare routes paid calls only");
+      return;
+    }
+    const signature = request.headers['payment-signature'];
+    if (typeof signature === 'string') {
+      if (request.headers.authorization !== undefined) {
+        fail(response, 400, 'multiple_payment_methods', 'Send exactly one payment credential');
+        return;
+      }
+      void payX402(target, signature, response);
       return;
     }
     if (request.headers.authorization === undefined) {
@@ -432,6 +668,19 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
     set nextPaid(value: PaidAnswer | undefined) {
       state.nextPaid = value;
     },
+    get nextX402() {
+      return state.nextX402;
+    },
+    set nextX402(value: X402Failure | undefined) {
+      state.nextX402 = value;
+    },
+    get nearChain() {
+      return state.nearChain;
+    },
+    set nearChain(value: NearChain | undefined) {
+      state.nearChain = value;
+    },
+    x402Settled,
     get rewrite() {
       return state.rewrite;
     },
@@ -445,11 +694,17 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
       targets.set(target.url, target);
     },
     routed: () => requests.filter((item) => item.host === 'pay' && !item.path.startsWith('/_/')),
+    x402Requests: () =>
+      requests.filter((item) => item.host === 'pay' && !item.path.startsWith('/_/') && item.headers['payment-signature'] !== undefined),
     reset: () => {
       requests.length = 0;
       accounts.clear();
       keys.clear();
       targets.clear();
+      x402Settled.length = 0;
+      usedPayments.clear();
+      state.nearChain = undefined;
+      state.nextX402 = undefined;
       state.startingBalance = '0';
       state.rateLimitSignup = false;
       state.nextPaid = undefined;

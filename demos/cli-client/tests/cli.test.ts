@@ -151,7 +151,7 @@ describe('runCli', () => {
   it('prints the help and returns 0', async () => {
     const fake = fakeIo(false);
     expect(await runCli(['--help'], fake.io)).toBe(0);
-    for (const word of ['call', 'explain', 'signup', 'key create', 'balance', 'topup', 'MAX_PAYMENT_USD']) {
+    for (const word of ['call', 'explain', 'signup', 'key create', 'balance', 'topup', 'MAX_PAYMENT_USD', 'BASE_PRIVATE_KEY', 'NEAR_PRIVATE_KEY']) {
       expect(fake.out()).toContain(word);
     }
     expect(fake.err()).toBe('');
@@ -168,8 +168,8 @@ describe('runCli', () => {
     const fake = fakeIo(false);
     expect(await runCli(['topup', '--network', 'base', '--token', 'USDC', '--amount', '1'], fake.io)).toBe(1);
     expect(fake.err()).toBe('✘ topup is not built yet\n');
-    expect(await runCli(['call', '--tool', 'cmc', '--pay', 'near', '--yes'], fake.io)).toBe(1);
-    expect(fake.err()).toContain('✘ call --pay near is not built yet\n');
+    expect(await runCli(['call', '--tool', 'cmc', '--pay', 'tempo', '--yes'], fake.io)).toBe(1);
+    expect(fake.err()).toContain('✘ call --pay tempo is not built yet\n');
   });
 
   it('refuses a label longer than Anyfare takes', () => {

@@ -11,6 +11,7 @@ import type { Fetch } from './http.ts';
 import { createStyle } from './style.ts';
 import { DEFAULT_ARGS, TOOLS as IMPLEMENTATIONS } from './tools/index.ts';
 import { Stop, UsageError, toAtomic } from './util.ts';
+import { callWithX402 } from './x402.ts';
 
 export type Tool = 'cmc' | '3route' | 'evidence';
 export type PayWay = 'credits' | 'near' | 'base' | 'tempo';
@@ -320,6 +321,11 @@ Settings come from .env, then .env.local, then the shell. The last one wins.
   ANYFARE_API_URL    The Platform API address.
   ANYFARE_PAY_URL    The proxy address.
   MAX_PAYMENT_USD    The most one call may cost, in US dollars. Default 0.02.
+Wallets for --pay base and --pay near, in .env.local only:
+  BASE_PRIVATE_KEY   The key of the wallet that pays USDC on Base: 0x and 64 hex digits.
+  NEAR_ACCOUNT_ID    The NEAR account that pays USDC on NEAR, such as name.near.
+  NEAR_PRIVATE_KEY   A full-access key of that account: ed25519: and base58.
+  NEAR_RPC_URL       A NEAR RPC to read the account from. Optional.
 
 Exit codes:
   0  Success.
@@ -357,8 +363,15 @@ const HANDLERS: { [K in Command['kind']]: Handler<K> } = {
     return notBuilt('interactive');
   },
   call: async (command, ctx) => {
-    if (command.pay !== 'credits') throw new Stop(`call --pay ${command.pay} is not built yet`);
-    return callWithCredits(ctx, command);
+    switch (command.pay) {
+      case 'credits':
+        return callWithCredits(ctx, command);
+      case 'base':
+      case 'near':
+        return callWithX402(ctx, command, command.pay);
+      case 'tempo':
+        throw new Stop(`call --pay ${command.pay} is not built yet`);
+    }
   },
   explain: async (command, { io, session }) => {
     const config = loadConfig(session.env);

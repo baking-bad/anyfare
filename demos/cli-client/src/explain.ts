@@ -76,7 +76,8 @@ export function planFailure(plan: Plan): string | undefined {
   return undefined;
 }
 
-const WAY_LABELS: Readonly<Record<PayWay, string>> = {
+/** What each `--pay` value pays with, inside a sentence. */
+export const WAY_LABELS: Readonly<Record<PayWay, string>> = {
   credits: 'Credits',
   near: 'USDC on NEAR',
   base: 'USDC on Base',

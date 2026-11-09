@@ -1,7 +1,8 @@
 import { runCli } from './cli.ts';
 import { APP_DIR } from './envLocal.ts';
+import { exitWhenWritten } from './exit.ts';
 
-process.exitCode = await runCli(process.argv.slice(2), {
+const code = await runCli(process.argv.slice(2), {
   stdout: process.stdout,
   stderr: process.stderr,
   stdin: process.stdin,
@@ -10,3 +11,4 @@ process.exitCode = await runCli(process.argv.slice(2), {
   fetch: globalThis.fetch,
   appDir: APP_DIR,
 });
+await exitWhenWritten(code);
