@@ -282,9 +282,22 @@ describe('a top-up 1Click swapped', () => {
     const topup = await newTopup();
     oneClick.setStatus(topup.depositAddress!, 'SUCCESS');
     clock.advance(10_000);
-    // Both runners get past the claim, as if each had claimed it
+    // Both runners list the top-up before either claims it, then both get past the claim, as if each had claimed it
+    let listed = 0;
+    let releaseLists = (): void => undefined;
+    const bothListed = new Promise<void>(resolve => {
+      releaseLists = resolve;
+    });
     const bothClaim: TopupStatusOptions['topups'] = {
       ...repository,
+      listDue: async input => {
+        const due = await repository.listDue(input);
+        listed += 1;
+        if (listed === 2)
+          releaseLists();
+        await bothListed;
+        return due;
+      },
       claimPoll: async input => await repository.claimPoll(input) ?? repository.find(input.id),
     };
     // 1Click's answers are held back until both runners asked, so both credit from the same answer
@@ -305,6 +318,7 @@ describe('a top-up 1Click swapped', () => {
 
     const results = await Promise.all([run({ topups: bothClaim, oneClick: heldBack }), run({ topups: bothClaim, oneClick: heldBack })]);
 
+    expect(listed).toBe(2);
     expect(asked).toBe(2);
     expect(results.map(result => result.polled)).toEqual([1, 1]);
     expect(results.map(result => result.credited).sort()).toEqual([0, 1]);
