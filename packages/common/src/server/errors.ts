@@ -74,6 +74,10 @@ export const toErrorResponse = (error: unknown, statuses: ErrorStatusTable): Err
   return (isFastifyError(error) ? fromFastifyError(error) : undefined) ?? internalErrorResponse;
 };
 
+/**
+ * Logs every failure of 500 or more at error, except a mapped `AnyfareError` answered with 503, which is
+ * an expected outage and logs at warn.
+ */
 export const createErrorHandler = (statuses: ErrorStatusTable) =>
   (error: unknown, request: FastifyRequest, reply: FastifyReply): FastifyReply => {
     const { status, body } = toErrorResponse(error, statuses);
@@ -84,7 +88,11 @@ export const createErrorHandler = (statuses: ErrorStatusTable) =>
     if (status >= 500) {
       const unmapped = error instanceof AnyfareError && body.error.code === serverErrorCodes.internalError;
       const stack = unmapped ? safeStack(error) : undefined;
-      request.log.error({ error, ...stack === undefined ? {} : { stack } }, 'Request failed');
+      const fields = { error, ...stack === undefined ? {} : { stack } };
+      if (status === 503 && error instanceof AnyfareError && !unmapped)
+        request.log.warn(fields, 'Request failed');
+      else
+        request.log.error(fields, 'Request failed');
     }
 
     return reply.status(status).send(body);

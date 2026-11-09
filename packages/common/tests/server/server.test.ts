@@ -204,6 +204,51 @@ describe('the request line\'s error code', () => {
   });
 });
 
+describe('the log level of a failed request', () => {
+  class UnavailableError extends AnyfareError {
+    readonly code = 'thing_unavailable';
+  }
+
+  class BadGatewayError extends AnyfareError {
+    readonly code = 'thing_bad_gateway';
+  }
+
+  const failures = async (error: Error, id: string) => {
+    const { logger, lines } = captureLogs();
+    const { app } = buildServer({ logger, errorStatuses: { thing_unavailable: 503, thing_bad_gateway: 502 } });
+    app.get('/fail', async () => {
+      throw error;
+    });
+    await app.inject({ method: 'GET', url: '/fail', headers: { 'x-request-id': id } });
+
+    return lines.filter(line => line['requestId'] === id && line['msg'] === 'Request failed');
+  };
+
+  it('logs a mapped 503 at warn, with no error line', async () => {
+    const lines = await failures(new UnavailableError('The thing is down'), 'unavailable-1');
+
+    expect(lines).toEqual([expect.objectContaining({ level: 40, error: expect.objectContaining({ code: 'thing_unavailable' }) })]);
+  });
+
+  it('logs a mapped 502 at error', async () => {
+    const lines = await failures(new BadGatewayError('The thing answered badly'), 'gateway-1');
+
+    expect(lines).toEqual([expect.objectContaining({ level: 50, error: expect.objectContaining({ code: 'thing_bad_gateway' }) })]);
+  });
+
+  it('logs an unmapped code at error, with its stack', async () => {
+    const lines = await failures(new UnmappedError('An internal code'), 'unmapped-2');
+
+    expect(lines).toEqual([expect.objectContaining({ level: 50, stack: expect.stringContaining('server.test.ts') })]);
+  });
+
+  it('logs a plain Error at error', async () => {
+    const lines = await failures(new Error('boom'), 'plain-1');
+
+    expect(lines).toEqual([expect.objectContaining({ level: 50 })]);
+  });
+});
+
 describe('errors', () => {
   it('answers an AnyfareError with its code, message, and the status from the app\'s table', async () => {
     const { app } = buildServer();
