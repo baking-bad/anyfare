@@ -189,7 +189,11 @@ describe('the NEAR hot wallet\'s client signer', () => {
 
   it('repeats a read once when the RPC answers 503 at once, then fails with no URL in its message', async () => {
     const path = '/near-rpc-key-secret';
-    const payer = payerWith(memoryStore().store, `${rpc.url}${path}`);
+    // A budget with room for the repeat even when a loaded machine answers the first read slowly: the
+    // repeat is made only while it can still end inside the budget
+    const payer = createNearPayer({
+      wallet: { accountId: hotWallet, secretKey: Secret.from(key.secretKey), rpcUrl: Secret.from(`${rpc.url}${path}`) }, store: memoryStore().store, budgetMs: 8_000,
+    });
     rpc.unavailable(true);
 
     const failure = await payer.createSignedDelegateAction({ x402Version: 2, paymentRequirements: requirementOf(nearOption('1000')) }).then(() => new Error('signed'), (error: unknown) => error as Error);
