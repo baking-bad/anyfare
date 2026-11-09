@@ -50,6 +50,13 @@
       "when": 1794199153731,
       "tag": "0006_topups",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794202968573,
+      "tag": "0007_fundings",
+      "breakpoints": true
     }
   ]
 }

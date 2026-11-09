@@ -3,8 +3,8 @@ import { bigint, check, foreignKey, index, integer, json, pgTable, text, timesta
 
 import { ledgerTransactions } from './ledger.js';
 
-// The treasury: the rebalancings an operator recorded, and the daily reconciliations. Times come
-// from the Clock port, never from column defaults.
+// The treasury: the rebalancings and outside fundings an operator recorded, and the daily
+// reconciliations. Times come from the Clock port, never from column defaults.
 
 // A rebalancing between two assets that an operator did and recorded, with the ledger transaction that booked it
 export const treasuryTransfers = pgTable('treasury_transfers', {
@@ -25,6 +25,25 @@ export const treasuryTransfers = pgTable('treasury_transfers', {
   uniqueIndex('treasury_transfers_ledger_transaction_idx').on(table.ledgerTransactionId),
   // What arrives is at most what left: the platform absorbs conversion costs
   check('treasury_transfers_amounts_check', sql`${table.fromAmount} > 0 and ${table.toAmount} > 0 and ${table.toAmount} <= ${table.fromAmount}`),
+]);
+
+// Money the owner put into a platform wallet from outside, as an operator recorded it, with the ledger transaction that booked it
+export const treasuryFundings = pgTable('treasury_fundings', {
+  reference: text('reference').primaryKey(),
+  asset: text('asset').notNull(),
+  amount: bigint('amount', { mode: 'bigint' }).notNull(),
+  // The operator's transaction references: hashes or explorer links, as given
+  transactions: json('transactions').$type<string[]>().notNull(),
+  note: text('note'),
+  recordedBy: text('recorded_by').notNull(),
+  ledgerTransactionId: text('ledger_transaction_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull(),
+}, table => [
+  // Named here: the generated name would pass Postgres's 63-character limit
+  foreignKey({ name: 'treasury_fundings_ledger_transaction_fk', columns: [table.ledgerTransactionId], foreignColumns: [ledgerTransactions.id] }),
+  // One ledger transaction books one funding
+  uniqueIndex('treasury_fundings_ledger_transaction_idx').on(table.ledgerTransactionId),
+  check('treasury_fundings_amount_check', sql`${table.amount} > 0`),
 ]);
 
 // Each daily reconciliation, with what it compared

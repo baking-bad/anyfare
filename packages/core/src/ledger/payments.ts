@@ -129,6 +129,15 @@ export class TreasuryTransferReferenceConflictError extends AnyfareError {
   }
 }
 
+/** An operator reused an outside funding's reference for another asset or amount: references are idempotency keys. */
+export class FundingReferenceConflictError extends AnyfareError {
+  readonly code = 'idempotency_conflict';
+
+  constructor() {
+    super('This reference was already used for another funding: another asset or amount');
+  }
+}
+
 /** A top-up's reference, its deposit address, was reused for another account, asset or amount: references are idempotency keys. */
 export class TopUpReferenceConflictError extends AnyfareError {
   readonly code = 'idempotency_conflict';

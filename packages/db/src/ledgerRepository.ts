@@ -2,7 +2,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import { formatUsd, type Clock, type IdGenerator, type MicroUsd } from '@anyfare/common';
 import {
-  CreditReferenceConflictError, HoldReferenceConflictError, InvalidPaymentStatusChangeError, PromotionReferenceConflictError,
+  CreditReferenceConflictError, FundingReferenceConflictError, HoldReferenceConflictError, InvalidPaymentStatusChangeError, PromotionReferenceConflictError,
   TopUpReferenceConflictError, TreasuryTransferReferenceConflictError, utcDay,
   type CaptureResult, type CreditsBalance, type HoldInput, type HoldRefusal, type HoldResult, type KeySpend, type Payment, type PaymentStatus,
   type SettleInput,
@@ -28,6 +28,8 @@ export const ledgerAccountIds = {
   routingLosses: 'platform:routing_losses',
   // Free Credits the platform gave away, such as on sign-up
   promotions: 'platform:promotions',
+  // The owner's own money put into the platform's wallets from outside
+  capital: 'platform:capital',
 } as const;
 
 export interface LedgerOptions {
@@ -123,6 +125,21 @@ export interface Ledger {
     readonly to: { readonly asset: string; readonly amount: MicroUsd };
     readonly requestId?: string;
   }): Promise<CreditResult>;
+  /**
+   * Books money the owner put into a platform wallet from outside, between capital and the treasury
+   * of `asset`. The treasury holds more on chain, so its balance falls by the amount, and capital's
+   * rises by it.
+   * Idempotent by reference: the same funding again is a replay, and another asset or amount under
+   * the same reference throws FundingReferenceConflictError. Throws RangeError for an amount of zero
+   * or less.
+   */
+  funding(input: {
+    readonly reference: string;
+    // The registry asset that arrived, such as near-usdc
+    readonly asset: string;
+    readonly amount: MicroUsd;
+    readonly requestId?: string;
+  }): Promise<CreditResult>;
   balance(accountId: string): Promise<CreditsBalance>;
   /** Ledger accounts' balances by ID. An account never used is absent. */
   balancesOf(ledgerAccountIds: readonly string[]): Promise<ReadonlyMap<string, bigint>>;
@@ -169,6 +186,9 @@ const routingFees = platformAccount(ledgerAccountIds.routingFees, false);
 const routingLosses = platformAccount(ledgerAccountIds.routingLosses, true);
 // Free Credits come from it, so its balance is minus everything given
 const promotions = platformAccount(ledgerAccountIds.promotions, true);
+// The owner's money put in from outside: its balance is everything put in. It may go below zero,
+// should the owner one day take out more than they put in.
+const capital = platformAccount(ledgerAccountIds.capital, true);
 
 const isPlatformAccount = (ledgerAccountId: string): boolean => ledgerAccountId.startsWith(platformPrefix);
 
@@ -670,6 +690,34 @@ export const createLedger = ({ db, clock, ids }: LedgerOptions): Ledger => {
       const refused = await post(tx, transactionId, postings, now);
       if (refused !== undefined)
         throw new Error(`The treasury transfer could not be posted: the balance of ${refused} is missing or may not go below zero`);
+
+      return { transactionId, createdAt: now, replayed: false };
+    }),
+
+    funding: ({ reference, asset, amount, requestId }) => withTransaction(db, async tx => {
+      if (amount <= 0n)
+        throw new RangeError('A funding must add more than zero');
+
+      // The treasury holds more on chain, so its balance falls; the owner put it in, so capital's rises
+      const treasury = treasuryOf(asset);
+      const postings: readonly Posting[] = [
+        { ledgerAccountId: treasury.id, amount: -amount },
+        { ledgerAccountId: capital.id, amount },
+      ];
+      const now = clock.now();
+      await ensureAccounts(tx, [treasury, capital], now);
+      const transactionId = await insertTransaction(tx, 'funding', reference, requestId, now);
+      if (!transactionId) {
+        // The reference was used before: the same funding again is a replay, anything else a conflict
+        if (!samePostings(await bookedPostings(tx, 'funding', reference), postings))
+          throw new FundingReferenceConflictError();
+
+        return replayOf(tx, 'funding', reference);
+      }
+
+      const refused = await post(tx, transactionId, postings, now);
+      if (refused !== undefined)
+        throw new Error(`The funding could not be posted: the balance of ${refused} is missing or may not go below zero`);
 
       return { transactionId, createdAt: now, replayed: false };
     }),

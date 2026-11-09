@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { parseUsd, Secret } from '@anyfare/common';
 import {
-  CreditReferenceConflictError, hashApiKey, HoldReferenceConflictError, InvalidPaymentStatusChangeError, PaymentFinalizedError,
+  CreditReferenceConflictError, FundingReferenceConflictError, hashApiKey, HoldReferenceConflictError, InvalidPaymentStatusChangeError, PaymentFinalizedError,
   PromotionReferenceConflictError, TopUpReferenceConflictError, TreasuryTransferReferenceConflictError, utcDay, type HoldInput, type NewPayment, type PaymentStatus, type SettleInput,
 } from '@anyfare/core';
 import { createFakeClock, createFakeIdGenerator, createTestDatabase, type FakeClock, type TestDatabase } from '@anyfare/testing';
@@ -1692,5 +1692,88 @@ describe('top-ups', () => {
 
     expect(held.ok).toBe(true);
     expect(await ledger.balance(accountId)).toEqual({ available: usd('0.75'), held: usd('0.25') });
+  });
+});
+
+describe('outside fundings', () => {
+  const capital = ledgerAccountIds.capital;
+  const balancesOf = async (...ids: readonly string[]) => {
+    const found = await ledger.balancesOf(ids);
+
+    return ids.map(id => found.get(id) ?? 0n);
+  };
+  const nextReference = () => `funding-${(counter += 1)}`;
+
+  it('books money put in from outside: capital rises and the asset\'s treasury falls by the amount, once per reference', async () => {
+    const reference = nextReference();
+    const [capitalBefore, treasuryBefore] = await balancesOf(capital, treasuryOf('near-usdc'));
+
+    const first = await ledger.funding({ reference, asset: 'near-usdc', amount: usd('10'), requestId: 'req-funding' });
+    clock.advance(1_000);
+    const again = await ledger.funding({ reference, asset: 'near-usdc', amount: usd('10') });
+
+    expect(first).toEqual({ transactionId: expect.any(String), createdAt: new Date(noon), replayed: false });
+    expect(again).toEqual({ ...first, replayed: true });
+    // The treasury holds more on chain, so its balance falls; the owner put the money in
+    expect(await balancesOf(capital, treasuryOf('near-usdc'))).toEqual([capitalBefore! + usd('10'), treasuryBefore! - usd('10')]);
+    expect(await entriesOf(reference, 'funding')).toEqual([
+      { account: treasuryOf('near-usdc'), amount: -usd('10') },
+      { account: capital, amount: usd('10') },
+    ]);
+    expect(await transactionsFor(reference)).toEqual(['funding']);
+    const { rows } = await database.db.execute<{ id: string; type: string; may_go_negative: boolean }>(sql`
+      select a.id, a.type, b.may_go_negative from ledger_accounts a join balances b on b.ledger_account_id = a.id
+      where a.id in (${capital}, ${treasuryOf('near-usdc')}) order by a.id
+    `);
+    expect(rows).toEqual([
+      { id: capital, type: 'capital', may_go_negative: true },
+      { id: treasuryOf('near-usdc'), type: 'treasury:near-usdc', may_go_negative: true },
+    ]);
+    const { rows: [transaction] } = await database.db.execute<{ request_id: string | null }>(sql`
+      select request_id from ledger_transactions where operation = 'funding' and reference = ${reference}
+    `);
+    expect(transaction).toEqual({ request_id: 'req-funding' });
+    expect(await unbalancedTransactions()).toEqual([]);
+    expect(await negativeBalances()).toEqual([]);
+  });
+
+  it.each([
+    ['another asset', { asset: 'base-usdc', amount: usd('5') }],
+    ['another amount', { asset: 'near-usdc', amount: usd('5.000001') }],
+    ['another asset and amount', { asset: 'solana-usdc', amount: usd('50') }],
+  ] as const)('refuses a reference reused for %s, and moves nothing', async (_case, reuse) => {
+    const reference = nextReference();
+    const input = { reference, asset: 'near-usdc', amount: usd('5') };
+    const first = await ledger.funding(input);
+    const entries = await entriesOf(reference, 'funding');
+    const accounts = [capital, treasuryOf('near-usdc'), treasuryOf(reuse.asset)];
+    const before = await balancesOf(...accounts);
+
+    expect(await thrown(ledger.funding({ reference, ...reuse }))).toBeInstanceOf(FundingReferenceConflictError);
+    expect(await balancesOf(...accounts)).toEqual(before);
+    expect(await entriesOf(reference, 'funding')).toEqual(entries);
+    expect(await transactionsFor(reference)).toEqual(['funding']);
+    // The first funding, asked again, is still a replay
+    expect(await ledger.funding(input)).toEqual({ ...first, replayed: true });
+  });
+
+  it('keys a funding apart from a treasury transfer with the same reference', async () => {
+    const reference = nextReference();
+
+    await ledger.treasuryTransfer({ reference, from: { asset: 'base-usdc', amount: usd('1') }, to: { asset: 'near-usdc', amount: usd('1') } });
+    const funding = await ledger.funding({ reference, asset: 'near-usdc', amount: usd('1') });
+
+    expect(funding.replayed).toBe(false);
+    expect(await transactionsFor(reference)).toEqual(['funding', 'treasury_transfer']);
+  });
+
+  it('refuses a funding of zero or less, and moves nothing', async () => {
+    const reference = nextReference();
+    const before = await balancesOf(capital, treasuryOf('near-usdc'));
+
+    expect(await thrown(ledger.funding({ reference, asset: 'near-usdc', amount: 0n }))).toBeInstanceOf(RangeError);
+    expect(await thrown(ledger.funding({ reference, asset: 'near-usdc', amount: -usd('1') }))).toBeInstanceOf(RangeError);
+    expect(await transactionsFor(reference)).toEqual([]);
+    expect(await balancesOf(capital, treasuryOf('near-usdc'))).toEqual(before);
   });
 });

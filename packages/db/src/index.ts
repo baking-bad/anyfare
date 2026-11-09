@@ -30,7 +30,7 @@ export type {
 export { createCatalogRepository } from './catalogRepository.js';
 export type { CatalogRepository, CatalogRepositoryOptions, RoutedCatalogEntry } from './catalogRepository.js';
 export { createTreasuryRepository } from './treasuryRepository.js';
-export type { ReconciliationRunRecord, TreasuryRepository, TreasuryRepositoryOptions, TreasuryTransferRecord } from './treasuryRepository.js';
+export type { ReconciliationRunRecord, TreasuryFundingRecord, TreasuryRepository, TreasuryRepositoryOptions, TreasuryTransferRecord } from './treasuryRepository.js';
 export { createTopupRepository } from './topupRepository.js';
 export type {
   NewTopup, PolledTopupStatus, Topup, TopupCredit, TopupPoll, TopupQuote, TopupQuoteFailure, TopupRefund, TopupRepository, TopupRepositoryOptions,
