@@ -117,15 +117,15 @@ describe('GET /v1/catalog', () => {
     expect((await list(withoutRecipient, '?q=weather')).body.endpoints[0]?.methods).toEqual(['credits', 'x402']);
   });
 
-  it('lists x402 for routed endpoints with config/production.yaml, whose only payTo is NEAR mainnet\'s: our facilitator settles there', async () => {
+  it('lists every way to pay for routed endpoints with config/production.yaml: x402 on each chain with a payTo, and MPP to our Tempo recipient', async () => {
     const production = await loadPlatformConfig({ env: { CONFIG_PATH: 'config/production.yaml' } });
-    // The same without a receiving address at all
-    const noPayTo = { ...production, assets: production.assets.map(asset => ({ ...asset, payTo: undefined })) };
-    const withNear = await start(production);
+    // The same without a receiving address at all, nor an MPP recipient
+    const noPayTo = { ...production, assets: production.assets.map(asset => ({ ...asset, payTo: undefined })), mpp: { ...production.mpp, recipient: undefined } };
+    const withWallets = await start(production);
     const without = await start(noPayTo);
 
     expect(production.facilitators.find(facilitator => facilitator.networks.includes('near:mainnet'))).toMatchObject({ name: 'near', enabled: true });
-    expect((await list(withNear, '?q=weather')).body.endpoints[0]?.methods).toEqual(['credits', 'x402']);
+    expect((await list(withWallets, '?q=weather')).body.endpoints[0]?.methods).toEqual(['credits', 'x402', 'mpp']);
     expect((await list(without, '?q=weather')).body.endpoints[0]?.methods).toEqual(['credits']);
   });
 

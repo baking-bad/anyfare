@@ -7,9 +7,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { findAsset, loadPlatformConfig, paymentMethodsFor, platformSummary, treasuryWallets } from '../../src/index.js';
 
-// config/production.yaml: mainnets only. NEAR's receiving address and hot wallet are ours,
-// pay.anyfare.near; the other receiving addresses, the MPP recipient and the other hot wallets are still
-// to be added
+// config/production.yaml: mainnets only. On each chain our receiving address is the Signer's hot wallet
+// too: pay.anyfare.near on NEAR, one EVM address on Base and Tempo (the MPP recipient), one on Solana
+const evmWallet = '0xf82B4B95a063CFd5F56B3395978d02278E583550';
+const solanaWallet = 'AzG7Gmu8t6r54JbdAxZBNHNvCzbf5QDZcdKe7Aho78Xj';
 const productionConfigPath = fileURLToPath(new URL('../../../../config/production.yaml', import.meta.url));
 
 let directory: string;
@@ -33,7 +34,8 @@ const loadText = async (yaml: string) => {
 const samples: Readonly<Record<string, string>> = {
   'base-usdc': '"0x1111111111111111111111111111111111111111"',
   'solana-usdc': '"11111111111111111111111111111111"',
-  'tempo-usdce': '"0x2222222222222222222222222222222222222222"',
+  // A Tempo asset's payTo is the MPP recipient
+  'tempo-usdce': `"${evmWallet}"`,
   'near-usdc': 'pay.anyfare.testnet',
 };
 
@@ -52,14 +54,14 @@ const withPayTo = (yaml: string, payToFor: (asset: string) => string | undefined
 };
 
 describe('config/production.yaml', () => {
-  it('loads: mainnets only, live key prefixes, the production URLs, and NEAR\'s receiving address alone', async () => {
+  it('loads: mainnets only, live key prefixes, the production URLs, and a receiving address on each chain', async () => {
     const config = await loadText(text);
 
     expect(config.environment).toBe('production');
     expect(config.assets.map(asset => [asset.name, asset.network.id, asset.decimals, asset.payTo])).toEqual([
-      ['base-usdc', 'eip155:8453', 6, undefined],
-      ['solana-usdc', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', 6, undefined],
-      ['tempo-usdce', 'eip155:4217', 6, undefined],
+      ['base-usdc', 'eip155:8453', 6, evmWallet],
+      ['solana-usdc', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', 6, solanaWallet],
+      ['tempo-usdce', 'eip155:4217', 6, evmWallet],
       ['near-usdc', 'near:mainnet', 6, 'pay.anyfare.near'],
     ]);
     expect(config.keyPrefixes).toEqual({ master: 'afm_live_', payment: 'af_live_' });
@@ -77,7 +79,7 @@ describe('config/production.yaml', () => {
     expect(config.sizeLimits).toEqual({ requestBodyBytes: 1_048_576, bufferedResponseBytes: 10_485_760 });
   });
 
-  it('names the CDP facilitator for both mainnets, off until they have a payTo, and settles NEAR through our own, with keys named by environment variable', async () => {
+  it('settles Base and Solana through the CDP facilitator and NEAR through our own, with keys named by environment variable', async () => {
     const config = await loadText(text);
 
     expect(config.facilitators).toEqual([{
@@ -85,7 +87,7 @@ describe('config/production.yaml', () => {
       url: 'https://api.cdp.coinbase.com/platform/v2/x402',
       networks: ['eip155:8453', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'],
       auth: { type: 'cdp', apiKeyId: 'CDP_API_KEY_ID', apiKeySecret: 'CDP_API_KEY_SECRET' },
-      enabled: false,
+      enabled: true,
     }, {
       name: 'near',
       url: 'http://facilitator:8084',
@@ -95,26 +97,19 @@ describe('config/production.yaml', () => {
     }]);
   });
 
-  it('has MPP on Tempo with no recipient yet, so it is not offered', async () => {
+  it('offers every rail: Credits, x402 on Base, Solana and NEAR, and MPP on Tempo paid to our EVM address', async () => {
     const config = await loadText(text);
 
-    expect(config.mpp).toMatchObject({ network: { id: 'eip155:4217', chain: 'tempo', testnet: false }, recipient: undefined, enabled: true, rpcUrl: undefined });
+    expect(config.mpp).toMatchObject({ network: { id: 'eip155:4217', chain: 'tempo', testnet: false }, recipient: evmWallet, enabled: true, rpcUrl: undefined });
     expect(platformSummary(config).rails).toEqual({
       credits: true,
-      // CDP is off, so the startup line lists only our own facilitator
       x402: [
+        { facilitator: 'cdp', networks: ['eip155:8453', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'] },
         { facilitator: 'near', networks: ['near:mainnet'] },
       ],
-      mpp: false,
+      mpp: { network: 'eip155:4217' },
     });
-  });
-
-  it('offers MPP once the recipient and the Tempo asset\'s payTo are added', async () => {
-    const recipient = '"0x2222222222222222222222222222222222222222"';
-    const config = await loadText(withPayTo(text, asset => samples[asset]!).replace('\nmpp:\n  network: eip155:4217\n', `\nmpp:\n  network: eip155:4217\n  recipient: ${recipient}\n`));
-
-    expect(config.mpp.recipient).toBe('0x2222222222222222222222222222222222222222');
-    expect(platformSummary(config).rails.mpp).toEqual({ network: 'eip155:4217' });
+    expect(paymentMethodsFor(1_000n, config)).toEqual(['credits', 'x402', 'mpp']);
   });
 
   it('takes top-ups: any token on six networks, swapped to USDC on NEAR and delivered to the treasury, refunds held for it', async () => {
@@ -128,18 +123,21 @@ describe('config/production.yaml', () => {
     ]);
   });
 
-  it('caps what one routed call and one network can cost us, and names the NEAR hot wallet alone', async () => {
+  it('caps what one routed call and one network can cost us, and lists each hot wallet once, as the payTo it is', async () => {
     const config = await loadText(text);
 
     expect(config.signer).toEqual({
       maxPerCall: 100_000n,
       maxPerNetworkPerHour: 5_000_000n,
       maxPerNetworkPerDay: 20_000_000n,
-      wallets: { base: undefined, tempo: undefined, solana: undefined, near: 'pay.anyfare.near' },
+      wallets: { base: evmWallet, tempo: evmWallet, solana: solanaWallet, near: 'pay.anyfare.near' },
     });
-    // The NEAR hot wallet is the account buyers pay there: the treasury lists it once, noted as the Signer's.
-    // The top-up recipient is watched too.
+    // Each hot wallet is the address buyers pay on its chain: the treasury lists it once, noted as the
+    // Signer's, so its balance is counted once. The top-up recipient is watched too.
     expect(treasuryWallets(config).map(wallet => [wallet.name, wallet.role, wallet.signer, wallet.addresses])).toEqual([
+      ['payTo:base-usdc', 'pay_to', 'signer:base', [evmWallet]],
+      ['payTo:solana-usdc', 'pay_to', 'signer:solana', [solanaWallet]],
+      ['payTo:tempo-usdce', 'pay_to', 'signer:tempo', [evmWallet]],
       ['payTo:near-usdc', 'pay_to', 'signer:near', ['pay.anyfare.near']],
       ['treasury:near', 'treasury', undefined, ['treasury.anyfare.near']],
     ]);
@@ -164,40 +162,34 @@ describe('config/production.yaml', () => {
     expect(config.assets.map(asset => asset.payTo)).toEqual([
       '0x1111111111111111111111111111111111111111',
       '11111111111111111111111111111111',
-      '0x2222222222222222222222222222222222222222',
+      evmWallet,
       'pay.anyfare.testnet',
     ]);
   });
 
-  it('offers USDC on NEAR mainnet to buyers once its payTo is added, alone among the assets, with the Signer\'s hot wallets beside it', async () => {
-    // Made-up: our NEAR account, and the hot wallets the deployment adds
-    const nearOnly = withPayTo(text, asset => asset === 'near-usdc' ? 'pay.anyfare.test.near' : undefined);
-    // The signer section is the file's last, and its wallets block names the NEAR hot wallet alone
-    const ownWallets = '  wallets:\n    near: pay.anyfare.near\n';
-    const wallets = '  wallets:\n    base: "0x3333333333333333333333333333333333333333"\n    tempo: "0x3333333333333333333333333333333333333333"\n    solana: "11111111111111111111111111111111"\n'
-      + '    near: pay.anyfare.test.near\n';
-    expect(text.endsWith(ownWallets)).toBe(true);
-    const config = await loadText(nearOnly.replace(ownWallets, wallets));
+  it('offers USDC on NEAR mainnet at its contract, paid to pay.anyfare.near', async () => {
+    const config = await loadText(text);
 
     expect(findAsset(config, 'near-usdc')).toMatchObject({
       network: { id: 'near:mainnet', namespace: 'near', testnet: false }, address: '17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1', decimals: 6,
-      payTo: 'pay.anyfare.test.near',
+      payTo: 'pay.anyfare.near',
     });
-    expect(config.assets.filter(asset => asset.payTo !== undefined).map(asset => asset.name)).toEqual(['near-usdc']);
-    // Routed endpoints list x402: NEAR's facilitator is ours, and enabled
-    expect(paymentMethodsFor(1_000n, config)).toEqual(['credits', 'x402']);
-    expect(config.signer.wallets).toEqual({
-      base: '0x3333333333333333333333333333333333333333', tempo: '0x3333333333333333333333333333333333333333', solana: '11111111111111111111111111111111',
-      near: 'pay.anyfare.test.near',
-    });
-    // The treasury watches the NEAR payTo, which is the NEAR hot wallet too: one row, so its balance is
-    // counted once. The relayer's account isn't in the platform config: the facilitator reports its NEAR.
-    expect(treasuryWallets(config).map(wallet => [wallet.name, wallet.role, wallet.signer, wallet.addresses])).toEqual([
-      ['payTo:near-usdc', 'pay_to', 'signer:near', ['pay.anyfare.test.near']],
-      ['signer:base', 'signer', undefined, ['0x3333333333333333333333333333333333333333']],
-      ['signer:tempo', 'signer', undefined, ['0x3333333333333333333333333333333333333333']],
-      ['signer:solana', 'signer', undefined, ['11111111111111111111111111111111']],
-      ['treasury:near', 'treasury', undefined, ['treasury.anyfare.near']],
+  });
+
+  it('keeps Base\'s and Solana\'s hot wallets apart from their payTo when they differ, so each balance is watched', async () => {
+    // Made-up hot wallets, other than the payTo addresses
+    const wallets = text.replace(`    base: "${evmWallet}"\n`, '    base: "0x3333333333333333333333333333333333333333"\n')
+      .replace(`    solana: ${solanaWallet}\n`, '    solana: "11111111111111111111111111111111"\n');
+    const config = await loadText(wallets);
+
+    expect(treasuryWallets(config).map(wallet => [wallet.name, wallet.signer, wallet.addresses])).toEqual([
+      ['payTo:base-usdc', undefined, [evmWallet]],
+      ['payTo:solana-usdc', undefined, [solanaWallet]],
+      ['payTo:tempo-usdce', 'signer:tempo', [evmWallet]],
+      ['payTo:near-usdc', 'signer:near', ['pay.anyfare.near']],
+      ['signer:base', undefined, ['0x3333333333333333333333333333333333333333']],
+      ['signer:solana', undefined, ['11111111111111111111111111111111']],
+      ['treasury:near', undefined, ['treasury.anyfare.near']],
     ]);
   });
 });

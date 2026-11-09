@@ -531,10 +531,10 @@ describe('a routed call paid with x402', () => {
 
   it('offers x402 on NEAR mainnet with config/production.yaml: our payTo there and the USDC contract, beside Base and Solana', async () => {
     const mainnets = ['eip155:8453', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', 'near:mainnet'];
-    // Made-up receiving addresses and hot wallets, as the deployment adds them
+    // Made-up receiving addresses and hot wallets in place of ours. Tempo keeps its own: it must be the MPP recipient
     const payTo: Readonly<Record<string, string>> = {
       'base-usdc': '0x5555555555555555555555555555555555555555', 'solana-usdc': encodeBase58(Uint8Array.from({ length: 32 }, () => 5)),
-      'tempo-usdce': '0x6666666666666666666666666666666666666666', 'near-usdc': 'pay.anyfare.test.near',
+      'near-usdc': 'pay.anyfare.test.near',
     };
     const fake = await startFakeFacilitator({ networks: mainnets, feePayer: encodeBase58(Uint8Array.from({ length: 32 }, () => 9)) });
     try {
@@ -550,7 +550,7 @@ describe('a routed call paid with x402', () => {
           })).toString('base64'),
         },
       });
-      const production: PlatformConfig = { ...loaded, assets: loaded.assets.map(asset => ({ ...asset, payTo: payTo[asset.name] })) };
+      const production: PlatformConfig = { ...loaded, assets: loaded.assets.map(asset => ({ ...asset, payTo: payTo[asset.name] ?? asset.payTo })) };
       const productionX402 = await initializeX402({
         config: production, timeoutMs: 5_000,
         facilitators: createFacilitators({ config: production, cdpApiKey: () => { throw new Error('No CDP auth'); }, facilitatorApiKey: () => Secret.from(internalSecret), clock: systemClock }),
