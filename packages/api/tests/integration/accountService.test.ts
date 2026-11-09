@@ -4,7 +4,7 @@ import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { cryptoRandomSource, hashApiKey, InvalidKeyError, type AuditLog } from '@anyfare/core';
-import { accounts, apiKeys, auditLog, createAuditLogRepository } from '@anyfare/db';
+import { accounts, apiKeys, auditLog, createAuditLogRepository, createLedger, ledgerAccountIds, ledgerTransactions } from '@anyfare/db';
 import { createFakeClock, createFakeIdGenerator, createTestDatabase, type TestDatabase } from '@anyfare/testing';
 
 import { createAccountService, type AccountServiceOptions } from '../../src/accounts/service.js';
@@ -51,9 +51,10 @@ describe('creating an account', () => {
   it('stores the account, its master key hash, and one audit entry with the request ID and no key', async () => {
     const { service, clock } = buildService();
 
-    const { account, masterKey } = await service.create({ requestId: 'req-create' });
+    const { account, masterKey, freeCredits } = await service.create({ requestId: 'req-create' });
 
     expect(account).toEqual({ id: expect.stringMatching(/^acc_/), createdAt: clock.now() });
+    expect(freeCredits).toBe(0n);
     expect(account.id).toMatch(/^acc_/);
     const keys = await keyRowsFor(account.id);
     expect(keys).toEqual([expect.objectContaining({ kind: 'master', keyHash: hashApiKey(masterKey), revokedAt: null })]);
@@ -65,7 +66,7 @@ describe('creating an account', () => {
       action: 'account.create',
       subjectKind: 'account',
       requestId: 'req-create',
-      details: { masterKeyId: keys[0]!.id },
+      details: { masterKeyId: keys[0]!.id, freeCredits: '0' },
     })]);
     expect(JSON.stringify(entries)).not.toContain(masterKey.expose());
     expect(JSON.stringify(entries)).not.toContain(hashApiKey(masterKey));
@@ -83,6 +84,46 @@ describe('creating an account', () => {
     expect(await database.db.select().from(accounts).where(eq(accounts.id, accountId))).toEqual([]);
     expect(await keyRowsFor(accountId)).toEqual([]);
     expect(await auditRowsFor(accountId)).toEqual([]);
+  });
+});
+
+describe('free credits', () => {
+  const transactionsFor = (accountId: string) => database.db.select().from(ledgerTransactions).where(eq(ledgerTransactions.reference, accountId));
+
+  it('books the gift with the account, keyed by its ID, and records it in the audit entry', async () => {
+    const { service, clock, ids } = buildService();
+
+    const { account, freeCredits } = await service.create({ requestId: 'req-gift', freeCredits: 100_000n });
+
+    expect(freeCredits).toBe(100_000n);
+    expect(await createLedger({ db: database.db, clock, ids }).balance(account.id)).toEqual({ available: 100_000n, held: 0n });
+    expect(await transactionsFor(account.id)).toEqual([expect.objectContaining({ operation: 'promotion', requestId: 'req-gift' })]);
+    expect((await auditRowsFor(account.id))[0]?.details).toMatchObject({ freeCredits: '0.1' });
+  });
+
+  it('books nothing for no gift', async () => {
+    const { service, clock, ids } = buildService();
+
+    const { account } = await service.create({ requestId: 'req-no-gift', freeCredits: 0n });
+
+    expect(await transactionsFor(account.id)).toEqual([]);
+    const ledger = createLedger({ db: database.db, clock, ids });
+    expect(await ledger.balancesOf([ledgerAccountIds.available(account.id)])).toEqual(new Map());
+  });
+
+  it('creates no account when its gift can\'t be booked: the account and its gift commit together', async () => {
+    const clock = createFakeClock();
+    const ids = createFakeIdGenerator('failed-gift-');
+    const { service } = buildService({ clock, ids });
+
+    // Past a bigint balance, so the gift's own posting fails, after the account and its key were written
+    await expect(service.create({ requestId: 'req-failed-gift', freeCredits: 2n ** 63n })).rejects.toThrow();
+
+    const accountId = 'acc_failed-gift-1';
+    expect(await database.db.select().from(accounts).where(eq(accounts.id, accountId))).toEqual([]);
+    expect(await keyRowsFor(accountId)).toEqual([]);
+    expect(await auditRowsFor(accountId)).toEqual([]);
+    expect(await transactionsFor(accountId)).toEqual([]);
   });
 });
 

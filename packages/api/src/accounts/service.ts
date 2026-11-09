@@ -1,9 +1,9 @@
-import type { Clock, IdGenerator, RequestId, Secret } from '@anyfare/common';
+import { formatUsd, type Clock, type IdGenerator, type MicroUsd, type RequestId, type Secret } from '@anyfare/common';
 import {
   generateApiKey, hashApiKey, InvalidKeyError, type Account, type AuditLog, type KeyPrefixes, type RandomSource,
 } from '@anyfare/core';
 import {
-  createAccountRepository, createApiKeyRepository, createAuditLogRepository, withTransaction, type Database,
+  createAccountRepository, createApiKeyRepository, createAuditLogRepository, createLedger, withTransaction, type Database,
   type DatabaseTransaction,
 } from '@anyfare/db';
 
@@ -24,11 +24,16 @@ export interface CreatedAccount {
   readonly account: Account;
   // Shown once, in the response that creates it
   readonly masterKey: Secret;
+  // The free Credits the account was given: 0 when none
+  readonly freeCredits: MicroUsd;
 }
 
 export interface AccountService {
-  /** Creates an account with its master key, and the audit entry, in one transaction. */
-  create(input: { readonly requestId: RequestId }): Promise<CreatedAccount>;
+  /**
+   * Creates an account with its master key, the audit entry, and its free Credits when it gets any, in
+   * one transaction. Default: no free Credits.
+   */
+  create(input: { readonly requestId: RequestId; readonly freeCredits?: MicroUsd }): Promise<CreatedAccount>;
   get(accountId: string): Promise<Account | undefined>;
   /**
    * Revokes the master key the caller used and issues a new one, with the audit entry, in one
@@ -56,7 +61,8 @@ export const createAccountService = ({
   keyPrefixes,
   auditLog = tx => createAuditLogRepository({ db: tx, clock, ids }),
 }: AccountServiceOptions): AccountService => ({
-  create: async ({ requestId }) => {
+  create: async ({ requestId, freeCredits = 0n }) => {
+    const given = freeCredits > 0n ? freeCredits : 0n;
     const accountId = `${accountIdPrefix}${ids.next()}`;
     const keyId = `${keyIdPrefix}${ids.next()}`;
     const masterKey = generateApiKey('master', keyPrefixes, random);
@@ -76,13 +82,17 @@ export const createAccountService = ({
         action: 'account.create',
         subject: { kind: 'account', id: accountId },
         requestId,
-        details: { masterKeyId: keyId },
+        details: { masterKeyId: keyId, freeCredits: formatUsd(given) },
       });
+      // Last, so the shared promotions balance stays locked for the least time. The account's ID is the
+      // reference, so one account is never given twice.
+      if (given > 0n)
+        await createLedger({ db: tx, clock, ids }).promotion({ accountId, amount: given, reference: accountId, requestId });
 
       return created;
     }));
 
-    return { account, masterKey };
+    return { account, masterKey, freeCredits: given };
   },
   get: accountId => createAccountRepository({ db }).findById(accountId),
   rotateMasterKey: async ({ accountId, keyId, requestId }) => {

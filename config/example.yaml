@@ -89,6 +89,14 @@ rateLimits:
   # documents: { requests: 120, windowSeconds: 60 }   # Optional. Public documents per client IP. Default: 120 a minute
   # probeIp: { requests: 600, windowSeconds: 60 }   # Optional. Probes of routed targets per client IP, paid calls too. Default: 600 a minute
 
+# Optional. Free Credits for each new account, so a visitor can try the service without a wallet. The values are the
+# defaults, except maxPerDay, which has none
+# freeCredits:
+#   enabled: false              # The operator turns the gift on
+#   amount: "0.1"               # What each new account gets: more than 0, at most 10
+#   perIp: { requests: 3, windowSeconds: 86400 }   # New accounts per client IP that get it. Later ones are created with none
+#   maxPerDay: "5"              # Optional. The most given across all IPs in one UTC day, at least amount. Without it there is no cap
+
 timeouts:
   connectMs: 5000
   requestMs: 30000

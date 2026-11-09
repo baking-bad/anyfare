@@ -30,7 +30,8 @@ const keyPrefix: SchemaObject = {
 const addressText = text(128, { errorMessage: { type: 'must be a string: put the address in quotes, since YAML reads an unquoted 0x… as a number' } });
 const basisPoints = integer(0, 10_000);
 const positive = integer(1);
-const rateLimit = object({ requests: positive, windowSeconds: positive }, ['requests', 'windowSeconds']);
+// A window of at most 30 days: Redis refuses an expiry far beyond that, and the counter would never expire
+const rateLimit = object({ requests: positive, windowSeconds: integer(1, 2_592_000) }, ['requests', 'windowSeconds']);
 
 export const platformConfigSchema: SchemaObject = {
   $id: 'anyfare-platform-config-v1',
@@ -79,5 +80,6 @@ export const platformConfigSchema: SchemaObject = {
       maxPerNetworkPerDay: usdAmount,
       wallets: object({ base: addressText, tempo: addressText, solana: addressText, near: addressText }),
     }),
+    freeCredits: object({ enabled: boolean, amount: usdAmount, perIp: rateLimit, maxPerDay: usdAmount }),
   }, ['version', 'environment', 'urls', 'keyPrefixes', 'routingFeeBps', 'assets', 'facilitators', 'mpp', 'rateLimits']),
 };

@@ -86,6 +86,8 @@ describe('POST /v1/accounts', () => {
       id: expect.stringMatching(/^acc_/),
       createdAt: expect.any(String),
       masterKey: expect.stringMatching(/^afm_test_[0-9A-Za-z]{43}$/),
+      // The example config leaves the gift off
+      freeCredits: '0',
       notice: lostKeyNotice,
     });
     expect(lostKeyNotice).toContain('can\'t be recovered');

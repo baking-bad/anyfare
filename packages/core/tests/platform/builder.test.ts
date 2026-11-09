@@ -29,7 +29,7 @@ const issues = (build: () => unknown): readonly { readonly path: string; readonl
 
 const minimalOptionalFields = {
   logger: undefined, ownHosts: undefined, paymentKeyDefaults: undefined, timeouts: undefined,
-  sizeLimits: undefined, signer: undefined, rateLimits: { documents: undefined, probeIp: undefined },
+  sizeLimits: undefined, signer: undefined, rateLimits: { documents: undefined, probeIp: undefined }, freeCredits: undefined,
 };
 
 type MutableDocument = { facilitators: Record<string, unknown>[] };
@@ -83,6 +83,7 @@ describe('buildPlatformConfig', () => {
       maxPerCall: 1_000_000n, maxPerNetworkPerHour: undefined, maxPerNetworkPerDay: 100_000_000n,
       wallets: { base: undefined, tempo: undefined, solana: undefined, near: undefined },
     });
+    expect(config.freeCredits).toEqual({ enabled: false, amount: 100_000n, perIp: { requests: 3, windowSeconds: 86_400 }, maxPerDay: undefined });
   });
 
   it('takes the limits from the document when it sets them', () => {
@@ -117,6 +118,7 @@ describe('buildPlatformConfig', () => {
     expect(Object.isFrozen(config.rateLimits.signup)).toBe(true);
     expect(Object.isFrozen(config.facilitators[0]!.auth)).toBe(true);
     expect(Object.isFrozen(config.signer.wallets)).toBe(true);
+    expect(Object.isFrozen(config.freeCredits.perIp)).toBe(true);
   });
 
   it('freezes every object in the built config, so it is read-only at runtime', () => {
@@ -294,6 +296,58 @@ describe('the Signer', () => {
   });
 });
 
+describe('free credits', () => {
+  it('are off by default, at $0.10 for three new accounts a day per client IP, with no daily cap', () => {
+    const config = buildPlatformConfig(document({ freeCredits: undefined }));
+
+    expect(config.freeCredits).toEqual({ enabled: false, amount: 100_000n, perIp: { requests: 3, windowSeconds: 86_400 }, maxPerDay: undefined });
+    expect(platformDefaults.freeCredits).toEqual({ enabled: false, amount: '0.1', perIp: { requests: 3, windowSeconds: 86_400 } });
+  });
+
+  it('take the values the document sets', () => {
+    const config = buildPlatformConfig(document({
+      freeCredits: { enabled: true, amount: '0.25', perIp: { requests: 5, windowSeconds: 3_600 }, maxPerDay: '12.5' },
+    }));
+
+    expect(config.freeCredits).toEqual({ enabled: true, amount: 250_000n, perIp: { requests: 5, windowSeconds: 3_600 }, maxPerDay: 12_500_000n });
+  });
+
+  it('fill what the document leaves out with the defaults', () => {
+    const config = buildPlatformConfig(document({ freeCredits: { enabled: true } }));
+
+    expect(config.freeCredits).toEqual({ enabled: true, amount: 100_000n, perIp: { requests: 3, windowSeconds: 86_400 }, maxPerDay: undefined });
+  });
+
+  it('take the largest gift, $10, and a daily cap of exactly one gift', () => {
+    const config = buildPlatformConfig(document({ freeCredits: { enabled: true, amount: '10', maxPerDay: '10' } }));
+
+    expect(config.freeCredits).toMatchObject({ amount: 10_000_000n, maxPerDay: 10_000_000n });
+  });
+
+  it.each([
+    ['a zero amount', { amount: '0' }, '/freeCredits/amount', 'must be more than 0. To give nothing, set freeCredits.enabled to false'],
+    ['an amount above $10', { amount: '10.000001' }, '/freeCredits/amount', 'must be at most 10 USD, the most one new account may get'],
+    ['a daily cap below the amount', { amount: '0.5', maxPerDay: '0.4' }, '/freeCredits/maxPerDay', 'must be at least freeCredits.amount (0.5 USD): a smaller daily cap would give nothing'],
+    ['a daily cap below the default amount', { maxPerDay: '0.05' }, '/freeCredits/maxPerDay', 'must be at least freeCredits.amount (0.1 USD): a smaller daily cap would give nothing'],
+    ['a daily cap that overflows', { maxPerDay: '99999999999999' }, '/freeCredits/maxPerDay', 'The USD amount is too large'],
+  ])('refuse %s, even while the gift is off', (_name, freeCredits, path, message) => {
+    expect(issues(() => buildPlatformConfig(document({ freeCredits })))).toEqual([{ path, message }]);
+    expect(issues(() => buildPlatformConfig(document({ freeCredits: { ...freeCredits, enabled: true } })))).toEqual([{ path, message }]);
+  });
+
+  it.each([
+    ['a numeric amount', { amount: 0.1 }, '/freeCredits/amount', 'must be a USD amount as a string with at most 6 decimal places, such as "0.001"'],
+    ['a negative amount', { amount: '-1' }, '/freeCredits/amount', 'must be a USD amount as a string with at most 6 decimal places, such as "0.001"'],
+    ['an enabled that isn\'t a boolean', { enabled: 'yes' }, '/freeCredits/enabled', 'must be true or false'],
+    ['a per-IP limit of zero', { perIp: { requests: 0, windowSeconds: 86_400 } }, '/freeCredits/perIp/requests', 'must be at least 1'],
+    ['a per-IP limit without its window', { perIp: { requests: 3 } }, '/freeCredits/perIp', 'missing required field "windowSeconds"'],
+    ['a per-IP window over 30 days', { perIp: { requests: 3, windowSeconds: 2_592_001 } }, '/freeCredits/perIp/windowSeconds', 'must be at most 2592000'],
+    ['an unknown field', { perDay: 10 }, '/freeCredits/perDay', 'unknown field'],
+  ])('refuse %s in the schema', (_name, freeCredits, path, message) => {
+    expect(issues(() => assertValidPlatformConfigDocument(patch(loadExamplePlatformDocument(), { freeCredits })))).toContainEqual({ path, message });
+  });
+});
+
 describe('platformSummary', () => {
   it('names the environment, URLs, asset names and networks, and no address', () => {
     const summary = platformSummary(buildPlatformConfig(document()));
@@ -316,8 +370,15 @@ describe('platformSummary', () => {
         mpp: { network: 'eip155:42431' },
       },
       fees: { routingFeeBps: 0 },
+      freeCredits: { enabled: false, amount: '0.1' },
     });
     expect(JSON.stringify(summary)).not.toMatch(/0x[0-9a-fA-F]{40}/);
+  });
+
+  it('says whether the sign-up gift is on, and its amount as a USD string', () => {
+    const summary = platformSummary(buildPlatformConfig(document({ freeCredits: { enabled: true, amount: '0.25', maxPerDay: '5' } })));
+
+    expect(summary.freeCredits).toEqual({ enabled: true, amount: '0.25' });
   });
 
   it('leaves out a disabled facilitator and a disabled MPP', () => {

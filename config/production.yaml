@@ -80,6 +80,13 @@ rateLimits:
   # The website's server reads the public documents for every visitor, from one IP
   documents: { requests: 600, windowSeconds: 60 }
 
+# Free Credits for each new account: off until the operator turns the gift on
+freeCredits:
+  enabled: false
+  amount: "0.1"
+  perIp: { requests: 3, windowSeconds: 86400 }   # Per client IP. Later accounts are created with none
+  # maxPerDay: "5"   # Optional. The most given across all IPs in one UTC day. Without it there is no cap
+
 timeouts:
   connectMs: 5000
   requestMs: 30000

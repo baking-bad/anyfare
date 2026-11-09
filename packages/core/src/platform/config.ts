@@ -106,4 +106,14 @@ export interface PlatformConfig {
       readonly near: string | undefined;
     };
   };
+  // Free Credits for each new account, so a visitor can try the hosted service without a wallet
+  readonly freeCredits: {
+    readonly enabled: boolean;
+    // What each new account gets
+    readonly amount: MicroUsd;
+    // New accounts per client IP that get the gift. Later ones in the window are created with none.
+    readonly perIp: RateLimit;
+    // The most given across all IPs in one UTC day. Undefined: no daily cap.
+    readonly maxPerDay: MicroUsd | undefined;
+  };
 }

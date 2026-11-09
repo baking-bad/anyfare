@@ -1,5 +1,5 @@
 import {
-  deepFreeze, findUnsafeValue, getSafeErrorMessage, parseUsd, ValidationError, type MicroUsd, type NetworkId, type ValuePath,
+  deepFreeze, findUnsafeValue, formatUsd, getSafeErrorMessage, parseUsd, ValidationError, type MicroUsd, type NetworkId, type ValuePath,
 } from '@anyfare/common';
 
 import { isValidAddress, isValidAssetAddress } from '../addresses.js';
@@ -30,6 +30,9 @@ export const assertValidPlatformConfigDocument: (value: unknown, locator?: Issue
 
 const hostOf = (url: string): string => new URL(url).hostname.toLowerCase();
 
+// The most Free Credits one new account may get: $10
+const maxFreeCreditsAmount: MicroUsd = 10_000_000n;
+
 /** Pass 2: rules across fields, for a document that passed the schema. */
 export const checkPlatformConfig = (document: PlatformConfigDocument): readonly IssueDraft[] => {
   const drafts: IssueDraft[] = [];
@@ -48,14 +51,16 @@ export const checkPlatformConfig = (document: PlatformConfigDocument): readonly 
 
     return network;
   };
-  const checkAmount = (path: ValuePath, value: string | undefined): void => {
+  // The amount, or undefined when it is absent or doesn't parse
+  const checkAmount = (path: ValuePath, value: string | undefined): MicroUsd | undefined => {
     if (value === undefined)
-      return;
+      return undefined;
     try {
-      parseUsd(value);
+      return parseUsd(value);
     }
     catch (error) {
       add(path, getSafeErrorMessage(error));
+      return undefined;
     }
   };
 
@@ -138,6 +143,16 @@ export const checkPlatformConfig = (document: PlatformConfigDocument): readonly 
       add(['signer', 'wallets', chain], network.namespace === 'near' ? 'is not a NEAR account ID' : `is not a valid address on ${network.title}`);
   }
 
+  // The gift is checked even while it is off, so turning it on can't start a mistake
+  const giftAmount = checkAmount(['freeCredits', 'amount'], document.freeCredits?.amount ?? platformDefaults.freeCredits.amount);
+  const maxPerDay = checkAmount(['freeCredits', 'maxPerDay'], document.freeCredits?.maxPerDay);
+  if (giftAmount !== undefined && giftAmount <= 0n)
+    add(['freeCredits', 'amount'], 'must be more than 0. To give nothing, set freeCredits.enabled to false');
+  else if (giftAmount !== undefined && giftAmount > maxFreeCreditsAmount)
+    add(['freeCredits', 'amount'], `must be at most ${formatUsd(maxFreeCreditsAmount)} USD, the most one new account may get`);
+  if (giftAmount !== undefined && maxPerDay !== undefined && maxPerDay < giftAmount)
+    add(['freeCredits', 'maxPerDay'], `must be at least freeCredits.amount (${formatUsd(giftAmount)} USD): a smaller daily cap would give nothing`);
+
   return drafts;
 };
 
@@ -169,7 +184,7 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
     minPrice: usd(asset.minPrice, platformDefaults.assetMinPrice),
     payTo: asset.payTo,
   }));
-  const { timeouts, sizeLimits, signer } = platformDefaults;
+  const { timeouts, sizeLimits, signer, freeCredits } = platformDefaults;
 
   return deepFreeze<PlatformConfig>({
     version: document.version,
@@ -210,6 +225,12 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
       wallets: {
         base: document.signer?.wallets?.base, tempo: document.signer?.wallets?.tempo, solana: document.signer?.wallets?.solana, near: document.signer?.wallets?.near,
       },
+    },
+    freeCredits: {
+      enabled: document.freeCredits?.enabled ?? freeCredits.enabled,
+      amount: usd(document.freeCredits?.amount, freeCredits.amount),
+      perIp: { ...document.freeCredits?.perIp ?? freeCredits.perIp },
+      maxPerDay: document.freeCredits?.maxPerDay === undefined ? undefined : parseUsd(document.freeCredits.maxPerDay),
     },
   });
 };

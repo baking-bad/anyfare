@@ -7,13 +7,14 @@ import {
   type ServerAddresses,
 } from '@anyfare/common';
 import {
-  cryptoRandomSource, type ApiKeyRepository, type InvalidationBus, type PlatformConfig, type RandomSource,
+  cryptoRandomSource, type ApiKeyRepository, type InvalidationBus, type PlatformConfig, type RandomSource, type RateLimiter,
 } from '@anyfare/core';
 import {
   createApiKeyRepository, createRedisInvalidationBus, createRedisRateLimiter, type Postgres, type Redis,
 } from '@anyfare/db';
 
 import { createMasterKeyAuth, decorateAccount } from './accounts/auth.js';
+import { createFreeCredits, createFreeCreditsCounter } from './accounts/freeCredits.js';
 import { registerAccountRoutes } from './accounts/routes.js';
 import { createAccountService } from './accounts/service.js';
 import { createIpLimit, createSignupLimit } from './accounts/signupLimit.js';
@@ -43,6 +44,8 @@ export interface ApiDependencies {
   readonly apiKeys?: Pick<ApiKeyRepository, 'findActiveByHash'>;
   // Where key changes are announced. Default: the Redis channel.
   readonly invalidation?: Pick<InvalidationBus, 'publish'>;
+  // What counts the per-IP limits and the sign-up gift. Default: fixed windows in Redis.
+  readonly limiter?: RateLimiter;
   // INTERNAL_API_SECRET, the shared secret of the internal API. Without it, every internal call is refused.
   readonly internalSecret?: Secret;
 }
@@ -88,6 +91,7 @@ export const createApp = ({
   trustProxy,
   apiKeys = createApiKeyRepository({ db: postgres.db }),
   invalidation = createRedisInvalidationBus({ redis, logger }),
+  limiter = createRedisRateLimiter({ redis }),
   internalSecret,
 }: ApiDependencies): ApiServer => {
   const server = createServer({
@@ -105,11 +109,11 @@ export const createApp = ({
   acceptEmptyJson(app);
 
   const authenticate = createMasterKeyAuth({ keyPrefixes: config.keyPrefixes, apiKeys });
-  const limiter = createRedisRateLimiter({ redis });
   registerAccountRoutes(app, {
     accounts: createAccountService({ db: postgres.db, clock, ids, random, keyPrefixes: config.keyPrefixes }),
     authenticate,
     signupLimit: createSignupLimit({ limiter, limit: config.rateLimits.signup }),
+    freeCredits: createFreeCredits({ config: config.freeCredits, limiter, clock, record: createFreeCreditsCounter(server.metrics.registry) }),
   });
   registerKeyRoutes(app, {
     keys: createPaymentKeyService({

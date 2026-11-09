@@ -93,6 +93,17 @@ export interface SignerLimitsDocument {
   readonly wallets?: { readonly base?: string; readonly tempo?: string; readonly solana?: string; readonly near?: string };
 }
 
+export interface FreeCreditsDocument {
+  // Default: false. The operator turns the gift on.
+  readonly enabled?: boolean;
+  // What each new account gets. Default: "0.1".
+  readonly amount?: string;
+  // New accounts per client IP that get the gift. Default: 3 a day.
+  readonly perIp?: RateLimitDocument;
+  // The most given across all IPs in one UTC day. No default: without it there is no daily cap.
+  readonly maxPerDay?: string;
+}
+
 export interface PlatformConfigDocument {
   readonly version: 1;
   readonly environment: Environment;
@@ -111,4 +122,6 @@ export interface PlatformConfigDocument {
   readonly timeouts?: TimeoutsDocument;
   readonly sizeLimits?: SizeLimitsDocument;
   readonly signer?: SignerLimitsDocument;
+  // Free Credits for each new account, so a visitor can try the hosted service without a wallet
+  readonly freeCredits?: FreeCreditsDocument;
 }

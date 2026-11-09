@@ -17,4 +17,7 @@ export const platformDefaults = {
   documentsRateLimit: { requests: 120, windowSeconds: 60 },
   // Probes of routed targets, per client IP: ten a second
   probeIpRateLimit: { requests: 600, windowSeconds: 60 },
+  // Free Credits on sign-up: off unless the deployment turns them on, then $0.10 for each of the first
+  // three new accounts a day from one client IP. No daily cap unless set.
+  freeCredits: { enabled: false, amount: '0.1', perIp: { requests: 3, windowSeconds: 86_400 } },
 } as const;

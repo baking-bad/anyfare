@@ -23,6 +23,7 @@
     "@anyfare/common": "0.1.0",
     "@anyfare/core": "0.1.0",
     "@anyfare/db": "0.1.0",
+    "@prometheus-io/client": "^0.16.1",
     "fastify": "^5.12.5"
   },
   "devDependencies": {
