@@ -1,0 +1,22 @@
+{
+  "note": "Made up for the test, dated 2026-11-09.",
+  "network": "near:mainnet",
+  "kind": "account",
+  "observedFinality": "final",
+  "observedAt": "2026-11-09T10:15:00.000Z",
+  "block": {
+    "height": 123456789,
+    "hash": "FakeBlockHashForTheTest1111111111111111111"
+  },
+  "account": {
+    "accountId": "anyfare.near",
+    "amountYoctoNear": "1234567890123456789012345",
+    "lockedYoctoNear": "0",
+    "storageUsage": 4242,
+    "codeHash": "11111111111111111111111111111111"
+  },
+  "source": {
+    "type": "near-jsonrpc",
+    "status": "final"
+  }
+}

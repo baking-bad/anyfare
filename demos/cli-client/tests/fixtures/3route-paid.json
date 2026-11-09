@@ -1,0 +1,7 @@
+{
+  "note": "Made up for the test, dated 2026-11-09.",
+  "srcAmount": "1000000",
+  "dstAmount": "250000000000000",
+  "gas": 150000,
+  "blockNumber": 12345678
+}

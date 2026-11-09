@@ -1,0 +1,50 @@
+{
+  "note": "Made up for the test, dated 2026-11-09.",
+  "data": [
+    {
+      "id": 1,
+      "name": "Bitcoin Fake",
+      "symbol": "BTC",
+      "cmc_rank": 7,
+      "is_active": 1,
+      "quote": [
+        {
+          "symbol": "USD",
+          "price": 11111.5,
+          "percent_change_24h": -1.234,
+          "market_cap": 222222222,
+          "last_updated": "2026-11-09T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Bitcoin Real",
+      "symbol": "BTC",
+      "cmc_rank": 1,
+      "is_active": 1,
+      "quote": [
+        {
+          "symbol": "USD",
+          "price": 12345.678,
+          "percent_change_24h": 2.5,
+          "market_cap": 987654321.9,
+          "last_updated": "2026-11-09T10:00:05.000Z"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Bitcoin Dead",
+      "symbol": "BTC",
+      "cmc_rank": 0,
+      "is_active": 0,
+      "quote": [
+        {
+          "symbol": "USD",
+          "price": 1
+        }
+      ]
+    }
+  ]
+}

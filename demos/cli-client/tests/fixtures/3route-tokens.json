@@ -1,0 +1,43 @@
+{
+  "note": "A cut of the list recorded 2026-11-09 from a free request: three of its tokens.",
+  "status": 200,
+  "body": {
+    "tokens": {
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": {
+        "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "symbol": "USDC",
+        "name": "USDC",
+        "decimals": 6,
+        "logoURI": null,
+        "domainVersion": null,
+        "eip2612": true,
+        "isFoT": null,
+        "tags": null
+      },
+      "0x4200000000000000000000000000000000000006": {
+        "address": "0x4200000000000000000000000000000000000006",
+        "symbol": "WETH",
+        "name": "WETH",
+        "decimals": 18,
+        "logoURI": null,
+        "domainVersion": null,
+        "eip2612": null,
+        "isFoT": null,
+        "tags": null
+      },
+      "0x0000000000000000000000000000000000000000": {
+        "address": "0x0000000000000000000000000000000000000000",
+        "symbol": "ETH",
+        "name": "ETH",
+        "decimals": 18,
+        "logoURI": null,
+        "domainVersion": null,
+        "eip2612": null,
+        "isFoT": null,
+        "tags": [
+          "native"
+        ]
+      }
+    }
+  }
+}
