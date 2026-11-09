@@ -25,8 +25,8 @@ paymentKeyDefaults:
 # The fee on top of a routed target's price, in basis points
 routingFeeBps: 0
 
-# The receiving addresses (payTo) are added before the first deployment. Quote them: YAML reads an
-# unquoted 0x… as a number. An asset without one is not offered to buyers.
+# The receiving addresses (payTo). Quote an EVM one: YAML reads an unquoted 0x… as a number. An asset
+# without one is not offered to buyers. Base, Solana and Tempo's are added before the first deployment.
 assets:
   - name: base-usdc
     network: eip155:8453
@@ -48,6 +48,8 @@ assets:
     address: 17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1
     decimals: 6
     peg: usd
+    # Our NEAR hot wallet: buyers pay it, and the Signer pays NEAR targets from it
+    payTo: pay.anyfare.near
 
 # One facilitator per network. Auth names environment variables; their values are never in this file.
 facilitators:
@@ -83,9 +85,11 @@ timeouts:
   requestMs: 30000
   settleMs: 30000
 
-# What one routed call and one network can cost us. The hot wallets' public addresses go in a `wallets`
-# section (base, tempo, solana), added before the first deployment. Never their keys.
+# What one routed call and one network can cost us, and the hot wallets' public addresses, never their
+# keys. Base, Tempo and Solana's are added before the first deployment.
 signer:
   maxPerCall: "0.1"
   maxPerNetworkPerHour: "5"
   maxPerNetworkPerDay: "20"
+  wallets:
+    near: pay.anyfare.near

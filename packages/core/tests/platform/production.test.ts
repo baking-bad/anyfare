@@ -7,8 +7,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { findAsset, loadPlatformConfig, paymentMethodsFor, platformSummary, treasuryWallets } from '../../src/index.js';
 
-// config/production.yaml: mainnets only, with the receiving addresses, the MPP recipient and the hot
-// wallets still to be added
+// config/production.yaml: mainnets only. NEAR's receiving address and hot wallet are ours,
+// pay.anyfare.near; the other receiving addresses, the MPP recipient and the other hot wallets are still
+// to be added
 const productionConfigPath = fileURLToPath(new URL('../../../../config/production.yaml', import.meta.url));
 
 let directory: string;
@@ -36,20 +37,22 @@ const samples: Readonly<Record<string, string>> = {
   'near-usdc': 'pay.anyfare.testnet',
 };
 
-/** The config with a `payTo` added under each asset it names one for, after its `peg` line. */
+/** The config with its own `payTo` lines removed, and one added under each asset it names one for, after its `peg` line. */
 const withPayTo = (yaml: string, payToFor: (asset: string) => string | undefined): string => {
   let asset = '';
 
   return yaml.split('\n').flatMap(line => {
     asset = /^\s+- name: (\S+)/.exec(line)?.[1] ?? asset;
     const payTo = payToFor(asset);
+    if (/^\s+payTo: /.test(line))
+      return [];
 
     return /^\s+peg: usd$/.test(line) && payTo !== undefined ? [line, `    payTo: ${payTo}`] : [line];
   }).join('\n');
 };
 
 describe('config/production.yaml', () => {
-  it('loads: mainnets only, live key prefixes, the production URLs, and no receiving addresses yet', async () => {
+  it('loads: mainnets only, live key prefixes, the production URLs, and NEAR\'s receiving address alone', async () => {
     const config = await loadText(text);
 
     expect(config.environment).toBe('production');
@@ -57,7 +60,7 @@ describe('config/production.yaml', () => {
       ['base-usdc', 'eip155:8453', 6, undefined],
       ['solana-usdc', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', 6, undefined],
       ['tempo-usdce', 'eip155:4217', 6, undefined],
-      ['near-usdc', 'near:mainnet', 6, undefined],
+      ['near-usdc', 'near:mainnet', 6, 'pay.anyfare.near'],
     ]);
     expect(config.keyPrefixes).toEqual({ master: 'afm_live_', payment: 'af_live_' });
     expect(config.urls).toEqual({
@@ -114,15 +117,19 @@ describe('config/production.yaml', () => {
     expect(platformSummary(config).rails.mpp).toEqual({ network: 'eip155:4217' });
   });
 
-  it('caps what one routed call and one network can cost us, and has no hot wallet yet', async () => {
+  it('caps what one routed call and one network can cost us, and names the NEAR hot wallet alone', async () => {
     const config = await loadText(text);
 
     expect(config.signer).toEqual({
       maxPerCall: 100_000n,
       maxPerNetworkPerHour: 5_000_000n,
       maxPerNetworkPerDay: 20_000_000n,
-      wallets: { base: undefined, tempo: undefined, solana: undefined, near: undefined },
+      wallets: { base: undefined, tempo: undefined, solana: undefined, near: 'pay.anyfare.near' },
     });
+    // The NEAR hot wallet is the account buyers pay there: the treasury lists it once, noted as the Signer's
+    expect(treasuryWallets(config).map(wallet => [wallet.name, wallet.role, wallet.signer, wallet.addresses])).toEqual([
+      ['payTo:near-usdc', 'pay_to', 'signer:near', ['pay.anyfare.near']],
+    ]);
   });
 
   it('refuses an unquoted 0x… address, which YAML reads as a number, and says to quote it', async () => {
@@ -145,11 +152,12 @@ describe('config/production.yaml', () => {
   it('offers USDC on NEAR mainnet to buyers once its payTo is added, alone among the assets, with the Signer\'s hot wallets beside it', async () => {
     // Made-up: our NEAR account, and the hot wallets the deployment adds
     const nearOnly = withPayTo(text, asset => asset === 'near-usdc' ? 'pay.anyfare.test.near' : undefined);
-    // The signer section is the file's last
+    // The signer section is the file's last, and its wallets block names the NEAR hot wallet alone
+    const ownWallets = '  wallets:\n    near: pay.anyfare.near\n';
     const wallets = '  wallets:\n    base: "0x3333333333333333333333333333333333333333"\n    tempo: "0x3333333333333333333333333333333333333333"\n    solana: "11111111111111111111111111111111"\n'
       + '    near: pay.anyfare.test.near\n';
-    expect(text.trimEnd().split('\n').at(-1)).toMatch(/^ {2}maxPerNetworkPerDay: /);
-    const config = await loadText(`${nearOnly.trimEnd()}\n${wallets}`);
+    expect(text.endsWith(ownWallets)).toBe(true);
+    const config = await loadText(nearOnly.replace(ownWallets, wallets));
 
     expect(findAsset(config, 'near-usdc')).toMatchObject({
       network: { id: 'near:mainnet', namespace: 'near', testnet: false }, address: '17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1', decimals: 6,
