@@ -91,8 +91,11 @@ export class SettlementFailedError extends AnyfareError {
 export class HoldRefusedError extends AnyfareError {
   readonly code: HoldRefusal;
 
-  constructor(refusal: HoldRefusal) {
-    super(refusalMessages[refusal]);
+  /** `topUpUrl`: where top-ups are taken. Given, an empty balance's message says how to add money. */
+  constructor(refusal: HoldRefusal, topUpUrl?: string) {
+    super(refusal === 'insufficient_balance' && topUpUrl !== undefined
+      ? `The credits balance doesn't cover the price. Top up with POST ${topUpUrl} and the account's master key.`
+      : refusalMessages[refusal]);
 
     this.code = refusal;
   }

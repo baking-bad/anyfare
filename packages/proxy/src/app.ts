@@ -230,12 +230,14 @@ export const createApp = ({
     onLookup: result => metrics.keyCacheLookup(result),
   });
   const ledger = createLedger({ db: postgres.db, clock, ids });
+  const apiUrl = config.urls.api.replace(/\/+$/, '');
   const credits = createCreditsRail({
     keys,
     ledger,
     clock,
     keyPrefixes: config.keyPrefixes,
-    signupUrl: `${config.urls.api.replace(/\/+$/, '')}/v1/accounts`,
+    signupUrl: `${apiUrl}/v1/accounts`,
+    ...(config.topups.enabled ? { topUpUrl: `${apiUrl}/v1/topups`, topUpOptionsUrl: `${apiUrl}/v1/topups/options` } : {}),
   });
   const limits = createProxyLimits({ limiter: rateLimiter, limits: config.rateLimits, logger, metrics });
   const recorder = createPaymentRepository({ db: postgres.db, clock });

@@ -464,6 +464,35 @@ describe('a routed call paid with x402', () => {
     expect(required.resource).toMatchObject({ url: `${config.urls.pay}/${at('api.target.test')}/v1/pools`, description: `${at('api.target.test')}/v1/pools, through Anyfare` });
     expect(required.accepts.map(option => [option.network, option.amount])).toEqual([[base, '1100'], [solana, '1100']]);
     expect(required.extensions).toBeUndefined();
+    // Top-ups are off in this config
+    expect(body.credits).not.toHaveProperty('topUp');
+  });
+
+  it('adds how to top up to the combined 402 when top-ups are on, and says it to a key with too little balance', async () => {
+    const topUpConfig: PlatformConfig = { ...config, topups: { ...config.topups, enabled: true } };
+    const poor = await createBuyer(database.db, config, 1n);
+
+    await withProxy({ config: topUpConfig }, async url => {
+      const unpaid = await fetch(`${url}/${at('api.target.test')}/v1/pools`);
+      const body = await unpaid.json() as { credits: unknown };
+
+      expect(unpaid.status).toBe(402);
+      expect(body.credits).toMatchObject({
+        signup: { url: `${config.urls.api}/v1/accounts` },
+        topUp: { method: 'POST', url: `${config.urls.api}/v1/topups`, options: `${config.urls.api}/v1/topups/options` },
+      });
+
+      const refused = await fetch(`${url}/${at('api.target.test')}/v1/pools`, { headers: { authorization: `Bearer ${poor.key}` } });
+      expect(refused.status).toBe(402);
+      expect(await refused.json()).toMatchObject({ error: {
+        code: 'insufficient_balance',
+        message: `The credits balance doesn't cover the price. Top up with POST ${config.urls.api}/v1/topups and the account's master key.`,
+      } });
+    });
+
+    const off = await fetch(linkTo('/v1/pools'), { headers: { authorization: `Bearer ${poor.key}` } });
+    expect(off.status).toBe(402);
+    expect(await off.json()).toMatchObject({ error: { code: 'insufficient_balance', message: 'The credits balance doesn\'t cover the price' } });
   });
 
   it('verifies the buyer\'s payment, pays the target, settles before answering, and answers with our PAYMENT-RESPONSE', async () => {

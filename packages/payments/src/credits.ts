@@ -18,6 +18,10 @@ export interface CreditsRailOptions {
   readonly keyPrefixes: KeyPrefixes;
   // `POST <api url>/v1/accounts`, for the 402
   readonly signupUrl: string;
+  // `POST <api url>/v1/topups`, for the 402 and for the answer to an empty balance. Undefined: top-ups are off.
+  readonly topUpUrl?: string | undefined;
+  // `GET <api url>/v1/topups/options`. Without it, `<topUpUrl>/options`.
+  readonly topUpOptionsUrl?: string | undefined;
 }
 
 export interface CreditsRail extends PaymentRail {
@@ -49,7 +53,7 @@ const receiptOf = ({ paymentId, amount }: Pick<Authorization, 'paymentId' | 'amo
  * balance and the key's spend at once, then a capture after a billable response or a release
  * otherwise. The ledger writes each status change with its money movement.
  */
-export const createCreditsRail = ({ keys, ledger, clock, keyPrefixes, signupUrl }: CreditsRailOptions): CreditsRail => {
+export const createCreditsRail = ({ keys, ledger, clock, keyPrefixes, signupUrl, topUpUrl, topUpOptionsUrl }: CreditsRailOptions): CreditsRail => {
   const authenticate = async ({ key }: CreditsCredential): Promise<PaymentKey> => {
     if (key.kind === 'master')
       throw new WrongKeyTypeError('A master key works only on the Platform API. Paid calls take a payment key.');
@@ -75,6 +79,7 @@ export const createCreditsRail = ({ keys, ledger, clock, keyPrefixes, signupUrl 
           currency: 'USD',
           authorization: 'Bearer <payment key>',
           signup: { method: 'POST', url: signupUrl },
+          ...(topUpUrl === undefined ? {} : { topUp: { method: 'POST', url: topUpUrl, options: topUpOptionsUrl ?? `${topUpUrl}/options` } }),
         },
       },
     }),
@@ -102,7 +107,7 @@ export const createCreditsRail = ({ keys, ledger, clock, keyPrefixes, signupUrl 
         allowance: key.allowance,
       });
       if (!result.ok)
-        throw new HoldRefusedError(result.refusal);
+        throw new HoldRefusedError(result.refusal, topUpUrl);
 
       const charge = { paymentId: quote.paymentId, amount: quote.priceMicroUsd };
 

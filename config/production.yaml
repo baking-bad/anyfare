@@ -87,6 +87,23 @@ freeCredits:
   perIp: { requests: 3, windowSeconds: 86400 }   # Per client IP. Later accounts are created with none
   # maxPerDay: "5"   # Optional. The most given across all IPs in one UTC day. Without it there is no cap
 
+# Top-ups: a client sends any token on any chain to a deposit address, and the 1Click API of NEAR Intents
+# swaps it to near-usdc and delivers it to the recipient.
+topups:
+  enabled: true
+  # When we have a 1Click key, name the variable that holds it here: apiKey: ONECLICK_API_KEY
+  asset: near-usdc
+  recipient: treasury.anyfare.near
+  # Refunds are held for this account inside intents.near
+  refundTo: treasury.anyfare.near
+  networks:
+    - { name: base, blockchain: base, minimum: "1" }
+    - { name: arbitrum, blockchain: arb, minimum: "1" }
+    - { name: solana, blockchain: sol, minimum: "1" }
+    - { name: near, blockchain: near, minimum: "1" }
+    - { name: ethereum, blockchain: eth, minimum: "5" }
+    - { name: bitcoin, blockchain: btc, minimum: "10" }
+
 timeouts:
   connectMs: 5000
   requestMs: 30000

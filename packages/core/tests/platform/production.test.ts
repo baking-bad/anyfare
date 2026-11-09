@@ -117,6 +117,17 @@ describe('config/production.yaml', () => {
     expect(platformSummary(config).rails.mpp).toEqual({ network: 'eip155:4217' });
   });
 
+  it('takes top-ups: any token on six networks, swapped to USDC on NEAR and delivered to the treasury, refunds held for it', async () => {
+    const { topups } = await loadText(text);
+
+    expect(topups).toMatchObject({ enabled: true, recipient: 'treasury.anyfare.near', refundTo: 'treasury.anyfare.near', apiKey: undefined });
+    expect(topups.asset).toMatchObject({ name: 'near-usdc', network: { id: 'near:mainnet' } });
+    expect(topups.networks.map(network => [network.name, network.blockchain, network.minimum])).toEqual([
+      ['base', 'base', 1_000_000n], ['arbitrum', 'arb', 1_000_000n], ['solana', 'sol', 1_000_000n], ['near', 'near', 1_000_000n],
+      ['ethereum', 'eth', 5_000_000n], ['bitcoin', 'btc', 10_000_000n],
+    ]);
+  });
+
   it('caps what one routed call and one network can cost us, and names the NEAR hot wallet alone', async () => {
     const config = await loadText(text);
 
@@ -126,9 +137,11 @@ describe('config/production.yaml', () => {
       maxPerNetworkPerDay: 20_000_000n,
       wallets: { base: undefined, tempo: undefined, solana: undefined, near: 'pay.anyfare.near' },
     });
-    // The NEAR hot wallet is the account buyers pay there: the treasury lists it once, noted as the Signer's
+    // The NEAR hot wallet is the account buyers pay there: the treasury lists it once, noted as the Signer's.
+    // The top-up recipient is watched too.
     expect(treasuryWallets(config).map(wallet => [wallet.name, wallet.role, wallet.signer, wallet.addresses])).toEqual([
       ['payTo:near-usdc', 'pay_to', 'signer:near', ['pay.anyfare.near']],
+      ['treasury:near', 'treasury', undefined, ['treasury.anyfare.near']],
     ]);
   });
 
@@ -184,6 +197,7 @@ describe('config/production.yaml', () => {
       ['signer:base', 'signer', undefined, ['0x3333333333333333333333333333333333333333']],
       ['signer:tempo', 'signer', undefined, ['0x3333333333333333333333333333333333333333']],
       ['signer:solana', 'signer', undefined, ['11111111111111111111111111111111']],
+      ['treasury:near', 'treasury', undefined, ['treasury.anyfare.near']],
     ]);
   });
 });

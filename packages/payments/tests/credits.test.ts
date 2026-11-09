@@ -37,7 +37,7 @@ const quote: Quote = {
 };
 
 // `found: null` is an unknown key
-const setup = ({ found = key(), refusal }: { found?: PaymentKey | null; refusal?: HoldRefusal } = {}) => {
+const setup = ({ found = key(), refusal, topUp = {} }: { found?: PaymentKey | null; refusal?: HoldRefusal; topUp?: { topUpUrl?: string; topUpOptionsUrl?: string } } = {}) => {
   const clock = { now: () => new Date(fixtureTime(0, 12, 12, 0, 0, 0)) };
   const holds: HoldInput[] = [];
   const ledger: CreditsLedger = {
@@ -56,6 +56,7 @@ const setup = ({ found = key(), refusal }: { found?: PaymentKey | null; refusal?
     clock,
     keyPrefixes,
     signupUrl: 'https://api.anyfare.test/v1/accounts',
+    ...topUp,
   });
 
   return { rail, ledger, holds, findByHash };
@@ -147,6 +148,32 @@ describe('the credits rail', () => {
           signup: { method: 'POST', url: 'https://api.anyfare.test/v1/accounts' },
         },
       },
+    });
+  });
+
+  it('adds the top-up endpoints to its part of the 402 when it has a top-up URL, deriving the options URL when none is given', async () => {
+    const topUpUrl = 'https://api.anyfare.test/v1/topups';
+    const withOptions = setup({ topUp: { topUpUrl, topUpOptionsUrl: 'https://api.anyfare.test/v1/topups/options' } });
+    const derived = setup({ topUp: { topUpUrl } });
+    const expected = { method: 'POST', url: topUpUrl, options: 'https://api.anyfare.test/v1/topups/options' };
+
+    expect((await buildPaymentRequired([withOptions.rail], quote)).body).toMatchObject({ credits: { topUp: expected } });
+    expect((await buildPaymentRequired([derived.rail], quote)).body).toMatchObject({ credits: { topUp: expected } });
+    expect((await buildPaymentRequired([setup().rail], quote)).body).not.toHaveProperty('credits.topUp');
+  });
+
+  it('says how to top up in insufficient_balance when it has a top-up URL, and only there', async () => {
+    const topUp = { topUpUrl: 'https://api.anyfare.test/v1/topups' };
+
+    await expect(setup({ refusal: 'insufficient_balance', topUp }).rail.authorize(credential, quote)).rejects.toMatchObject({
+      code: 'insufficient_balance',
+      message: 'The credits balance doesn\'t cover the price. Top up with POST https://api.anyfare.test/v1/topups and the account\'s master key.',
+    });
+    await expect(setup({ refusal: 'insufficient_balance' }).rail.authorize(credential, quote)).rejects.toMatchObject({
+      code: 'insufficient_balance', message: 'The credits balance doesn\'t cover the price',
+    });
+    await expect(setup({ refusal: 'key_budget_exceeded', topUp }).rail.authorize(credential, quote)).rejects.toMatchObject({
+      code: 'key_budget_exceeded', message: 'The payment key\'s daily budget doesn\'t cover the price',
     });
   });
 });
