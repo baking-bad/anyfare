@@ -176,8 +176,11 @@ export function scrubRpcUrl(text: string, rpcUrl: string): string {
 /** A failure of the app's own read of the NEAR RPC. Its message is the app's own, and names nothing but a status. */
 class NearRpcFailure extends Error {}
 
-/** The reason of a `fetch` that failed before any answer, in the error or its causes, as a code; `undefined` when there is none. */
-function fetchFailure(error: unknown, rpcUrl: string): string | undefined {
+/**
+ * The reason of a `fetch` to `rpcUrl` that failed before any answer, in the error or its causes, as a
+ * code, or a few plain words with nothing of the URL in them; `undefined` when there is none.
+ */
+export function fetchFailure(error: unknown, rpcUrl: string): string | undefined {
   let item: unknown = error;
   for (let depth = 0; item instanceof Error && depth < 5; depth += 1, item = item.cause) {
     if (item instanceof TypeError && item.message === 'fetch failed') {
@@ -247,6 +250,23 @@ interface Signed {
 }
 
 /**
+ * What `work` gives, or `'late'` when `limitMs` runs out first. Its failure after the limit is no
+ * one's to hear, and the timer is cleared either way, so it keeps no process alive.
+ */
+export async function raceLimit<T>(work: Promise<T>, limitMs: number): Promise<T | 'late'> {
+  work.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<'late'>((resolve) => {
+    timer = setTimeout(() => resolve('late'), limitMs);
+  });
+  try {
+    return await Promise.race([work, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * One signature, for the chosen option only, within `limitMs`. When it fails, no payment has left the
  * process: on NEAR the app and the signer have at most read the block height and the key's nonce from
  * the RPC. So it is not charged. The SDK takes no abort signal: a signature it makes after the limit
@@ -260,20 +280,13 @@ async function signOnce(ctx: Context, chosen: X402Choice, wallet: Wallet, cap: b
     const nearHeight = await finalHeight(ctx.io.fetch, wallet, controller.signal);
     return { payload: await nearClient(wallet.signer(), chosen.option, cap).createPaymentPayload(required), nearHeight };
   })();
-  // A failure after the limit is no one's to hear
-  work.catch(() => undefined);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<'late'>((resolve) => {
-    timer = setTimeout(() => resolve('late'), limitMs);
-  });
   let signed: Signed | 'late';
   try {
-    signed = await Promise.race([work, late]);
+    signed = await raceLimit(work, limitMs);
   } catch (error) {
     const why = wallet.way === 'near' ? nearSigningFailure(error, wallet) : baseSigningFailure(error);
     throw new Stop(`Could not sign the payment: ${why}. Nothing was sent.`, { notCharged: true });
   } finally {
-    clearTimeout(timer);
     controller.abort();
   }
   if (signed === 'late') {

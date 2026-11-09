@@ -137,8 +137,11 @@ export const PROXY_CODES: ReadonlySet<string> = new Set([
   'request_too_large',
 ]);
 
-/** The ways whose payment Anyfare gives back when it passes the API's own answer below 500 through. */
-const PASSED_THROUGH_NOT_CHARGED: ReadonlySet<PayWay> = new Set(['credits', 'base', 'near']);
+/**
+ * The ways whose payment Anyfare gives back when it passes the API's own answer below 500 through:
+ * Credits release the hold, an x402 payment is cancelled, and an MPP transaction is never broadcast.
+ */
+const PASSED_THROUGH_NOT_CHARGED: ReadonlySet<PayWay> = new Set(['credits', 'base', 'near', 'tempo']);
 
 /**
  * Any Anyfare key in a text, cut to its first 10 characters. Anything shaped like a wallet's private
@@ -212,9 +215,10 @@ export function stopFor(error: HttpError, context: ErrorContext, extra: ErrorTab
       const what = paid.way === 'credits' ? 'the key' : 'the payment';
       return finish(`Anyfare asked for a payment again: ${what} was not accepted`, error, true);
     }
-    // Anyfare passes the API's own answer through below 500: Credits release the hold on it, and an
-    // x402 payment is cancelled, never settled, since only a 2xx is billable. A 5xx that is not
-    // Anyfare's envelope came from something in front of it: the outcome is not known.
+    // Anyfare passes the API's own answer through below 500: Credits release the hold on it, an x402
+    // payment is cancelled, never settled, and an MPP transaction is never broadcast, since only a
+    // 2xx is billable. A 5xx that is not Anyfare's envelope came from something in front of it: the
+    // outcome is not known.
     if (error.status < 500) {
       const notCharged = PASSED_THROUGH_NOT_CHARGED.has(paid.way);
       return finish(withText(`${paid.apiName} answered ${error.status}`, bodyText(error.body)), error, notCharged);

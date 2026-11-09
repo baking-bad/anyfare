@@ -168,8 +168,6 @@ describe('runCli', () => {
     const fake = fakeIo(false);
     expect(await runCli(['topup', '--network', 'base', '--token', 'USDC', '--amount', '1'], fake.io)).toBe(1);
     expect(fake.err()).toBe('✘ topup is not built yet\n');
-    expect(await runCli(['call', '--tool', 'cmc', '--pay', 'tempo', '--yes'], fake.io)).toBe(1);
-    expect(fake.err()).toContain('✘ call --pay tempo is not built yet\n');
   });
 
   it('refuses a label longer than Anyfare takes', () => {

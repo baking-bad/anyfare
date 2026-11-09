@@ -178,13 +178,22 @@ export function payWayOf(offer: Offer): PayWay | undefined {
     if (offer.network === 'near:mainnet') return 'near';
     if (offer.network === 'eip155:8453') return 'base';
   }
+  // Only the known USDC.e: a charge in another token of Tempo is never picked
   if (
     offer.protocol === 'mpp' &&
     offer.method === 'tempo' &&
     offer.scheme === 'charge' &&
-    offer.network === `eip155:${TEMPO_CHAIN_ID}`
+    offer.network === `eip155:${TEMPO_CHAIN_ID}` &&
+    isKnownTempoUsdc(offer.asset)
   ) {
     return 'tempo';
   }
   return undefined;
+}
+
+/** Whether an asset is the USDC.e this app knows on Tempo, with 6 decimals: its atomic unit is a micro-USD. */
+export function isKnownTempoUsdc(asset: string | undefined): boolean {
+  const network = `eip155:${TEMPO_CHAIN_ID}`;
+  const known = findAsset(network, asset);
+  return known?.symbol === 'USDC.e' && known.decimals === 6 && asset !== undefined && sameAddress(network, known.address, asset);
 }

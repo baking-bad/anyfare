@@ -145,10 +145,14 @@ describe('payWayOf', () => {
     ).toBe('base');
   });
 
-  it('pays an MPP tempo charge on chain 4217 with tempo', () => {
-    expect(
-      payWayOf(offer({ protocol: 'mpp', scheme: 'charge', method: 'tempo', network: 'eip155:4217' })),
-    ).toBe('tempo');
+  it('pays an MPP tempo charge of USDC.e on chain 4217 with tempo, in any letter case', () => {
+    const usdce = '0x20C000000000000000000000b9537d11c60E8b50';
+    const tempo = (asset?: string) => offer({ protocol: 'mpp', scheme: 'charge', method: 'tempo', network: 'eip155:4217', ...(asset !== undefined && { asset }) });
+    expect(payWayOf(tempo(usdce))).toBe('tempo');
+    expect(payWayOf(tempo(usdce.toLowerCase()))).toBe('tempo');
+    // Another token of Tempo, such as pathUSD, or none: never picked
+    expect(payWayOf(tempo('0x20c0000000000000000000000000000000000000'))).toBeUndefined();
+    expect(payWayOf(tempo())).toBeUndefined();
   });
 
   it('pays nothing else', () => {

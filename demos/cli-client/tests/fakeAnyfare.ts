@@ -7,7 +7,10 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from '@x402/core/http';
 import { decodeSignedDelegateB64 } from '@x402/near';
-import { verifyTypedData } from 'viem';
+import { Challenge, Credential, Receipt } from 'mppx';
+import { decodeFunctionData, keccak256, verifyTypedData } from 'viem';
+import type { Hex } from 'viem';
+import { Abis, Transaction } from 'viem/tempo';
 import type { Fetch } from '../src/http.ts';
 import { fromAtomic, toAtomic } from '../src/util.ts';
 import { answerOf, fixture } from './helpers.ts';
@@ -111,6 +114,44 @@ export interface FakeTarget {
   readonly answer: unknown;
   /** x402 options for the combined 402, which then carries a `payment-required` header too. */
   readonly x402?: readonly Record<string, unknown>[];
+  /** Tempo charges for the combined 402, which then carries a `www-authenticate` header too, one charge after another. */
+  readonly mpp?: FakeTempoCharge | readonly FakeTempoCharge[];
+}
+
+/** USDC.e on Tempo, the currency Anyfare's MPP rail offers on chain 4217. */
+export const TEMPO_USDCE = '0x20C000000000000000000000b9537d11c60E8b50';
+/** Made up: where the fake Anyfare takes USDC.e on Tempo. */
+export const FAKE_TEMPO_RECIPIENT = '0x00000000000000000000000000000000000000e7';
+
+/**
+ * A Tempo charge, as Anyfare's MPP rail offers it: chain 4217, pull mode, bound to the pay URL's host,
+ * open for 5 minutes. Made up: the recipient, the amount and the charge's ID.
+ */
+export interface FakeTempoCharge {
+  /** Atomic units of the currency. */
+  readonly amount: string;
+  /** Default: USDC.e on Tempo. */
+  readonly currency?: string;
+  /** Default: the fake's own; `null` leaves it out. */
+  readonly recipient?: string | null;
+  /** Default: the host of the fake's pay URL, as Anyfare's realm is. */
+  readonly realm?: string;
+  /** How long from now the charge closes, in milliseconds. Default: 5 minutes. `null` leaves `expires` out. */
+  readonly expiresInMs?: number | null;
+  /** Merged into the request's method details, after the chain ID and the supported modes. */
+  readonly methodDetails?: Readonly<Record<string, unknown>>;
+}
+
+/** One of the proxy's own MPP failures, for the next credential: `payment_unavailable` charges nothing, `settlement_failed` may have. */
+export type MppFailure = 'payment_unavailable' | 'settlement_failed';
+
+/** An MPP payment the fake checked and took. Made up: nothing was broadcast anywhere. */
+export interface MppSettled {
+  readonly payer: string;
+  readonly recipient: string;
+  readonly amount: string;
+  /** The hash of the signed transaction. */
+  readonly transaction: string;
 }
 
 /**
@@ -156,6 +197,10 @@ export interface FakeAnyfare {
   nearChain: NearChain | undefined;
   /** The x402 payments it verified and settled. */
   readonly x402Settled: X402Settled[];
+  /** Makes the next MPP credential fail as the proxy would, once it is checked. */
+  nextMpp: MppFailure | undefined;
+  /** The MPP payments it checked and took. */
+  readonly mppSettled: MppSettled[];
   /** Changes the body of a 201 before it is sent: of sign-up, or of key create. */
   rewrite: { signup?: (body: Record<string, unknown>) => unknown; keys?: (body: Record<string, unknown>) => unknown };
   /** Runs while a request is being answered, after the account or the key exists: of sign-up, or of key create. */
@@ -170,6 +215,8 @@ export interface FakeAnyfare {
   routed(): Recorded[];
   /** The routed requests that carried an x402 payment. */
   x402Requests(): Recorded[];
+  /** The routed requests that carried an MPP credential: `Authorization: Payment …`. */
+  mppRequests(): Recorded[];
   /** Forgets every account, key, target and request. */
   reset(): void;
   close(): Promise<void>;
@@ -182,8 +229,11 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
   const keys = new Map<string, FakeKey>();
   const targets = new Map<string, FakeTarget>();
   const x402Settled: X402Settled[] = [];
+  const mppSettled: MppSettled[] = [];
   // The payments it took, by network: each pays once
   const usedPayments = new Set<string>();
+  // The Tempo charges it offered, serialized, by their IDs
+  const issued = new Map<string, string>();
   let counter = 0;
   const next = (): number => (counter += 1);
 
@@ -192,6 +242,7 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
     rateLimitSignup: false,
     nextPaid: undefined as PaidAnswer | undefined,
     nextX402: undefined as X402Failure | undefined,
+    nextMpp: undefined as MppFailure | undefined,
     nearChain: undefined as NearChain | undefined,
     rewrite: {} as FakeAnyfare['rewrite'],
     during: {} as FakeAnyfare['during'],
@@ -351,12 +402,35 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
       authorization: 'Bearer <payment key>',
       signup: { method: 'POST', url: `${apiUrl}/v1/accounts` },
     };
-    return {
-      body: { ...required, credits },
-      headers: (required === undefined
-        ? {}
-        : { 'payment-required': encodePaymentRequiredHeader(required as never) }) as Record<string, string>,
-    };
+    const headers: Record<string, string> =
+      required === undefined ? {} : { 'payment-required': encodePaymentRequiredHeader(required as never) };
+    const charges = target.mpp === undefined ? [] : Array.isArray(target.mpp) ? target.mpp : [target.mpp];
+    // One challenge for each, joined as the MPP rail joins them
+    if (charges.length > 0) headers['www-authenticate'] = charges.map((charge) => tempoChallenge(charge, payUrl)).join(', ');
+    return { body: { ...required, credits }, headers };
+  };
+
+  /** A new Tempo charge, as the MPP rail's server makes one, kept by its ID to check a credential against. */
+  const tempoChallenge = (charge: FakeTempoCharge, payUrl: string): string => {
+    const expiresInMs = charge.expiresInMs === undefined ? 5 * 60_000 : charge.expiresInMs;
+    const recipient = charge.recipient === undefined ? FAKE_TEMPO_RECIPIENT : charge.recipient;
+    const challenge = Challenge.from({
+      id: randomBytes(32).toString('base64url'),
+      realm: charge.realm ?? new URL(payUrl).host,
+      method: 'tempo',
+      intent: 'charge',
+      request: {
+        amount: charge.amount,
+        currency: charge.currency ?? TEMPO_USDCE,
+        methodDetails: { chainId: 4217, supportedModes: ['pull'], ...charge.methodDetails },
+        ...(recipient !== null && { recipient }),
+      },
+      description: 'A made-up charge',
+      ...(expiresInMs !== null && { expires: new Date(Date.now() + expiresInMs).toISOString() }),
+    });
+    const serialized = Challenge.serialize(challenge);
+    issued.set(challenge.id, serialized);
+    return serialized;
   };
 
   /** Why a Base payment is refused, or `undefined` when it is good: what the proxy checks before it would settle. */
@@ -529,6 +603,109 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
     send(response, paid.status, paid.body ?? target.answer, { ...(paid.noReceipt === true ? {} : { 'payment-response': proof }), ...paid.headers });
   };
 
+  const MPP_USED = 'This payment credential was already used. Request the resource again, and pay the new challenge.';
+  const PULL_ONLY = "MPP payments here are signed transactions in pull mode. A transaction you broadcast yourself isn't accepted.";
+
+  /**
+   * The payer of a Tempo credential's transaction and its hash, or why it is refused, as the MPP rail
+   * checks it before it would broadcast: a signed Tempo transaction for chain 4217, valid now and for at
+   * most 10 minutes, with no fee payer, of one TIP-20 transfer of the amount of the currency to the
+   * recipient. Its sender is the address its signature recovers.
+   */
+  const checkTempo = async (charge: Readonly<Record<string, unknown>>, payload: unknown): Promise<MppSettled | string> => {
+    if (!isObject(payload) || payload['type'] !== 'transaction' || typeof payload['signature'] !== 'string') return PULL_ONLY;
+    let transaction: Record<string, unknown>;
+    try {
+      transaction = Transaction.deserialize(payload['signature'] as Hex) as unknown as Record<string, unknown>;
+    } catch {
+      return "The MPP credential's transaction isn't a signed Tempo transaction";
+    }
+    if (transaction['chainId'] !== 4217) return "The payment's transaction is signed for another chain";
+    const now = Math.floor(Date.now() / 1000);
+    const { validBefore, validAfter, feePayerSignature, from, calls } = transaction;
+    if (typeof validBefore !== 'number' || validBefore <= now) return "The payment's transaction has expired, or never does";
+    if (validBefore - now > 600) return "The payment's transaction is valid for too long";
+    if (typeof validAfter === 'number' && validAfter > now) return "The payment's transaction isn't valid yet";
+    if (feePayerSignature !== undefined) return 'The payment asks for a fee payer';
+    if (typeof from !== 'string' || !Array.isArray(calls) || calls.length !== 1 || !isObject(calls[0])) return 'The transaction is not one transfer';
+    const call = calls[0];
+    if (String(call['to']).toLowerCase() !== String(charge['currency']).toLowerCase()) return 'The transaction calls another token';
+    let transfer: { functionName: string; args?: readonly unknown[] | undefined };
+    try {
+      transfer = decodeFunctionData({ abi: Abis.tip20, data: call['data'] as Hex });
+    } catch {
+      return "The transfer can't be read";
+    }
+    const [to, amount] = transfer.args ?? [];
+    if (transfer.functionName !== 'transfer' && transfer.functionName !== 'transferWithMemo') return 'The transaction is not a transfer';
+    if (String(to).toLowerCase() !== String(charge['recipient']).toLowerCase()) return 'The transfer pays another recipient';
+    if (amount !== BigInt(String(charge['amount']))) return 'The transfer pays another amount';
+    const hash = keccak256(await Transaction.serialize(transaction as unknown as Parameters<typeof Transaction.serialize>[0]));
+    return { payer: from, recipient: String(to), amount: String(amount), transaction: hash };
+  };
+
+  /**
+   * A request with `Authorization: Payment …`: its charge must be one this fake offered and not used
+   * before, its transaction checked as the MPP rail checks it, then taken, made up, before the answer.
+   * Nothing is broadcast: there is no chain behind it.
+   */
+  const payMpp = async (target: FakeTarget, header: string, response: ServerResponse): Promise<void> => {
+    const invalid = (message: string): void => fail(response, 402, 'payment_invalid', message);
+    let credential: ReturnType<typeof Credential.deserialize>;
+    try {
+      credential = Credential.deserialize(header);
+    } catch {
+      invalid("Authorization: Payment isn't an MPP credential");
+      return;
+    }
+    const offered = issued.get(credential.challenge.id);
+    let same = false;
+    try {
+      same = offered !== undefined && Challenge.serialize(credential.challenge) === offered;
+    } catch {
+      same = false;
+    }
+    if (!same || target.mpp === undefined) {
+      invalid("The payment doesn't match an option for this price. Request the resource again for the current options.");
+      return;
+    }
+    if (!(Date.parse(credential.challenge.expires ?? '') > Date.now())) {
+      invalid('The payment was refused: Payment expired');
+      return;
+    }
+    const checked = await checkTempo(credential.challenge.request, credential.payload);
+    if (typeof checked === 'string') {
+      invalid(checked);
+      return;
+    }
+    const failure = state.nextMpp;
+    state.nextMpp = undefined;
+    // The Tempo RPC or the replay store couldn't check it: nothing was claimed
+    if (failure === 'payment_unavailable') {
+      fail(response, 503, 'payment_unavailable', "The payment couldn't be checked right now. Nothing was paid. Retry the request.");
+      return;
+    }
+    // A credential works once: its charge, and its transaction
+    if (usedBefore(`mpp:charge:${credential.challenge.id}`) || usedBefore(`eip155:4217:${checked.transaction}`)) {
+      invalid(MPP_USED);
+      return;
+    }
+    const paid = state.nextPaid ?? { status: 200 };
+    state.nextPaid = undefined;
+    // Anything but a 2xx drops the transaction: it is never broadcast
+    if (paid.status < 200 || paid.status >= 300) {
+      send(response, paid.status, paid.body ?? '', paid.headers);
+      return;
+    }
+    if (failure === 'settlement_failed') {
+      fail(response, 502, 'settlement_failed', "The payment couldn't be settled, so the response wasn't sent. Retry the request.");
+      return;
+    }
+    mppSettled.push(checked);
+    const receipt = Receipt.serialize({ method: 'tempo', reference: checked.transaction, status: 'success', timestamp: new Date().toISOString() });
+    send(response, paid.status, paid.body ?? target.answer, { ...(paid.noReceipt === true ? {} : { 'payment-receipt': receipt }), ...paid.headers });
+  };
+
   const pay = (request: IncomingMessage, response: ServerResponse, path: string, urls: { pay: string; api: string }): void => {
     const url = new URL(path, 'http://fake.invalid');
     if (request.method === 'GET' && url.pathname === '/_/check') {
@@ -578,6 +755,12 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
         return;
       }
       void payX402(target, signature, response);
+      return;
+    }
+    // MPP, as the proxy's detector finds it: the Payment scheme in Authorization
+    const authorization = request.headers.authorization;
+    if (authorization !== undefined && /^Payment(?:[ \t]|$)/i.test(authorization)) {
+      void payMpp(target, authorization.trim(), response);
       return;
     }
     if (request.headers.authorization === undefined) {
@@ -681,6 +864,13 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
       state.nearChain = value;
     },
     x402Settled,
+    get nextMpp() {
+      return state.nextMpp;
+    },
+    set nextMpp(value: MppFailure | undefined) {
+      state.nextMpp = value;
+    },
+    mppSettled,
     get rewrite() {
       return state.rewrite;
     },
@@ -696,15 +886,20 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
     routed: () => requests.filter((item) => item.host === 'pay' && !item.path.startsWith('/_/')),
     x402Requests: () =>
       requests.filter((item) => item.host === 'pay' && !item.path.startsWith('/_/') && item.headers['payment-signature'] !== undefined),
+    mppRequests: () =>
+      requests.filter((item) => item.host === 'pay' && !item.path.startsWith('/_/') && /^Payment(?:[ \t]|$)/i.test(item.headers['authorization'] ?? '')),
     reset: () => {
       requests.length = 0;
       accounts.clear();
       keys.clear();
       targets.clear();
       x402Settled.length = 0;
+      mppSettled.length = 0;
       usedPayments.clear();
+      issued.clear();
       state.nearChain = undefined;
       state.nextX402 = undefined;
+      state.nextMpp = undefined;
       state.startingBalance = '0';
       state.rateLimitSignup = false;
       state.nextPaid = undefined;

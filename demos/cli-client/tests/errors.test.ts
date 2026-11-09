@@ -149,13 +149,11 @@ describe('stopFor', () => {
     expect(stopFor(errorOf(undefined, 404, { body: '' }), paid).line()).toBe('CoinMarketCap answered 404. Not charged.');
   });
 
-  it("says \"Not charged\" for the API's own answer below 500 when Credits or x402 paid, which Anyfare gives back", () => {
+  it("says \"Not charged\" for the API's own answer below 500 when Credits, x402 or MPP paid, which Anyfare gives back", () => {
     const answer = errorOf(undefined, 404, { body: 'No such symbol' });
-    for (const way of ['credits', 'base', 'near'] as const) {
+    for (const way of ['credits', 'base', 'near', 'tempo'] as const) {
       expect(stopFor(answer, { side: 'proxy', paid: { way, apiName: 'CoinMarketCap' } }).notCharged).toBe(true);
     }
-    // Tempo is not built yet: nothing is said for it
-    expect(stopFor(answer, { side: 'proxy', paid: { way: 'tempo', apiName: 'CoinMarketCap' } }).notCharged).toBe(false);
   });
 
   it("lets a payer's line decide from the answer's message whether it was charged", () => {
