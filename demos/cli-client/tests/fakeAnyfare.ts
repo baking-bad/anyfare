@@ -178,8 +178,36 @@ export interface X402Settled {
   readonly transaction: string;
 }
 
+/** The top-up routes of the fake. Everything they answer is made up: the addresses, the hash and the amounts. */
+export interface FakeTopups {
+  /** Without it the three routes answer 404 not_found, as an Anyfare without top-ups does. */
+  enabled: boolean;
+  /** Answer the routes with 503 topups_unavailable. */
+  unavailable: boolean;
+  /** A memo the deposit address needs. */
+  memo: string | null;
+  /**
+   * What each answer changes in the top-up's body: the first is the answer to the POST, then one for
+   * each poll that is answered. The last one repeats.
+   */
+  steps: Partial<Record<string, string | null>>[];
+  /** The next polls that answer 502, before any answer from the steps. */
+  failPolls: number;
+  /** The bodies of the POSTs that made a top-up. */
+  readonly created: Record<string, unknown>[];
+  /** How many polls were answered from the steps. */
+  polls: number;
+}
+
+/** Made up, and shaped like a NEAR transaction hash: base58, 35 characters. */
+export const MADE_UP_HASH = 'MadeUpHashForTheTest111111111111111';
+/** Made up: the deposit address of the fake's top-ups. */
+export const MADE_UP_DEPOSIT = 'madeup-deposit-address.test';
+
 export interface FakeAnyfare {
   readonly apiUrl: string;
+  /** The top-up routes. Off until `enabled` is set. */
+  readonly topups: FakeTopups;
   readonly payUrl: string;
   readonly requests: Recorded[];
   /** The Credits a new account starts with, in US dollars. */
@@ -236,6 +264,17 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
   const issued = new Map<string, string>();
   let counter = 0;
   const next = (): number => (counter += 1);
+
+  const topups: FakeTopups = { enabled: false, unavailable: false, memo: null, steps: [], failPolls: 0, created: [], polls: 0 };
+  const resetTopups = (): void => {
+    topups.enabled = false;
+    topups.unavailable = false;
+    topups.memo = null;
+    topups.steps = [];
+    topups.failPolls = 0;
+    topups.created.length = 0;
+    topups.polls = 0;
+  };
 
   const state = {
     startingBalance: '0',
@@ -387,7 +426,91 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
       send(response, 200, { available: usd(account.available), held: usd(account.held) });
       return;
     }
+    if (path.startsWith('/v1/topups')) {
+      topupRoutes(request, response, path, body);
+      return;
+    }
     fail(response, 404, 'not_found', 'Not found');
+  };
+
+  // The statuses' own words, as the real API's `message`
+  const TOPUP_MESSAGES: Readonly<Record<string, string>> = {
+    waiting: 'Waiting for your transfer',
+    incomplete: 'Received less than the least to send. Send the rest before the time runs out',
+    processing: 'Received. Converting',
+    credited: 'Added to your balance',
+    refunded: 'Not added. We hold the amount for you and will return it. Contact us',
+    failed: 'Stopped. We are looking into it',
+    expired: "The time to pay ran out. Don't send to this address",
+  };
+
+  /** A top-up's body: a waiting one, with the changes of a step. Times are from the run. */
+  const topupBody = (input: Record<string, unknown>, step: Partial<Record<string, string | null>>): Record<string, unknown> => {
+    const status = step['status'] ?? 'waiting';
+    return {
+      id: 'topup_madeup1',
+      status,
+      message: TOPUP_MESSAGES[status] ?? status,
+      network: input['network'],
+      token: input['token'],
+      amount: input['amount'],
+      depositAddress: MADE_UP_DEPOSIT,
+      depositMemo: topups.memo,
+      send: input['amount'],
+      sendAtLeast: input['amount'],
+      estimatedCredits: '4.95',
+      payBy: new Date(Date.now() + 3_600_000).toISOString(),
+      addressExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      deposited: null,
+      credited: null,
+      transaction: null,
+      refunded: null,
+      refundReason: null,
+      ...step,
+    };
+  };
+
+  const topupRoutes = (request: IncomingMessage, response: ServerResponse, path: string, body: string): void => {
+    if (!topups.enabled) {
+      fail(response, 404, 'not_found', 'Not found');
+      return;
+    }
+    if (topups.unavailable) {
+      fail(response, 503, 'topups_unavailable', 'Top-ups are off');
+      return;
+    }
+    if (request.method === 'GET' && path === '/v1/topups/options') {
+      send(response, 200, {
+        asset: 'USDC on NEAR',
+        networks: [
+          { name: 'base', minimum: '1', tokens: [{ symbol: 'USDC', address: '0x00000000000000000000000000000000000000c1', decimals: 6 }] },
+          { name: 'near', minimum: '1', tokens: [{ symbol: 'USDC', decimals: 6 }, { symbol: 'wNEAR', decimals: 24 }] },
+        ],
+      });
+      return;
+    }
+    const account = master(request, response);
+    if (account === undefined) return;
+    if (request.method === 'POST' && path === '/v1/topups') {
+      const input = JSON.parse(body === '' ? '{}' : body) as Record<string, unknown>;
+      topups.created.push(input);
+      topups.polls = 0;
+      send(response, 201, topupBody(input, topups.steps[0] ?? {}));
+      return;
+    }
+    if (request.method === 'GET' && path === '/v1/topups/topup_madeup1') {
+      if (topups.failPolls > 0) {
+        topups.failPolls -= 1;
+        fail(response, 502, 'internal_error', 'A made-up failure');
+        return;
+      }
+      topups.polls += 1;
+      const input = topups.created.at(-1) ?? {};
+      const step = topups.steps[Math.min(topups.polls, topups.steps.length - 1)] ?? {};
+      send(response, 200, topupBody(input, step));
+      return;
+    }
+    fail(response, 404, 'not_found', 'No such top-up');
   };
 
   const challenge = (target: FakeTarget, payUrl: string, apiUrl: string) => {
@@ -833,6 +956,7 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
     apiUrl: urls.api,
     payUrl: urls.pay,
     requests,
+    topups,
     get startingBalance() {
       return state.startingBalance;
     },
@@ -897,6 +1021,7 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
       mppSettled.length = 0;
       usedPayments.clear();
       issued.clear();
+      resetTopups();
       state.nearChain = undefined;
       state.nextX402 = undefined;
       state.nextMpp = undefined;

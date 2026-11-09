@@ -164,10 +164,10 @@ describe('runCli', () => {
     expect(fake.out()).toBe('');
   });
 
-  it('returns 1 for a command that is not built yet', async () => {
+  it('returns 1 for topup without a master key', async () => {
     const fake = fakeIo(false);
-    expect(await runCli(['topup', '--network', 'base', '--token', 'USDC', '--amount', '1'], fake.io)).toBe(1);
-    expect(fake.err()).toBe('✘ topup is not built yet\n');
+    expect(await runCli(['topup', '--network', 'base', '--token', 'USDC', '--amount', '1', '--yes'], fake.io)).toBe(1);
+    expect(fake.err()).toBe('✘ ANYFARE_MASTER_KEY is not set. Add it to .env.local. Run npm run demo -- signup first.\n');
   });
 
   it('refuses a label longer than Anyfare takes', () => {

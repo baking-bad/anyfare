@@ -80,6 +80,36 @@ export const ERROR_LINES: ErrorTable = {
   internal_error: { line: fixed('Anyfare failed with an internal error'), notCharged: false },
   // The Platform API
   idempotency_conflict: { line: fixed('Anyfare refused a reference that was used before for another request'), notCharged: true },
+  // The Platform API: top-ups. Anyfare's own messages for these never quote a key, so they are shown
+  topups_unavailable: {
+    line: fixed("Top-ups are off on this Anyfare now. Nothing was made that could take a transfer"),
+    notCharged: true,
+  },
+  unsupported_network: {
+    line: (error) => withText("Anyfare's top-ups don't come from that network", clip(serverMessage(error) ?? '')),
+    notCharged: true,
+  },
+  unknown_token: { line: fixed('Anyfare does not know that token on that network. Give its symbol'), notCharged: true },
+  ambiguous_token: {
+    line: (error) => withText('That token name matches more than one token. Give its contract address', clip(serverMessage(error) ?? '')),
+    notCharged: true,
+  },
+  invalid_amount: {
+    line: (error) => withText('Anyfare cannot take that amount for this token', clip(serverMessage(error) ?? '')),
+    notCharged: true,
+  },
+  amount_too_small: {
+    line: (error) => withText('That top-up is too small', clip(serverMessage(error) ?? '')),
+    notCharged: true,
+  },
+  topup_refused: {
+    line: (error) => withText('The swap service refused the top-up. No address was made', clip(serverMessage(error) ?? '')),
+    notCharged: true,
+  },
+  topup_mismatch: {
+    line: fixed("The swap service's quote was not for what was asked, so no address was given. Nothing to send"),
+    notCharged: true,
+  },
   // The proxy: the routing link and the target
   invalid_target: { line: fixed("Anyfare can't read the routing link: it must be the API's URL without https://"), notCharged: true },
   host_not_allowed: { line: fixed("Anyfare doesn't route payments to this API's host"), notCharged: true },

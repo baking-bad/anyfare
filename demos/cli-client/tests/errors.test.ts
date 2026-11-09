@@ -33,7 +33,18 @@ const CODES: Readonly<Record<string, number>> = {
   facilitator_unavailable: 503,
   payment_unavailable: 503,
   redis_not_ready: 503,
+  topups_unavailable: 503,
+  unsupported_network: 400,
+  unknown_token: 400,
+  ambiguous_token: 400,
+  invalid_amount: 400,
+  topup_refused: 400,
+  topup_mismatch: 502,
+  amount_too_small: 400,
 };
+
+// The top-up codes whose line shows Anyfare's own message: it names the networks, the least amount, or the reason
+const SHOWS_MESSAGE = new Set(['invalid_request', 'unsupported_network', 'ambiguous_token', 'invalid_amount', 'topup_refused', 'amount_too_small']);
 
 // The codes of the proxy's own error table: on a paid call, only these are Anyfare's
 const PROXY_TABLE = [
@@ -66,7 +77,7 @@ describe('stopFor', () => {
       const contexts: ErrorContext[] = PROXY_CODES.has(code) ? [paid, { side: 'api' }, { side: 'proxy' }] : [{ side: 'api' }, { side: 'proxy' }];
       for (const context of contexts) {
         const stop = stopFor(errorOf(code, status), context);
-        if (code !== 'invalid_request') expect(stop.message).not.toContain(SERVER_MESSAGE);
+        if (!SHOWS_MESSAGE.has(code)) expect(stop.message).not.toContain(SERVER_MESSAGE);
         expect(stop.message).not.toMatch(/^Anyfare answered/);
         expect(stop.message).toMatch(/[.]$/);
         expect(stop.message.split('\n')).toHaveLength(1);

@@ -10,6 +10,7 @@ import { loadConfig } from './config.ts';
 import type { Fetch } from './http.ts';
 import { createStyle } from './style.ts';
 import { callWithTempo } from './tempo.ts';
+import { runTopup } from './topup.ts';
 import { DEFAULT_ARGS, TOOLS as IMPLEMENTATIONS } from './tools/index.ts';
 import { Stop, UsageError, toAtomic } from './util.ts';
 import { callWithX402 } from './x402.ts';
@@ -399,7 +400,7 @@ const HANDLERS: { [K in Command['kind']]: Handler<K> } = {
     await showBalance(ctx);
     return 0;
   },
-  topup: async () => notBuilt('topup'),
+  topup: async (command, ctx) => ((await runTopup(ctx, command)).credited ? 0 : 1),
 };
 
 async function dispatch(command: Command, ctx: Context): Promise<number> {
