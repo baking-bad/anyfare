@@ -111,6 +111,15 @@ export class CreditReferenceConflictError extends AnyfareError {
   }
 }
 
+/** A promotion's reference was reused for another account or amount: references are idempotency keys. */
+export class PromotionReferenceConflictError extends AnyfareError {
+  readonly code = 'idempotency_conflict';
+
+  constructor() {
+    super('This reference was already used for another promotion: another account or amount');
+  }
+}
+
 /** An operator reused a treasury transfer's reference for other assets or amounts: references are idempotency keys. */
 export class TreasuryTransferReferenceConflictError extends AnyfareError {
   readonly code = 'idempotency_conflict';

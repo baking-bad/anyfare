@@ -2,7 +2,8 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import { formatUsd, type Clock, type IdGenerator, type MicroUsd } from '@anyfare/common';
 import {
-  CreditReferenceConflictError, HoldReferenceConflictError, InvalidPaymentStatusChangeError, TreasuryTransferReferenceConflictError, utcDay,
+  CreditReferenceConflictError, HoldReferenceConflictError, InvalidPaymentStatusChangeError, PromotionReferenceConflictError,
+  TreasuryTransferReferenceConflictError, utcDay,
   type CaptureResult, type CreditsBalance, type HoldInput, type HoldRefusal, type HoldResult, type KeySpend, type Payment, type PaymentStatus,
   type SettleInput,
 } from '@anyfare/core';
@@ -25,6 +26,8 @@ export const ledgerAccountIds = {
   // The fee on routed calls, and what targets kept while their buyers weren't charged
   routingFees: 'platform:routing_fees',
   routingLosses: 'platform:routing_losses',
+  // Free Credits the platform gave away, such as on sign-up
+  promotions: 'platform:promotions',
 } as const;
 
 export interface LedgerOptions {
@@ -46,6 +49,13 @@ export interface CreditResult {
 export interface Ledger {
   /** Deposits clearing → the buyer's available credits. Idempotent by `reference`. Throws CreditReferenceConflictError for a reused one. */
   credit(input: { readonly accountId: string; readonly amount: MicroUsd; readonly reference: string; readonly requestId?: string }): Promise<CreditResult>;
+  /**
+   * Free Credits the platform gives: promotions → the account's available credits. Idempotent by
+   * `reference`, such as the new account's ID: the same gift again is a replay, and another account or
+   * amount under the same reference throws PromotionReferenceConflictError. Throws RangeError for an
+   * amount of zero or less.
+   */
+  promotion(input: { readonly accountId: string; readonly amount: MicroUsd; readonly reference: string; readonly requestId?: string }): Promise<CreditResult>;
   /**
    * Available → held for a credits payment, counted on its key against the daily budget and the
    * allowance, with the payment row, in one transaction. A refusal moves nothing. The same payment
@@ -142,6 +152,8 @@ const conversion = platformAccount(ledgerAccountIds.conversion, true);
 const routingFees = platformAccount(ledgerAccountIds.routingFees, false);
 // An expense: its balance is minus what targets kept
 const routingLosses = platformAccount(ledgerAccountIds.routingLosses, true);
+// Free Credits come from it, so its balance is minus everything given
+const promotions = platformAccount(ledgerAccountIds.promotions, true);
 
 const isPlatformAccount = (ledgerAccountId: string): boolean => ledgerAccountId.startsWith(platformPrefix);
 
@@ -263,6 +275,12 @@ export const createLedger = ({ db, clock, ids }: LedgerOptions): Ledger => {
   const hasTransaction = async (tx: DatabaseTransaction, operation: string, reference: string): Promise<boolean> =>
     (await findTransaction(tx, operation, reference)) !== undefined;
 
+  // The entries an operation booked under a reference: what a replay must match
+  const bookedPostings = (tx: DatabaseTransaction, operation: string, reference: string): Promise<Posting[]> =>
+    tx.select({ ledgerAccountId: ledgerEntries.ledgerAccountId, amount: ledgerEntries.amount }).from(ledgerTransactions)
+      .innerJoin(ledgerEntries, eq(ledgerEntries.transactionId, ledgerTransactions.id))
+      .where(and(eq(ledgerTransactions.operation, operation), eq(ledgerTransactions.reference, reference)));
+
   // The first transaction of an operation the reference already used: what a replay returns
   const replayOf = async (tx: DatabaseTransaction, operation: string, reference: string): Promise<CreditResult> => {
     const existing = await findTransaction(tx, operation, reference);
@@ -343,6 +361,32 @@ export const createLedger = ({ db, clock, ids }: LedgerOptions): Ledger => {
       const refused = await post(tx, transactionId, [{ ledgerAccountId: depositsClearing.id, amount: -amount }, { ledgerAccountId: available, amount }], now);
       if (refused !== undefined)
         throw new Error(`The credit could not be posted: the balance of ${refused} is missing or may not go below zero`);
+
+      return { transactionId, createdAt: now, replayed: false };
+    }),
+
+    promotion: ({ accountId, amount, reference, requestId }) => withTransaction(db, async tx => {
+      if (amount <= 0n)
+        throw new RangeError('A promotion must give more than zero');
+
+      const postings: readonly Posting[] = [
+        { ledgerAccountId: promotions.id, amount: -amount },
+        { ledgerAccountId: ledgerAccountIds.available(accountId), amount },
+      ];
+      const now = clock.now();
+      await ensureAccounts(tx, [...accountsOf(accountId, 'available', 'held'), promotions], now);
+      const transactionId = await insertTransaction(tx, 'promotion', reference, requestId, now);
+      if (!transactionId) {
+        // The reference was used before: the same gift again is a replay, anything else a conflict
+        if (!samePostings(await bookedPostings(tx, 'promotion', reference), postings))
+          throw new PromotionReferenceConflictError();
+
+        return replayOf(tx, 'promotion', reference);
+      }
+
+      const refused = await post(tx, transactionId, postings, now);
+      if (refused !== undefined)
+        throw new Error(`The promotion could not be posted: the balance of ${refused} is missing or may not go below zero`);
 
       return { transactionId, createdAt: now, replayed: false };
     }),
@@ -575,10 +619,7 @@ export const createLedger = ({ db, clock, ids }: LedgerOptions): Ledger => {
       const transactionId = await insertTransaction(tx, 'treasury_transfer', reference, requestId, now);
       if (!transactionId) {
         // The reference was used before: the same transfer again is a replay, anything else a conflict
-        const booked = await tx.select({ ledgerAccountId: ledgerEntries.ledgerAccountId, amount: ledgerEntries.amount }).from(ledgerTransactions)
-          .innerJoin(ledgerEntries, eq(ledgerEntries.transactionId, ledgerTransactions.id))
-          .where(and(eq(ledgerTransactions.operation, 'treasury_transfer'), eq(ledgerTransactions.reference, reference)));
-        if (!samePostings(booked, postings))
+        if (!samePostings(await bookedPostings(tx, 'treasury_transfer', reference), postings))
           throw new TreasuryTransferReferenceConflictError();
 
         return replayOf(tx, 'treasury_transfer', reference);

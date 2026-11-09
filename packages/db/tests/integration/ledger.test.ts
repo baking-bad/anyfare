@@ -6,13 +6,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { parseUsd, Secret } from '@anyfare/common';
 import {
   CreditReferenceConflictError, hashApiKey, HoldReferenceConflictError, InvalidPaymentStatusChangeError, PaymentFinalizedError,
-  TreasuryTransferReferenceConflictError, utcDay, type HoldInput, type NewPayment, type PaymentStatus, type SettleInput,
+  PromotionReferenceConflictError, TreasuryTransferReferenceConflictError, utcDay, type HoldInput, type NewPayment, type PaymentStatus, type SettleInput,
 } from '@anyfare/core';
 import { createFakeClock, createFakeIdGenerator, createTestDatabase, type FakeClock, type TestDatabase } from '@anyfare/testing';
 
 import {
   balances, createAccountRepository, createLedger, createPaymentKeyRepository, createPaymentRepository, createRoutingRepository, ledgerAccountIds,
-  ledgerAccounts, targetPayments, type Ledger, type TargetPaymentStatus,
+  ledgerAccounts, targetPayments, withTransaction, type Ledger, type TargetPaymentStatus,
 } from '../../src/index.js';
 
 let database: TestDatabase;
@@ -263,6 +263,125 @@ describe('operator credits', () => {
       .where(sql`${balances.ledgerAccountId} = ${ledgerAccountIds.available(buyer.accountId)}`)) as { cause?: { constraint?: string } };
 
     expect(error.cause?.constraint).toBe('balances_not_negative_check');
+  });
+});
+
+describe('promotions', () => {
+  const promotions = ledgerAccountIds.promotions;
+  const promotionsBalance = async () => (await ledger.balancesOf([promotions])).get(promotions) ?? 0n;
+
+  it('moves free Credits from promotions to the account\'s available balance, once per reference', async () => {
+    const accountId = await newAccount();
+    const before = await promotionsBalance();
+
+    const first = await ledger.promotion({ accountId, amount: usd('0.1'), reference: accountId, requestId: 'req-signup' });
+    clock.advance(1_000);
+    const again = await ledger.promotion({ accountId, amount: usd('0.1'), reference: accountId });
+
+    expect(first).toEqual({ transactionId: expect.any(String), createdAt: new Date(noon), replayed: false });
+    expect(again).toEqual({ ...first, replayed: true });
+    expect(await ledger.balance(accountId)).toEqual({ available: usd('0.1'), held: 0n });
+    expect(await ledger.balancesOf([promotions, ledgerAccountIds.available(accountId), ledgerAccountIds.held(accountId)])).toEqual(new Map([
+      [promotions, before - usd('0.1')],
+      [ledgerAccountIds.available(accountId), usd('0.1')],
+      [ledgerAccountIds.held(accountId), 0n],
+    ]));
+    expect(await movements(accountId)).toEqual([
+      { operation: 'promotion', ledger_account_id: promotions, amount: '-100000' },
+      { operation: 'promotion', ledger_account_id: ledgerAccountIds.available(accountId), amount: '100000' },
+    ]);
+    expect(await transactionsFor(accountId)).toEqual(['promotion']);
+    expect(await unbalancedTransactions()).toEqual([]);
+    expect(await negativeBalances()).toEqual([]);
+  });
+
+  it('lets promotions go below zero: its balance is minus everything given', async () => {
+    const [accountId, other] = [await newAccount(), await newAccount()];
+    const before = await promotionsBalance();
+
+    await ledger.promotion({ accountId, amount: usd('0.1'), reference: accountId });
+    await ledger.promotion({ accountId: other, amount: usd('0.25'), reference: other });
+
+    expect(await promotionsBalance()).toBe(before - usd('0.35'));
+    expect(before - usd('0.35')).toBeLessThan(0n);
+    const { rows } = await database.db.execute<{ type: string; may_go_negative: boolean }>(sql`
+      select a.type, b.may_go_negative from ledger_accounts a join balances b on b.ledger_account_id = a.id where a.id = ${promotions}
+    `);
+    expect(rows).toEqual([{ type: 'promotions', may_go_negative: true }]);
+  });
+
+  it('refuses a reference reused for another account or amount, and moves nothing', async () => {
+    const [accountId, other] = [await newAccount(), await newAccount()];
+    const first = await ledger.promotion({ accountId, amount: usd('0.1'), reference: accountId });
+    const before = await promotionsBalance();
+
+    expect(await thrown(ledger.promotion({ accountId, amount: usd('0.2'), reference: accountId }))).toBeInstanceOf(PromotionReferenceConflictError);
+    expect(await thrown(ledger.promotion({ accountId: other, amount: usd('0.1'), reference: accountId }))).toBeInstanceOf(PromotionReferenceConflictError);
+    expect(await promotionsBalance()).toBe(before);
+    expect(await ledger.balance(accountId)).toEqual({ available: usd('0.1'), held: 0n });
+    expect(await ledger.balance(other)).toEqual({ available: 0n, held: 0n });
+    expect(await transactionsFor(accountId)).toEqual(['promotion']);
+    // The first promotion, asked again, is still a replay
+    expect(await ledger.promotion({ accountId, amount: usd('0.1'), reference: accountId })).toEqual({ ...first, replayed: true });
+  });
+
+  it('keys a promotion apart from a credit with the same reference', async () => {
+    const accountId = await newAccount();
+
+    await ledger.credit({ accountId, amount: usd('1'), reference: accountId });
+    const promotion = await ledger.promotion({ accountId, amount: usd('0.1'), reference: accountId });
+
+    expect(promotion.replayed).toBe(false);
+    expect(await ledger.balance(accountId)).toEqual({ available: usd('1.1'), held: 0n });
+    expect(await transactionsFor(accountId)).toEqual(['credit', 'promotion']);
+  });
+
+  it('gives once when 10 promotions with one reference run concurrently, and answers the other 9 as replays', async () => {
+    const accountId = await newAccount();
+    const before = await promotionsBalance();
+
+    const results = await Promise.all(Array.from({ length: 10 }, () => ledger.promotion({ accountId, amount: usd('0.1'), reference: accountId })));
+
+    expect(results.filter(result => result.replayed)).toHaveLength(9);
+    expect(new Set(results.map(result => result.transactionId)).size).toBe(1);
+    expect(await ledger.balance(accountId)).toEqual({ available: usd('0.1'), held: 0n });
+    expect(await promotionsBalance()).toBe(before - usd('0.1'));
+    expect(await unbalancedTransactions()).toEqual([]);
+  });
+
+  it('refuses a promotion of zero or less', async () => {
+    const accountId = await newAccount();
+
+    expect(await thrown(ledger.promotion({ accountId, amount: 0n, reference: accountId }))).toBeInstanceOf(RangeError);
+    expect(await thrown(ledger.promotion({ accountId, amount: -1n, reference: accountId }))).toBeInstanceOf(RangeError);
+    expect(await transactionsFor(accountId)).toEqual([]);
+    expect(await ledger.balance(accountId)).toEqual({ available: 0n, held: 0n });
+  });
+
+  it('joins a transaction it is given, and rolls back with it', async () => {
+    const accountId = await newAccount();
+    const before = await promotionsBalance();
+
+    const error = await thrown(withTransaction(database.db, async tx => {
+      await createLedger({ db: tx, clock, ids }).promotion({ accountId, amount: usd('0.1'), reference: accountId });
+      throw new Error('a later step failed');
+    }));
+
+    expect((error as Error).message).toBe('a later step failed');
+    expect(await transactionsFor(accountId)).toEqual([]);
+    expect(await ledger.balance(accountId)).toEqual({ available: 0n, held: 0n });
+    expect(await promotionsBalance()).toBe(before);
+  });
+
+  it('gives Credits a payment key can hold', async () => {
+    const accountId = await newAccount();
+    const keyId = await newKey(accountId);
+    await ledger.promotion({ accountId, amount: usd('0.1'), reference: accountId });
+
+    const held = await hold({ accountId, keyId }, usd('0.04'));
+
+    expect(held.ok).toBe(true);
+    expect(await ledger.balance(accountId)).toEqual({ available: usd('0.06'), held: usd('0.04') });
   });
 });
 
