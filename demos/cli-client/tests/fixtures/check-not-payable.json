@@ -1,0 +1,9 @@
+{
+  "note": "Made up for the test, dated 2026-11-09.",
+  "status": 200,
+  "body": {
+    "payable": false,
+    "reason": "not_payable",
+    "message": "The target does not answer a GET with a payment request"
+  }
+}

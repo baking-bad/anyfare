@@ -1,0 +1,20 @@
+{
+  "note": "Made up for the test, dated 2026-11-09. The fee is made up.",
+  "status": 200,
+  "body": {
+    "payable": true,
+    "target": "https://pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest?symbol=BTC&convert=USD",
+    "price": {
+      "amount": "0.01",
+      "currency": "USD",
+      "asset": "base-usdc",
+      "network": "eip155:8453"
+    },
+    "quote": {
+      "amount": "0.011",
+      "fee": "0.001",
+      "currency": "USD"
+    },
+    "link": "https://pay.example.test/pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest?symbol=BTC&convert=USD"
+  }
+}

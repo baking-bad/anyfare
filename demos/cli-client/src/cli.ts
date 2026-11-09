@@ -1,7 +1,10 @@
 import { parseArgs } from 'node:util';
 import type { Readable, Writable } from 'node:stream';
+import { explainHeader, explainLines, planFailure, readPlan } from './explain.ts';
+import { loadConfig } from './config.ts';
 import type { Fetch } from './http.ts';
 import { createStyle } from './style.ts';
+import { TOOLS as IMPLEMENTATIONS } from './tools/index.ts';
 import { Stop, UsageError, toAtomic } from './util.ts';
 
 export type Tool = 'cmc' | '3route' | 'evidence';
@@ -338,7 +341,16 @@ const HANDLERS: { [K in Command['kind']]: Handler<K> } = {
     return notBuilt('interactive');
   },
   call: async () => notBuilt('call'),
-  explain: async () => notBuilt('explain'),
+  explain: async (command, io) => {
+    const config = loadConfig(io.env);
+    const prepared = await IMPLEMENTATIONS[command.args.tool].prepare(command.args, { fetch: io.fetch });
+    const plan = await readPlan({ fetch: io.fetch, config, prepared });
+    const style = createStyle(io.stdout);
+    io.stdout.write(`${[...explainHeader(plan, style), ...explainLines(plan, undefined, style)].join('\n')}\n`);
+    const failure = planFailure(plan);
+    if (failure !== undefined) throw new Stop(failure);
+    return 0;
+  },
   signup: async () => notBuilt('signup'),
   'key-create': async () => notBuilt('key-create'),
   balance: async () => notBuilt('balance'),
