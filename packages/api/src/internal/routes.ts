@@ -22,7 +22,7 @@ export interface InternalRoutesOptions {
   readonly ids: IdGenerator;
   // INTERNAL_API_SECRET. Without it, every internal call is refused.
   readonly secret: Secret | undefined;
-  // The asset registry's names, for treasury transfers
+  // The asset registry's names, for treasury transfers and fundings
   readonly assetNames: ReadonlySet<string>;
   // The audit log inside a call's transaction. Default: the audit_log repository on it.
   readonly auditLog?: (tx: DatabaseTransaction) => AuditLog;
@@ -78,6 +78,31 @@ interface TransferBody {
   readonly transactions: readonly string[];
 }
 
+// The most one outside funding may be, in micro-USD: $100,000. A typo, such as an extra digit, is refused.
+const maxFundingAmount = 100_000_000_000n;
+
+const fundingBodySchema = {
+  type: 'object',
+  required: ['reference', 'asset', 'amount', 'transactions'],
+  properties: {
+    reference: { type: 'string', pattern: '^[A-Za-z0-9._:-]{1,128}$' },
+    asset: { type: 'string', pattern: '^[a-z0-9-]{1,64}$' },
+    amount: { type: 'string', pattern: usdAmountPattern, maxLength: 26 },
+    // The operator's references: transaction hashes or explorer links
+    transactions: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 256 } },
+    note: { type: 'string', maxLength: 200 },
+  },
+  additionalProperties: false,
+} as const;
+
+interface FundingBody {
+  readonly reference: string;
+  readonly asset: string;
+  readonly amount: string;
+  readonly transactions: readonly string[];
+  readonly note?: string;
+}
+
 // A lowercase DNS name, as `new URL(...).hostname` gives it
 const hostPattern = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
@@ -112,8 +137,8 @@ export const createInternalAuth = (secret: Secret | undefined) => async (request
 /**
  * The internal API. `POST /internal/v1/accounts/{id}/credits` credits an account's balance, once
  * per `reference`. The proxy registers routed endpoints, and operators set their fees, block hosts,
- * and record treasury transfers. Every call that changes something writes the audit log in its
- * transaction; a refused call writes nothing.
+ * and record treasury transfers and outside fundings. Every call that changes something writes the
+ * audit log in its transaction; a refused call writes nothing.
  */
 export const registerInternalRoutes = (app: FastifyInstance, {
   db,
@@ -300,6 +325,48 @@ export const registerInternalRoutes = (app: FastifyInstance, {
     return reply.status(result.replayed ? 200 : 201).send({
       reference, transactionId: result.transactionId, conversionCost: formatUsd(fromAmount - toAmount), replayed: result.replayed,
       createdAt: result.createdAt.toISOString(),
+    });
+  });
+
+  // An operator records money the owner put into a platform wallet from outside, with its transactions. The ledger books it once.
+  app.post<{ Body: FundingBody }>('/internal/v1/treasury/fundings', { schema: { body: fundingBodySchema } }, async (request, reply) => {
+    const { reference, asset, transactions, note } = request.body;
+    let amount: bigint;
+    try {
+      amount = parseUsd(request.body.amount);
+    }
+    catch {
+      throw new InvalidRequestError('amount is too large');
+    }
+    if (amount === 0n)
+      throw new InvalidRequestError('amount must be more than zero');
+    if (amount > maxFundingAmount)
+      throw new InvalidRequestError('amount is above the most one funding may be');
+    if (!assetNames.has(asset))
+      throw new InvalidRequestError('asset must be in the asset registry');
+
+    const actor = { kind: 'internal_api', id: callerOf(request) } as const;
+    const result = await withTransaction(db, async tx => {
+      // The same reference again with the same asset and amount is a replay; with another, the ledger throws a conflict
+      const booked = await createLedger({ db: tx, clock, ids }).funding({ reference, asset, amount, requestId: request.id });
+      if (!booked.replayed) {
+        await createTreasuryRepository({ db: tx }).recordFunding({
+          reference, asset, amount, transactions: [...transactions], note: note ?? null, recordedBy: actor.id,
+          ledgerTransactionId: booked.transactionId, createdAt: booked.createdAt,
+        });
+      }
+      await auditLog(tx).append({
+        actor, action: 'treasury.funding', subject: { kind: 'treasury_funding', id: reference }, requestId: request.id,
+        details: { asset, amount: amount.toString(), transactionId: booked.transactionId, replayed: booked.replayed },
+      });
+
+      return booked;
+    });
+
+    request.log.info({ caller: actor.id, reference, asset, amount: formatUsd(amount), replayed: result.replayed }, 'Outside funding was recorded');
+
+    return reply.status(result.replayed ? 200 : 201).send({
+      reference, transactionId: result.transactionId, replayed: result.replayed, createdAt: result.createdAt.toISOString(),
     });
   });
 };
