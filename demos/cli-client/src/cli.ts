@@ -11,7 +11,8 @@ import type { Fetch } from './http.ts';
 import { createStyle } from './style.ts';
 import { DEFAULT_ARGS, TOOLS as IMPLEMENTATIONS } from './tools/index.ts';
 import { runInteractive } from './interactive.ts';
-import { runTopup } from './topup.ts';
+import { DEFAULT_TIMING, runTopup } from './topup.ts';
+import type { TopupHooks } from './topup.ts';
 import { Stop, UsageError, toAtomic } from './util.ts';
 
 export type Tool = 'cmc' | '3route' | 'evidence';
@@ -66,6 +67,8 @@ export interface Io {
   readonly fetch: Fetch;
   /** The app's directory, where `.env.local` is. The app writes nowhere else. */
   readonly appDir: string;
+  /** How a top-up waits and hears Ctrl-C. Left out, it polls every 5 seconds and listens on the process. */
+  readonly topup?: TopupHooks;
 }
 
 const TOOLS: readonly Tool[] = ['cmc', '3route', 'evidence'];
@@ -374,7 +377,10 @@ const HANDLERS: { [K in Command['kind']]: Handler<K> } = {
     await showBalance(ctx);
     return 0;
   },
-  topup: async (command, ctx) => ((await runTopup(ctx, command)).credited ? 0 : 1),
+  topup: async (command, ctx) =>
+    (await runTopup(ctx, command, ctx.io.topup?.timing ?? DEFAULT_TIMING, ctx.io.topup?.signals === undefined ? {} : { signals: ctx.io.topup.signals })).credited
+      ? 0
+      : 1,
 };
 
 async function dispatch(command: Command, ctx: Context): Promise<number> {

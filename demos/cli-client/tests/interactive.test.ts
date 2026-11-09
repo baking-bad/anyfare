@@ -1,15 +1,17 @@
 // The interactive mode, driven by scripted answers through stdin, against the fake Anyfare. Every key,
 // address and price here is made up.
 
+import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { PassThrough } from 'node:stream';
 import { generatePrivateKey } from 'viem/accounts';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.ts';
 import { toAtomic } from '../src/util.ts';
 import { forwardingFetch, startFakeAnyfare, toolRoutes, toolTargets } from './fakeAnyfare.ts';
 import type { FakeAnyfare, FakeTarget } from './fakeAnyfare.ts';
-import { captureIo, tempAppDir } from './helpers.ts';
+import { captureIo, tempAppDir, waitUntil } from './helpers.ts';
 
 const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 // Made up: where the fake Anyfare takes USDC on Base
@@ -268,5 +270,112 @@ describe('the interactive mode', () => {
     expect(result.err).toContain('✘ Nothing was created.');
     expect(fake.requests.some((item) => item.method === 'POST' && item.path === '/v1/accounts')).toBe(false);
     expect(fake.x402Settled).toHaveLength(1);
+  });
+});
+
+describe('the interactive mode: the top-up minimum', () => {
+  // CoinMarketCap, the default pair, Credits, yes to the top-up, the first network (base, $1), the first token (USDC)
+  const TO_AMOUNT = ['1', '', '1', 'y', '1', '1'];
+  const posts = () => fake.requests.filter((item) => item.method === 'POST' && item.path === '/v1/topups');
+
+  it('says the amount is under the minimum, sends nothing, and asks for the amount again', async () => {
+    fake.topups.enabled = true;
+    fake.topups.steps = [{ status: 'credited', deposited: '5', credited: '4.95' }];
+    const result = await session([...TO_AMOUNT, '0.1', '5', 'y', 'y', 'n'], funded('0.001'));
+    expect(result.code).toBe(0);
+    expect(result.out.match(/A top-up on base must be worth at least \$1\. 0\.1 USDC is worth \$0\.10\./g)).toHaveLength(1);
+    expect(result.out.match(/Amount of USDC to send/g)).toHaveLength(2);
+    expect(fake.topups.created).toEqual([{ network: 'base', token: 'USDC', amount: '5' }]);
+    // The list was read once for the questions and the check
+    expect(fake.requests.filter((item) => item.path === '/v1/topups/options')).toHaveLength(1);
+  });
+
+  it('gives up after three amounts under the minimum, with nothing sent', async () => {
+    fake.topups.enabled = true;
+    const result = await session([...TO_AMOUNT, '0.1', '0.2', '0.3', 'n'], funded('0.001'));
+    expect(result.out.match(/must be worth at least \$1\./g)).toHaveLength(3);
+    expect(result.err).toContain('No valid amount.');
+    expect(posts()).toEqual([]);
+  });
+
+  it('sends a token it cannot price, and keeps the API\'s own answer', async () => {
+    fake.topups.enabled = true;
+    fake.topups.refuse = 'Amount is too low for this route (made up)';
+    // The second network (near), its second token (wNEAR), 0.1
+    const result = await session(['1', '', '1', 'y', '2', '2', '0.1', 'y', 'n'], funded('0.001'));
+    expect(result.out).not.toContain('must be worth at least');
+    expect(posts()).toHaveLength(1);
+    expect(result.err).toContain('✘ The swap service refused the top-up. No address was made: Amount is too low for this route (made up)');
+    expect(result.err).toContain("That is under 1Click's own minimum for this route. Try a larger amount.");
+  });
+});
+
+describe('the interactive mode: stopping the wait for a deposit', () => {
+  const STOPPED = "Stopped waiting. The address stays open until";
+
+  /** The session with its input left open, so that Enter can be typed during the wait. */
+  function open(env: Record<string, string>) {
+    const { fetch } = forwardingFetch(toolRoutes());
+    const signals = new EventEmitter();
+    const io = captureIo(
+      fetch,
+      { ANYFARE_API_URL: fake.apiUrl, ANYFARE_PAY_URL: fake.payUrl, ...env },
+      { appDir: app.dir, isTerminal: true },
+    );
+    const stdin = io.io.stdin as PassThrough;
+    const running = runCli([], { ...io.io, topup: { timing: { intervalMs: 20, limitMs: 20_000 }, signals } });
+    const type = (...lines: string[]): void => {
+      stdin.write(`${lines.join('\n')}\n`);
+    };
+    return { io, signals, running, type, stdin };
+  }
+
+  // CoinMarketCap, the default pair, Credits, yes to the top-up, base, USDC, 5, yes to the address
+  const TO_WAIT = ['1', '', '1', 'y', '1', '1', '5', 'y'];
+
+  it('stops on Enter, and goes back to "How do you pay?"', async () => {
+    fake.topups.enabled = true;
+    fake.topups.steps = [{ status: 'waiting' }];
+    const run = open(funded('0.001'));
+    run.type(...TO_WAIT);
+    await waitUntil(() => run.io.out().includes('Press Enter to stop waiting.'), 'the hint');
+    run.type('');
+    await waitUntil(() => run.io.out().match(/How do you pay\?/g)?.length === 2, 'the way-to-pay question again');
+    expect(run.io.out()).toContain(STOPPED);
+    expect(run.io.out().indexOf(STOPPED)).toBeLessThan(run.io.out().lastIndexOf('How do you pay?'));
+    expect(run.signals.listenerCount('SIGINT')).toBe(0);
+    // The way to pay is answered: the answer is read by the question, not lost to the wait
+    run.stdin.end();
+    await run.running;
+    expect(run.io.err()).not.toContain('Press Enter');
+  });
+
+  it('stops on the first Ctrl-C, and goes back to "How do you pay?"; a second Ctrl-C has no handler', async () => {
+    fake.topups.enabled = true;
+    fake.topups.steps = [{ status: 'waiting' }];
+    const run = open(funded('0.001'));
+    run.type(...TO_WAIT);
+    await waitUntil(() => run.io.out().includes('Press Enter to stop waiting.'), 'the hint');
+    expect(run.signals.listenerCount('SIGINT')).toBe(1);
+    run.signals.emit('SIGINT');
+    await waitUntil(() => run.io.out().match(/How do you pay\?/g)?.length === 2, 'the way-to-pay question again');
+    expect(run.io.out()).toContain(STOPPED);
+    expect(run.signals.listenerCount('SIGINT')).toBe(0);
+    run.stdin.end();
+    await run.running;
+  });
+
+  it('goes on to the call when the top-up is credited, and reads the next answer at its question', async () => {
+    fake.topups.enabled = true;
+    fake.topups.steps = [{ status: 'waiting' }, { status: 'waiting' }, { status: 'credited', deposited: '5', credited: '4.95' }];
+    const run = open(funded('0.001'));
+    run.type(...TO_WAIT);
+    await waitUntil(() => run.io.out().includes('Pay $0.011 of Credits? [y/N]'), 'the question to pay');
+    expect(run.io.out()).not.toContain(STOPPED);
+    expect(run.io.out()).toContain('✔ Added to your balance');
+    // The answers typed now are read by the questions, in order: no to the payment, no to another call
+    run.type('n', 'n');
+    expect(await run.running).toBe(0);
+    expect(run.io.err()).toBe('✘ Nothing was sent. Not charged.\n');
   });
 });

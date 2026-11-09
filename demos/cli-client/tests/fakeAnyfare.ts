@@ -191,6 +191,8 @@ export interface FakeTopups {
    * each poll that is answered. The last one repeats.
    */
   steps: Partial<Record<string, string | null>>[];
+  /** Answer the POST with 400 topup_refused and this message, as Anyfare does when the swap service refuses. */
+  refuse: string | null;
   /** The next polls that answer 502, before any answer from the steps. */
   failPolls: number;
   /** The bodies of the POSTs that made a top-up. */
@@ -265,12 +267,13 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
   let counter = 0;
   const next = (): number => (counter += 1);
 
-  const topups: FakeTopups = { enabled: false, unavailable: false, memo: null, steps: [], failPolls: 0, created: [], polls: 0 };
+  const topups: FakeTopups = { enabled: false, unavailable: false, memo: null, steps: [], refuse: null, failPolls: 0, created: [], polls: 0 };
   const resetTopups = (): void => {
     topups.enabled = false;
     topups.unavailable = false;
     topups.memo = null;
     topups.steps = [];
+    topups.refuse = null;
     topups.failPolls = 0;
     topups.created.length = 0;
     topups.polls = 0;
@@ -493,6 +496,10 @@ export async function startFakeAnyfare(): Promise<FakeAnyfare> {
     if (account === undefined) return;
     if (request.method === 'POST' && path === '/v1/topups') {
       const input = JSON.parse(body === '' ? '{}' : body) as Record<string, unknown>;
+      if (topups.refuse !== null) {
+        fail(response, 400, 'topup_refused', topups.refuse);
+        return;
+      }
       topups.created.push(input);
       topups.polls = 0;
       send(response, 201, topupBody(input, topups.steps[0] ?? {}));

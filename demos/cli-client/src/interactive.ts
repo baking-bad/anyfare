@@ -13,7 +13,7 @@ import { planFailure, readPlan } from './explain.ts';
 import { ENV_LOCAL } from './envLocal.ts';
 import * as platform from './platform.ts';
 import { createStyle } from './style.ts';
-import { OPERATOR_CREDITS, TOPUPS_NOT_YET, isPositiveAmount, runTopup, topupOptions } from './topup.ts';
+import { DEFAULT_TIMING, OPERATOR_CREDITS, TOPUPS_NOT_YET, isPositiveAmount, minimumRefusal, runTopup, topupOptions } from './topup.ts';
 import { DEFAULT_ARGS, TOOLS } from './tools/index.ts';
 import type { ToolId } from './tools/types.ts';
 import { Stop, UsageError, usd } from './util.ts';
@@ -183,13 +183,25 @@ async function offerTopup(ctx: Context, config: Config): Promise<boolean> {
   }
   tokenName = token;
   let amount = '';
-  for (let attempt = 1; attempt <= MAX_TRIES && !isPositiveAmount(amount); attempt += 1) {
+  let valid = false;
+  for (let attempt = 1; attempt <= MAX_TRIES && !valid; attempt += 1) {
     amount = await prompter.ask(`Amount of ${tokenName} to send`);
-    if (!isPositiveAmount(amount) && attempt < MAX_TRIES) ctx.print('Type a plain decimal amount above zero, such as 5.');
+    if (!isPositiveAmount(amount)) {
+      if (attempt < MAX_TRIES) ctx.print('Type a plain decimal amount above zero, such as 5.');
+      continue;
+    }
+    // Under the network's minimum: said at once, and asked again, with nothing sent
+    const refusal = options === undefined ? undefined : minimumRefusal(options, network, token, amount);
+    if (refusal === undefined) valid = true;
+    else ctx.print(refusal);
   }
-  if (!isPositiveAmount(amount)) throw new Stop('No valid amount.');
+  if (!valid) throw new Stop('No valid amount.');
   try {
-    return (await runTopup(ctx, { network, token, amount, yes: false })).credited;
+    return (await runTopup(ctx, { network, token, amount, yes: false }, ctx.io.topup?.timing ?? DEFAULT_TIMING, {
+        options: options ?? null,
+        interactive: true,
+        ...(ctx.io.topup?.signals !== undefined && { signals: ctx.io.topup.signals }),
+      })).credited;
   } catch (error) {
     if (!(error instanceof Stop)) throw error;
     printFailure(ctx, error);

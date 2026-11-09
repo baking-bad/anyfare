@@ -108,6 +108,7 @@ Run every command from `demos/cli-client`. Add `--` after `npm run demo`, so npm
 - You see: questions. Pick a tool, give its data, pick a way to pay, then confirm.
 - For Credits, it offers to run `signup`, `key create` and a top-up when something is missing.
 - It needs a terminal. After each call it asks "Another call?".
+- While it waits for a deposit, press Enter, or Ctrl-C once, to stop waiting. It goes back to "How do you pay?". A second Ctrl-C ends the app.
 - Cost: free until you confirm a call. Then the cost is the call's.
 
 ### `explain`
@@ -139,7 +140,9 @@ Run every command from `demos/cli-client`. Add `--` after `npm run demo`, so npm
 ### `call`
 
 - Command: `npm run demo -- call --tool <tool> --pay <way> [data flags] [--explain] [--yes]`
-- You see: the plan and the price, a question, the signing, the call, the answer, and the proof.
+- You see: the plan and the price, a question, the signing, the call, then the result.
+- The result stands apart, between two blank lines. A bold header names the tool. The answer is under a left bar. Under it, a `Proof` block shows the receipt, or the transaction with its link. The last line says who paid what.
+- The result keeps its shape without colors, for piped output or `NO_COLOR`.
 - `--explain` prints the full plan before the question. `--yes` skips the question.
 - Without a terminal, `--yes` is required.
 - Every `call` is paid. What it costs:
@@ -184,7 +187,12 @@ Run every command from `demos/cli-client`. Add `--` after `npm run demo`, so npm
 - You see: a deposit address and what to send. Then the app checks every 5 seconds, for at most 30 minutes, until the top-up is credited or ends.
 - Send the transfer yourself, from a wallet of yours. The app sends nothing.
 - Cost: what you send. The network's fee is yours. Needs `ANYFARE_MASTER_KEY`.
-- Exit code 0 if credited, 1 if not. `Ctrl-C` is safe: `balance` shows the result later.
+- Before it asks for an address, it checks the amount against the network's minimum. It does this for `USDC`, `USDT`, `USDT0` and `DAI` only. These are worth one US dollar each. For any other token, the app can't price it. It sends the request, and shows the API's own answer.
+- Under the minimum, the app says so in one line and sends nothing. In the interactive mode it asks for the amount again, up to 3 times.
+- If the swap service still says the amount is too low, the app adds a line: try a larger amount.
+- On a terminal, the app prints "Press Enter to stop waiting." Press Enter to stop at once.
+- There is no way to cancel a top-up. The address stays open until its `Pay by` time. A transfer sent before then is still credited, and `balance` shows it. After that time, don't send to it. The app says this when you stop.
+- Exit code 0 if credited, 1 if not, also when you stop waiting. `Ctrl-C` ends the app. It is safe: `balance` shows the result later.
 - If this Anyfare has no top-ups, the app says so in one line.
 
 ## What protects your money

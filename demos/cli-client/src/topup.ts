@@ -1,6 +1,7 @@
 // A top-up: ask Anyfare for a deposit address, say where to send, and watch the transfer until it is
 // credited or ends. The app sends nothing: the person sends from a wallet of their own.
 
+import type { EventEmitter } from 'node:events';
 import { masterKeyOf } from './account.ts';
 import { loadConfig } from './config.ts';
 import type { Config } from './config.ts';
@@ -59,7 +60,27 @@ export interface Topup {
 
 export interface TopupOutcome {
   readonly credited: boolean;
+  /** Anyfare's last status, or `stopped` when the person stopped waiting. */
   readonly status: string;
+}
+
+/** What a top-up waits with, for a test to replace: the poll timing, and where Ctrl-C arrives. */
+export interface TopupHooks {
+  readonly timing?: TopupTiming;
+  readonly signals?: Pick<EventEmitter, 'once' | 'removeListener'>;
+}
+
+/** What the interactive mode adds to one top-up. */
+export interface TopupExtras {
+  /**
+   * The network list the caller has read: `null` when it could not be read, so there is no minimum to
+   * check. Left out, the top-up reads it itself, once.
+   */
+  readonly options?: TopupOptions | null;
+  /** True in the interactive mode: Ctrl-C then stops the wait, and the app goes on. */
+  readonly interactive?: boolean;
+  /** Where Ctrl-C arrives. The process, unless a test gives another. */
+  readonly signals?: Pick<EventEmitter, 'once' | 'removeListener'>;
 }
 
 const textOrNull = (value: unknown): string | null => (typeof value === 'string' && value !== '' ? value : null);
@@ -97,8 +118,16 @@ const base = (url: string): string => url.replace(/\/+$/, '');
 /** The line for an answer that is not 2xx. A 404 on the routes that make or list top-ups: there are none here. */
 function stopForTopups(answer: Answer, missingMeansOff: boolean): Stop {
   if (missingMeansOff && answer.status === 404) return new Stop(TOPUPS_NOT_YET);
-  return stopFor(httpErrorOf(answer), { side: 'api' });
+  const error = httpErrorOf(answer);
+  const stop = stopFor(error, { side: 'api' });
+  // The swap service refuses an amount under its own minimum, which Anyfare cannot know in dollars
+  if (error.code === 'topup_refused' && /too low/i.test(error.message)) {
+    return new Stop(`${stop.message}\n${UNDER_ITS_MINIMUM}`, { notCharged: stop.notCharged });
+  }
+  return stop;
 }
+
+export const UNDER_ITS_MINIMUM = "That is under 1Click's own minimum for this route. Try a larger amount.";
 
 export interface TopupOptions {
   readonly asset: string | null;
@@ -137,6 +166,37 @@ export async function topupOptions(ctx: Context, config: Config): Promise<TopupO
     return [{ name, minimum: textOrNull(item['minimum']), tokens }];
   });
   return { asset: textOrNull(body['asset']), networks };
+}
+
+/** The tokens whose amount is its value in US dollars, by symbol. Nothing else is priced here. */
+const DOLLAR_TOKENS: ReadonlySet<string> = new Set(['USDC', 'USDT', 'USDT0', 'DAI']);
+
+/** A plain decimal as dollars, with at least two decimals: 0.1 is $0.10. */
+function dollarsOf(amount: string): string {
+  const [whole = '0', fraction = ''] = amount.split('.');
+  return `$${whole}.${fraction.replace(/0+$/, '').padEnd(2, '0')}`;
+}
+
+/**
+ * The line that refuses a top-up under the network's minimum, or `undefined`. Only a dollar stablecoin
+ * can be compared, since the list has the minimum in dollars and no token price. Anything that cannot
+ * be compared is left to the API's own answer.
+ */
+export function minimumRefusal(
+  options: TopupOptions,
+  network: string,
+  token: string,
+  amount: string,
+): string | undefined {
+  if (!DOLLAR_TOKENS.has(token)) return undefined;
+  const minimum = options.networks.find((item) => item.name === network)?.minimum;
+  if (minimum === null || minimum === undefined) return undefined;
+  try {
+    if (toAtomic(amount, 36) >= toAtomic(minimum, 36)) return undefined;
+  } catch {
+    return undefined;
+  }
+  return `A top-up on ${one(network)} must be worth at least $${one(minimum)}. ${one(amount)} ${token} is worth ${dollarsOf(amount)}.`;
 }
 
 async function createTopup(ctx: Context, config: Config, masterKey: string, command: TopupCommand): Promise<Topup> {
@@ -218,13 +278,74 @@ function detailLines(ctx: Context, topup: Topup): string[] {
   ];
 }
 
-const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+/** Waits `ms`, or until the person stops the wait. */
+async function pause(ms: number, sleep: ((ms: number) => Promise<void>) | undefined, stopped: Promise<void>): Promise<void> {
+  if (sleep !== undefined) {
+    await Promise.race([sleep(ms), stopped]);
+    return;
+  }
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([new Promise<void>((resolve) => (timer = setTimeout(resolve, ms))), stopped]);
+  clearTimeout(timer);
+}
+
+interface Stopper {
+  /** Settles when the person stops the wait: Enter on a terminal, or Ctrl-C in the interactive mode. */
+  readonly stopped: Promise<void>;
+  isStopped(): boolean;
+  /** Takes back the Enter read and the Ctrl-C handler. */
+  release(): void;
+}
 
 /**
- * `topup`: asks for a deposit address, prints where to send, then polls until a final status. Returns
- * whether the top-up was credited. A `Stop` for every other failure, with its one line.
+ * What stops the wait. On a terminal the session's one prompter reads the Enter, so the line is not
+ * lost and no second reader takes stdin. In the interactive mode the first Ctrl-C is the same as
+ * Enter; the handler then goes, so a second Ctrl-C ends the app as it always does.
  */
-export async function runTopup(ctx: Context, command: TopupCommand, timing: TopupTiming = DEFAULT_TIMING): Promise<TopupOutcome> {
+function listenForStop(ctx: Context, extras: TopupExtras): Stopper {
+  let stopNow: () => void = () => undefined;
+  const stopped = new Promise<void>((resolve) => (stopNow = resolve));
+  let done = false;
+  const trigger = (): void => {
+    done = true;
+    stopNow();
+  };
+  const releases: (() => void)[] = [];
+  if (ctx.io.isTerminal) {
+    const enter = ctx.prompter().waitForEnter();
+    void enter.pressed.then(trigger);
+    releases.push(enter.cancel);
+    ctx.print('Press Enter to stop waiting.');
+  }
+  if (extras.interactive === true) {
+    const signals = extras.signals ?? process;
+    signals.once('SIGINT', trigger);
+    releases.push(() => signals.removeListener('SIGINT', trigger));
+  }
+  return { stopped, isStopped: () => done, release: () => releases.forEach((release) => release()) };
+}
+
+/** The top-up's network list for the minimum check: `null` when it can't be read, so no check is made. */
+async function readOptionsForCheck(ctx: Context, config: Config): Promise<TopupOptions | null> {
+  try {
+    return await topupOptions(ctx, config);
+  } catch (error) {
+    if (!(error instanceof Stop)) throw error;
+    return null;
+  }
+}
+
+/**
+ * `topup`: checks the amount against the network's minimum, asks for a deposit address, prints where
+ * to send, then polls until a final status or until the person stops waiting. Returns whether the
+ * top-up was credited. A `Stop` for every other failure, with its one line.
+ */
+export async function runTopup(
+  ctx: Context,
+  command: TopupCommand,
+  timing: TopupTiming = DEFAULT_TIMING,
+  extras: TopupExtras = {},
+): Promise<TopupOutcome> {
   const config = loadConfig(ctx.session.env);
   const masterKey = masterKeyOf(ctx.session.env);
   await ctx.approve({
@@ -233,6 +354,11 @@ export async function runTopup(ctx: Context, command: TopupCommand, timing: Topu
     noTerminal: 'topup asks before it asks Anyfare for a deposit address. Add --yes to go on without a terminal',
     declined: new Stop('Nothing was asked.'),
   });
+
+  // The list has the minimum in dollars: a dollar stablecoin is checked here, before anything is sent
+  const options = extras.options === undefined ? await readOptionsForCheck(ctx, config) : extras.options;
+  const refusal = options === null ? undefined : minimumRefusal(options, command.network, command.token, command.amount);
+  if (refusal !== undefined) throw new Stop(refusal);
 
   let topup = await createTopup(ctx, config, masterKey, command);
   const hasAddress = topup.depositAddress !== null;
@@ -248,31 +374,48 @@ export async function runTopup(ctx: Context, command: TopupCommand, timing: Topu
   ctx.print(
     `Ctrl-C is safe: npm run demo -- balance shows the result later. The top-up's ID is ${one(topup.id)}. Checking every ${Math.round(timing.intervalMs / 1000)} seconds.`,
   );
-  const sleep = timing.sleep ?? realSleep;
-  const deadline = Date.now() + timing.limitMs;
-  let shown = topup.status;
-  let lastWarning = '';
-  while (Date.now() < deadline) {
-    await sleep(timing.intervalMs);
-    let next: Topup;
-    try {
-      next = await readTopupNow(ctx, config, masterKey, topup.id);
-    } catch (error) {
-      if (!(error instanceof Stop)) throw error;
-      // The same warning is not repeated while polling goes on
-      const line = `Could not read the top-up's status: ${error.line().replace(/\.$/, '')}. Trying again.`;
-      if (line !== lastWarning) ctx.warn(line);
-      lastWarning = line;
-      continue;
+  const stop = listenForStop(ctx, extras);
+  try {
+    const deadline = Date.now() + timing.limitMs;
+    let shown = topup.status;
+    let lastWarning = '';
+    while (Date.now() < deadline) {
+      await pause(timing.intervalMs, timing.sleep, stop.stopped);
+      if (stop.isStopped()) break;
+      let next: Topup;
+      try {
+        const reading = readTopupNow(ctx, config, masterKey, topup.id);
+        // A read that is given up on may still fail later: nobody waits for it
+        reading.catch(() => undefined);
+        const read = await Promise.race([reading, stop.stopped]);
+        if (read === undefined || stop.isStopped()) break;
+        next = read;
+      } catch (error) {
+        if (!(error instanceof Stop)) throw error;
+        // The same warning is not repeated while polling goes on
+        const line = `Could not read the top-up's status: ${error.line().replace(/\.$/, '')}. Trying again.`;
+        if (line !== lastWarning) ctx.warn(line);
+        lastWarning = line;
+        continue;
+      }
+      lastWarning = '';
+      topup = next;
+      if (topup.status !== shown) {
+        shown = topup.status;
+        ctx.print(statusLine(ctx, topup));
+        ctx.print(transactionLines(topup));
+      }
+      if (FINAL.has(topup.status)) return { credited: topup.status === 'credited', status: topup.status };
     }
-    lastWarning = '';
-    topup = next;
-    if (topup.status !== shown) {
-      shown = topup.status;
-      ctx.print(statusLine(ctx, topup));
-      ctx.print(transactionLines(topup));
+    if (stop.isStopped()) {
+      const until = topup.payBy === null ? 'its pay-by time' : one(topup.payBy);
+      ctx.print(
+        `Stopped waiting. The address stays open until ${until}: a transfer sent before then is still credited, and \`balance\` shows it. After that time, don't send to it.`,
+      );
+      return { credited: false, status: 'stopped' };
     }
-    if (FINAL.has(topup.status)) return { credited: topup.status === 'credited', status: topup.status };
+  } finally {
+    stop.release();
   }
   throw new Stop(
     `Stopped waiting after ${Math.round(timing.limitMs / 60_000)} minutes. The top-up's ID is ${one(topup.id)}; npm run demo -- balance shows the result later.`,

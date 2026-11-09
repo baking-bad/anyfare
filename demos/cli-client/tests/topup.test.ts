@@ -1,13 +1,15 @@
 // topup against the fake Anyfare. Every address, hash and amount here is made up.
 
+import { EventEmitter } from 'node:events';
+import type { PassThrough } from 'node:stream';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.ts';
 import { createContext } from '../src/context.ts';
-import { runTopup } from '../src/topup.ts';
+import { UNDER_ITS_MINIMUM, minimumRefusal, runTopup } from '../src/topup.ts';
 import type { TopupCommand, TopupTiming } from '../src/topup.ts';
 import { MADE_UP_DEPOSIT, MADE_UP_HASH, startFakeAnyfare } from './fakeAnyfare.ts';
 import type { FakeAccount, FakeAnyfare } from './fakeAnyfare.ts';
-import { captureIo, fakeFetch, tempAppDir } from './helpers.ts';
+import { captureIo, fakeFetch, tempAppDir, waitUntil } from './helpers.ts';
 import type { IoOptions } from './helpers.ts';
 
 let fake: FakeAnyfare;
@@ -228,5 +230,193 @@ describe('topup as a command', () => {
     const bad = await cli([...topupArgs, '--yes'], { ANYFARE_MASTER_KEY: 'afm_live_madeupmadeupmadeupmadeup' });
     expect(bad.code).toBe(1);
     expect(bad.err).toMatch(/^✘ The master key was refused: unknown or revoked \(request req-made-up-\d+\)\.\n$/);
+  });
+});
+
+const posts = () => fake.requests.filter((item) => item.method === 'POST' && item.path === '/v1/topups');
+const optionReads = () => fake.requests.filter((item) => item.path === '/v1/topups/options');
+
+describe('the minimum, before anything is sent', () => {
+  const args = (network: string, token: string, amount: string): string[] => ['topup', '--network', network, '--token', token, '--amount', amount, '--yes'];
+
+  it('refuses 0.1 USDC on a $1 network with one line, and sends no POST', async () => {
+    const result = await cli(args('base', 'USDC', '0.1'));
+    expect(result.code).toBe(1);
+    expect(result.err).toBe('✘ A top-up on base must be worth at least $1. 0.1 USDC is worth $0.10.\n');
+    expect(result.out).toBe('');
+    expect(posts()).toEqual([]);
+    expect(fake.topups.created).toEqual([]);
+    // The list is read once, and it needs no key
+    expect(optionReads()).toHaveLength(1);
+    expect(optionReads()[0]?.headers['authorization']).toBeUndefined();
+  });
+
+  it('lets 1 USDC pass, at the minimum, and sends it', async () => {
+    fake.topups.steps = [{ status: 'credited', credited: '0.99' }];
+    const result = await cli(args('base', 'USDC', '1'));
+    expect(result.code).toBe(0);
+    expect(fake.topups.created).toEqual([{ network: 'base', token: 'USDC', amount: '1' }]);
+    expect(optionReads()).toHaveLength(1);
+  });
+
+  it.each(['USDC', 'USDT', 'USDT0', 'DAI'])('treats %s as a dollar', async (token) => {
+    const result = await cli(args('near', token, '0.5'));
+    expect(result.err).toBe(`✘ A top-up on near must be worth at least $1. 0.5 ${token} is worth $0.50.\n`);
+    expect(posts()).toEqual([]);
+  });
+
+  it('does not price another token: it is sent, and the answer is the API\'s own', async () => {
+    fake.topups.steps = [{ status: 'credited', credited: '0.1' }];
+    const result = await cli(args('near', 'wNEAR', '0.1'));
+    expect(result.code).toBe(0);
+    expect(fake.topups.created).toEqual([{ network: 'near', token: 'wNEAR', amount: '0.1' }]);
+  });
+
+  it('treats the symbol exactly: another spelling is not a dollar', async () => {
+    fake.topups.steps = [{ status: 'credited', credited: '0.1' }];
+    const result = await cli(args('base', 'usdc', '0.1'));
+    expect(result.code).toBe(0);
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('skips the check for a network that is not in the list, and when the list cannot be read', async () => {
+    fake.topups.steps = [{ status: 'credited', credited: '0.1' }];
+    const unknown = await cli(args('other-chain', 'USDC', '0.1'));
+    expect(unknown.code).toBe(0);
+    expect(posts()).toHaveLength(1);
+
+    const broken = (async (input: string | URL | Request, init?: RequestInit) =>
+      String(input).endsWith('/v1/topups/options')
+        ? new Response('{}', { status: 500 })
+        : globalThis.fetch(input, init)) as typeof fetch;
+    const io = captureIo(broken, env(), { appDir: app.dir });
+    const code = await runCli(args('base', 'USDC', '0.1'), io.io);
+    expect(code).toBe(0);
+    expect(posts()).toHaveLength(2);
+  });
+
+  it('shows the dollars with at least two decimals, and the minimum as the list gives it', () => {
+    const options = { asset: null, networks: [{ name: 'n', minimum: '1.5', tokens: undefined }] };
+    expect(minimumRefusal(options, 'n', 'DAI', '0.001')).toBe('A top-up on n must be worth at least $1.5. 0.001 DAI is worth $0.001.');
+    expect(minimumRefusal(options, 'n', 'DAI', '1.499')).toBe('A top-up on n must be worth at least $1.5. 1.499 DAI is worth $1.499.');
+    expect(minimumRefusal(options, 'n', 'DAI', '1.50')).toBeUndefined();
+    expect(minimumRefusal(options, 'n', 'ETH', '0.001')).toBeUndefined();
+    expect(minimumRefusal({ asset: null, networks: [{ name: 'n', minimum: null, tokens: undefined }] }, 'n', 'DAI', '0.001')).toBeUndefined();
+  });
+
+  it('adds one plain line when the API still says the amount is too low for 1Click', async () => {
+    fake.topups.refuse = 'Amount is too low for bridge, try at least 1000000 (made up)';
+    const result = await cli(args('base', 'USDC', '5'));
+    expect(result.code).toBe(1);
+    expect(result.err).toMatch(
+      /^✘ The swap service refused the top-up\. No address was made: Amount is too low for bridge, try at least 1000000 \(made up\) \(request req-made-up-\d+\)\.\n/,
+    );
+    expect(result.err.endsWith(`.\n${UNDER_ITS_MINIMUM}\n`)).toBe(true);
+    expect(result.err.split('\n')).toHaveLength(3);
+    expect(UNDER_ITS_MINIMUM).toBe("That is under 1Click's own minimum for this route. Try a larger amount.");
+  });
+
+  it('adds nothing to another refusal', async () => {
+    fake.topups.refuse = 'The route is closed (made up)';
+    const result = await cli(args('base', 'USDC', '5'));
+    expect(result.err).toMatch(/^✘ The swap service refused the top-up\. No address was made: The route is closed \(made up\) \(request req-made-up-\d+\)\.\n$/);
+  });
+});
+
+describe('stopping the wait', () => {
+  const SLOW: TopupTiming = { intervalMs: 20, limitMs: 20_000 };
+  const STOPPED = /Stopped waiting\. The address stays open until \d{4}-\d{2}-\d{2}T[\d:.]+Z: a transfer sent before then is still credited, and `balance` shows it\. After that time, don't send to it\./;
+
+  /** A top-up that waits on a terminal, with the input left open for the test to type into. */
+  function waiting(options: { readonly signals?: EventEmitter; readonly interactive?: boolean } = {}) {
+    const io = captureIo(globalThis.fetch, env(), { appDir: app.dir, isTerminal: true });
+    const ctx = createContext(io.io);
+    const stdin = io.io.stdin as PassThrough;
+    const done = runTopup(ctx, COMMAND, SLOW, {
+      ...(options.interactive === true && { interactive: true }),
+      ...(options.signals !== undefined && { signals: options.signals }),
+    }).finally(() => ctx.close());
+    return { io, stdin, done };
+  }
+
+  it('stops polling at once on Enter, and says what it means', async () => {
+    fake.topups.steps = [{ status: 'waiting' }];
+    const run = waiting();
+    await waitUntil(() => run.io.out().includes('Press Enter to stop waiting.'), 'the hint');
+    await waitUntil(() => fake.topups.polls >= 1, 'a first poll');
+    run.stdin.write('\n');
+    const outcome = await run.done;
+    expect(outcome).toEqual({ credited: false, status: 'stopped' });
+    expect(run.io.out()).toMatch(STOPPED);
+    const polls = fake.topups.polls;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(fake.topups.polls).toBe(polls);
+    // The same address stays: nothing was cancelled, since there is no route for it
+    expect(fake.requests.filter((item) => item.method !== 'GET' && item.path !== '/v1/topups')).toEqual([]);
+  });
+
+  it('stops before the next poll when the interval is long', async () => {
+    fake.topups.steps = [{ status: 'waiting' }];
+    const io = captureIo(globalThis.fetch, env(), { appDir: app.dir, isTerminal: true });
+    const ctx = createContext(io.io);
+    const done = runTopup(ctx, COMMAND, { intervalMs: 60_000, limitMs: 120_000 }).finally(() => ctx.close());
+    await waitUntil(() => io.out().includes('Press Enter to stop waiting.'), 'the hint');
+    const started = Date.now();
+    (io.io.stdin as PassThrough).write('\n');
+    expect((await done).status).toBe('stopped');
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('prints no hint, and reads no Enter, without a terminal', async () => {
+    fake.topups.steps = [{ status: 'waiting' }, { status: 'credited', credited: '4.95' }];
+    const result = await topup();
+    expect(result.outcome?.credited).toBe(true);
+    expect(result.out).not.toContain('Press Enter');
+  });
+
+  it('still ends the wait on a credited status, and leaves the next line for the next question', async () => {
+    fake.topups.steps = [{ status: 'waiting' }, { status: 'waiting' }, { status: 'credited', credited: '4.95' }];
+    const signals = new EventEmitter();
+    const run = waiting({ signals, interactive: true });
+    await waitUntil(() => run.io.out().includes('Press Enter to stop waiting.'), 'the hint');
+    expect(signals.listenerCount('SIGINT')).toBe(1);
+    expect(await run.done).toEqual({ credited: true, status: 'credited' });
+    expect(run.io.out()).not.toContain('Stopped waiting.');
+    // The handler is gone, so a Ctrl-C now ends the app as it always does
+    expect(signals.listenerCount('SIGINT')).toBe(0);
+  });
+
+  it('stops on the first Ctrl-C in the interactive mode, and takes its handler back', async () => {
+    fake.topups.steps = [{ status: 'waiting' }];
+    const signals = new EventEmitter();
+    const run = waiting({ signals, interactive: true });
+    await waitUntil(() => run.io.out().includes('Press Enter to stop waiting.'), 'the hint');
+    signals.emit('SIGINT');
+    expect(await run.done).toEqual({ credited: false, status: 'stopped' });
+    expect(run.io.out()).toMatch(STOPPED);
+    // A second Ctrl-C finds no handler: the process ends
+    expect(signals.listenerCount('SIGINT')).toBe(0);
+  });
+
+  it('does not take Ctrl-C in the flags mode', async () => {
+    fake.topups.steps = [{ status: 'waiting' }];
+    const signals = new EventEmitter();
+    const run = waiting({ signals });
+    await waitUntil(() => run.io.out().includes('Press Enter to stop waiting.'), 'the hint');
+    expect(signals.listenerCount('SIGINT')).toBe(0);
+    run.stdin.write('\n');
+    await run.done;
+  });
+
+  it('exits 1 after the line in the flags mode', async () => {
+    fake.topups.steps = [{ status: 'waiting' }];
+    const io = captureIo(globalThis.fetch, env(), { appDir: app.dir, isTerminal: true });
+    const stdin = io.io.stdin as PassThrough;
+    const running = runCli([...topupArgs, '--yes'], { ...io.io, topup: { timing: SLOW } });
+    await waitUntil(() => io.out().includes('Press Enter to stop waiting.'), 'the hint');
+    stdin.write('\n');
+    expect(await running).toBe(1);
+    expect(io.out()).toMatch(STOPPED);
+    expect(io.err()).toBe('');
   });
 });
