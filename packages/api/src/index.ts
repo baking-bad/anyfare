@@ -23,7 +23,7 @@ export { internalSecretVariable, minimumInternalSecretLength, readInternalSecret
 export { registerTopupRoutes } from './topups/routes.js';
 export type { TopupRoutesOptions } from './topups/routes.js';
 export {
-  AmountTooSmallError, createTopupsCounter, createTopupService, formatTokenAmount, KeyAsTokenError, toNearestCent, TopupMismatchError, topupIdPrefix,
-  TopupRefusedError, topupResults, TopupsUnavailableError, UnsupportedNetworkError,
+  AmountTooSmallError, createTopupsCounter, createTopupService, KeyAsTokenError, toNearestCent, TopupMismatchError, topupIdPrefix, TopupRefusedError,
+  topupResults, TopupsUnavailableError, UnsupportedNetworkError,
 } from './topups/service.js';
 export type { NewTopupInput, TopupNetworkOptions, TopupResult, TopupService, TopupServiceOptions } from './topups/service.js';

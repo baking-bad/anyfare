@@ -7,12 +7,16 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { createLogger, runApp, Secret } from '@anyfare/common';
 import { loadPlatformConfig, type PlatformConfig } from '@anyfare/core';
-import { createPaymentRepository, createPostgres, createRoutingRepository, createTreasuryRepository } from '@anyfare/db';
+import {
+  createAccountRepository, createPaymentRepository, createPostgres, createRoutingRepository, createTopupRepository, createTreasuryRepository,
+} from '@anyfare/db';
 import { createFacilitators } from '@anyfare/payments';
 import {
   createFakeClock, createManualTimers, nearFacilitatorOff, createTestCertificate, createTestDatabase, encodeBase58, facilitatorAnswers, startFakeFacilitator,
-  startFakeSolanaRpc, startFakeTempoRpc, trustTestCertificate, type FakeFacilitator, type FakeSolanaRpc, type FakeTempoRpc, type TestDatabase,
+  startFakeOneClick, startFakeSolanaRpc, startFakeTempoRpc, trustTestCertificate, type FakeFacilitator, type FakeOneClick, type FakeSolanaRpc, type FakeTempoRpc,
+  type TestDatabase,
 } from '@anyfare/testing';
+import { createOneClickClient } from '@anyfare/topups';
 
 import { createApp, type WorkersServer } from '../../src/app.js';
 import { holdExpiryLockId } from '../../src/holdExpiry.js';
@@ -24,6 +28,8 @@ const base = 'eip155:84532';
 const solana = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 const silent = createLogger({ level: 'silent' });
 const allJobs = ['hold_expiry', 'settlement_follow_up', 'routing_losses', 'treasury_balances', 'reconciliation'];
+// What startWorkers runs on the example config: its top-ups section names a recipient and an asset, so the status job runs though top-ups are off
+const startedJobs = ['hold_expiry', 'settlement_follow_up', 'routing_losses', 'topup_status', 'treasury_balances', 'reconciliation'];
 
 let config: PlatformConfig;
 let database: TestDatabase;
@@ -177,6 +183,106 @@ describe('the jobs', () => {
     finally {
       await replica.close();
     }
+  });
+});
+
+describe('the top-up status job', () => {
+  let oneClick: FakeOneClick;
+  // The example config with top-ups off, at the fake, and these changes to its top-ups section
+  const envWith = (topups: Record<string, unknown>, env: Record<string, string> = {}) => ({
+    ...exampleConfig,
+    CONFIG: Buffer.from(JSON.stringify({
+      ...JSON.parse(Buffer.from(quietStartup, 'base64').toString('utf8')) as object, topups: { url: oneClick.url, ...topups },
+    })).toString('base64'),
+    DATABASE_URL: database.url.expose(),
+    HOST: '127.0.0.1',
+    METRICS_PORT: '0',
+    ...env,
+  });
+
+  beforeAll(async () => {
+    oneClick = await startFakeOneClick();
+  });
+
+  afterAll(async () => {
+    await oneClick?.close();
+  });
+
+  it('runs while the top-ups section names a recipient and an asset, whether or not top-ups are on, and only with a 1Click client', async () => {
+    const client = createOneClickClient({ url: oneClick.url, timeoutMs: 2_000 });
+    const app = createApp({ config, logger: silent, postgres: database.postgres, oneClick: client });
+
+    expect(config.topups).toMatchObject({ enabled: false, recipient: 'treasury.anyfare.testnet', asset: expect.objectContaining({ name: 'near-usdc' }) });
+    expect(app.jobs).toEqual(['hold_expiry', 'settlement_follow_up', 'routing_losses', 'topup_status']);
+    expect(await app.scheduler.runNow('topup_status')).toBe('success');
+    const text = await metricsOf(app);
+    expect(text).toContain('workers_job_runs_total{job="topup_status",result="success"} 1');
+    expect(text).toContain('workers_topups_credited_total 0');
+
+    const enabled = { ...config, topups: { ...config.topups, enabled: true } };
+    expect(createApp({ config: enabled, logger: silent, postgres: database.postgres, oneClick: client }).jobs).toContain('topup_status');
+    const withoutRecipient = { ...config, topups: { ...config.topups, recipient: undefined } };
+    expect(createApp({ config: withoutRecipient, logger: silent, postgres: database.postgres, oneClick: client }).jobs).not.toContain('topup_status');
+    expect(createApp({ config, logger: silent, postgres: database.postgres }).jobs).not.toContain('topup_status');
+  });
+
+  it('exits with 1 naming the 1Click key variable the config names and the environment lacks, top-ups on or off, and starts with it', async () => {
+    for (const enabled of [false, true]) {
+      const { lines, logger } = capture();
+      const exit = vi.fn();
+
+      await runApp({ name: 'workers', start: startWorkers, logger, exit, env: envWith({ enabled, apiKey: 'ONECLICK_API_KEY' }) });
+
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(lines.find(line => line['msg'] === 'Failed to start')).toMatchObject({ error: { code: 'missing_secret', secretName: 'ONECLICK_API_KEY' } });
+    }
+
+    const { lines, logger } = capture();
+    const app = await startWorkers({ env: envWith({ enabled: false, apiKey: 'ONECLICK_API_KEY' }, { ONECLICK_API_KEY: 'oneclick-key-secret' }), logger });
+    await app.close();
+
+    expect(lines.find(line => line['msg'] === 'Started')).toMatchObject({ jobs: startedJobs });
+    expect(JSON.stringify(lines)).not.toContain('oneclick-key-secret');
+  });
+
+  it('fails a run, and keeps the top-up polled, when 1Click refuses the key', async () => {
+    const client = createOneClickClient({ url: oneClick.url, timeoutMs: 2_000 });
+    const clock = createFakeClock(fixtureTime(0, 12, 12, 0, 0, 0));
+    const topups = createTopupRepository({ db: database.db, clock });
+    const accountId = 'acc_refused_key';
+    await createAccountRepository({ db: database.db }).create({ id: accountId, createdAt: clock.now() });
+    await topups.create({
+      id: 'top_refused_key', accountId, requestId: undefined, network: 'base', blockchain: 'base', tokenSymbol: 'USDC',
+      originAsset: 'nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near', tokenDecimals: 6, amount: 1_000_000n, destinationAsset: 'near-usdc',
+      recipient: 'treasury.anyfare.testnet', refundTo: 'treasury.anyfare.testnet', payBy: new Date(clock.now().getTime() + 24 * 60 * 60_000), quoteRequest: {},
+    });
+    await topups.markQuoted('top_refused_key', {
+      quoteResponse: {}, correlationId: 'corr-refused-key', depositAddress: `0x${'7'.repeat(40)}`, depositMemo: undefined,
+      addressExpiresAt: new Date(clock.now().getTime() + 96 * 60 * 60_000), sendAmount: 1_000_000n, sendAtLeast: 990_000n, estimatedCredits: 999_380n,
+      nextPollAt: clock.now(),
+    });
+    oneClick.handle('/v0/status', () => ({ status: 401, body: { message: 'Unauthorized' } }));
+    const { lines, logger } = capture();
+    const app = createApp({ config, logger, postgres: database.postgres, clock, oneClick: client });
+    try {
+      expect(await app.scheduler.runNow('topup_status')).toBe('failure');
+    }
+    finally {
+      oneClick.reset();
+      await topups.markExpired('top_refused_key', 'waiting', { oneClickStatus: 'PENDING_DEPOSIT', lastStatus: {}, polledAt: clock.now() });
+    }
+
+    expect(lines.find(line => line['msg'] === 'A job failed' && line['job'] === 'topup_status')).toMatchObject({ level: 50, counts: { rejected: 1, polled: 1 } });
+    expect(lines.find(line => line['msg'] === 'A top-up\'s status can\'t be read: 1Click refused our key or answered in a shape we don\'t know'))
+      .toMatchObject({ level: 50, topupId: 'top_refused_key', reason: 'auth_failed', status: 401, alert: true });
+  });
+
+  it('has the balance monitor report the account top-ups deliver to', async () => {
+    const app = createApp({ config, logger: silent, postgres: database.postgres, balanceReaders: { near: { balance: async () => 2_000_000n } } });
+
+    expect(await app.scheduler.runNow('treasury_balances')).toBe('success');
+
+    expect(await metricsOf(app)).toMatch(/^treasury_balance_usd\{wallet="treasury:near",asset="near-usdc"\} 2$/m);
   });
 });
 
@@ -432,7 +538,7 @@ describe('the facilitators at startup', () => {
       const warning = lines.find(line => line['msg'] === 'A facilitator failed its startup check: the settlement follow-up runs without it until a restart');
       expect(warning).toMatchObject({ level: 40, facilitator: 'cdp' });
       expect(JSON.stringify(warning)).toContain(message);
-      expect(started).toMatchObject({ jobs: allJobs, settlementFollowUp: { facilitators: [], mpp: false } });
+      expect(started).toMatchObject({ jobs: startedJobs, settlementFollowUp: { facilitators: [], mpp: false } });
     }
     finally {
       await facilitator.close();
@@ -637,7 +743,7 @@ describe('the workers\' lines', () => {
     expect(lines.filter(line => line['msg'] === 'Started')).toEqual([expect.objectContaining({
       level: 30, app: 'workers', commit: 'deadbee', logLevel: 'debug', environment: 'staging',
       rails: { credits: true, x402: [], mpp: false },
-      jobs: allJobs,
+      jobs: startedJobs,
       settlementFollowUp: { facilitators: [], mpp: false },
       treasuryReaders: { evm: expect.arrayContaining(['eip155:8453', 'eip155:84532', 'eip155:42431']), solana: 'sol.example', near: ['near.example', 'rpc.testnet.fastnear.com'] },
       ports: { metricsPort: expect.any(Number) },

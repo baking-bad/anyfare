@@ -10,6 +10,11 @@ export {
   settlingGraceMs,
 } from './settlementFollowUp.js';
 export type { SettlementFollowUpOptions, SettlementFollowUpResult } from './settlementFollowUp.js';
+export {
+  createTopupStatus, createTopupStatusMetrics, nextPollAt, pollingEndsAt, pollingWindowAfterExpiryMs, pollsTopups, stuckQuotingMs, TopupStatusFailedError,
+  topupPollResults, topupStatusIntervalMs, topupStatusJobName, topupStatusLockId,
+} from './topupStatus.js';
+export type { TopupPollResult, TopupStatusMetrics, TopupStatusOptions, TopupStatusResult } from './topupStatus.js';
 export { createRoutingLossMetrics, createRoutingLosses, RoutingLossesFailedError, routingLossesIntervalMs, routingLossesJobName, routingLossesLockId } from './routingLosses.js';
 export type { RoutingLossMetrics, RoutingLossesOptions, RoutingLossesResult } from './routingLosses.js';
 export {

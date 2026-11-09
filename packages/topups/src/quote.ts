@@ -87,3 +87,11 @@ export const parseTokenAmount = (value: string, decimals: number): bigint => {
 
   return amount;
 };
+
+/** Formats atomic units as the shortest exact decimal in the token's units, such as `"0.99"` or `"1"`. */
+export const formatTokenAmount = (amount: bigint, decimals: number): string => {
+  const unit = 10n ** BigInt(decimals);
+  const fraction = decimals === 0 ? '' : (amount % unit).toString().padStart(decimals, '0').replace(/0+$/, '');
+
+  return `${amount / unit}${fraction ? `.${fraction}` : ''}`;
+};

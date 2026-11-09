@@ -6,8 +6,8 @@ import {
 import type { JsonObject, KeyPrefixes, PlatformConfig, TopupNetwork } from '@anyfare/core';
 import { createTopupRepository, type Database, type Topup } from '@anyfare/db';
 import {
-  buildQuoteRequest, OneClickRefusedError, OneClickUnavailableError, parseTokenAmount, type OneClickClient, type OneClickDepositQuoteResponse,
-  type OneClickQuoteRequest, type OneClickQuoteResponse, type OneClickToken, type TokenCatalog,
+  buildQuoteRequest, formatTokenAmount, OneClickRefusedError, OneClickUnavailableError, parseTokenAmount, type OneClickClient,
+  type OneClickDepositQuoteResponse, type OneClickQuoteRequest, type OneClickQuoteResponse, type OneClickToken, type TokenCatalog,
 } from '@anyfare/topups';
 
 import { NotFoundError } from '../errors.js';
@@ -106,14 +106,6 @@ const maxAppFeesBps = 100;
 
 // What a log line keeps of a value 1Click sent
 const maxLoggedLength = 128;
-
-/** Formats atomic units as the shortest exact decimal in the token's units, such as `"0.99"` or `"1"`. */
-export const formatTokenAmount = (amount: bigint, decimals: number): string => {
-  const unit = 10n ** BigInt(decimals);
-  const fraction = decimals === 0 ? '' : (amount % unit).toString().padStart(decimals, '0').replace(/0+$/, '');
-
-  return `${amount / unit}${fraction ? `.${fraction}` : ''}`;
-};
 
 /**
  * A USD decimal string from 1Click, such as `"0.999480000000"`, to the nearest cent, half up, in

@@ -32,4 +32,6 @@ export type { CatalogRepository, CatalogRepositoryOptions, RoutedCatalogEntry } 
 export { createTreasuryRepository } from './treasuryRepository.js';
 export type { ReconciliationRunRecord, TreasuryRepository, TreasuryRepositoryOptions, TreasuryTransferRecord } from './treasuryRepository.js';
 export { createTopupRepository } from './topupRepository.js';
-export type { NewTopup, Topup, TopupQuote, TopupQuoteFailure, TopupRepository, TopupRepositoryOptions } from './topupRepository.js';
+export type {
+  NewTopup, PolledTopupStatus, Topup, TopupCredit, TopupPoll, TopupQuote, TopupQuoteFailure, TopupRefund, TopupRepository, TopupRepositoryOptions,
+} from './topupRepository.js';

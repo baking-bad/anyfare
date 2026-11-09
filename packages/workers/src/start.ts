@@ -7,9 +7,11 @@ import { createPostgres } from '@anyfare/db';
 import {
   checkFacilitators, createFacilitators, createMppSettlementCheck, createTempoRpc, type Facilitator, type MppSettlementCheck,
 } from '@anyfare/payments';
+import { createOneClickClient } from '@anyfare/topups';
 import { NEAR_RPC_URLS } from '@x402/near';
 
 import { createApp } from './app.js';
+import { pollsTopups } from './topupStatus.js';
 import { createEvmBalanceReader, createNearBalanceReader, createSolanaBalanceReader, type NearBalanceReader } from './treasury/readers.js';
 
 export const defaultMetricsPort = 9082;
@@ -165,9 +167,18 @@ export const startWorkers = async ({ env, logger }: AppContext): Promise<Running
     ...near ? { near } : {},
   };
 
+  // The top-up status job polls 1Click whenever the top-ups section names a recipient and an asset, on
+  // or off, so open top-ups are still credited after new ones are switched off. With the key the config
+  // names: one that isn't set stops the start.
+  const { topups } = config;
+  const oneClick = pollsTopups(config)
+    ? createOneClickClient({ url: topups.url, apiKey: topups.apiKey === undefined ? undefined : readSecret(topups.apiKey, env), timeoutMs: topups.timeoutMs })
+    : undefined;
+
   const postgres = createPostgres({ url: databaseUrl, logger });
   const server = createApp({
     config, logger, postgres, facilitators, balanceReaders, ...mppCheck ? { mppCheck } : {}, ...near ? { nearHeight: () => near.height() } : {},
+    ...oneClick ? { oneClick } : {},
   });
   let port;
   try {

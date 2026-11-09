@@ -3,10 +3,11 @@ import type { FastifyInstance, FastifyReply, FastifyRequest, onRequestHookHandle
 import { formatUsd, recordErrorCode, toErrorResponse, type AnyfareError, type MicroUsd } from '@anyfare/common';
 import { RateLimitedError, topupMessages, type RateLimit, type RateLimiter } from '@anyfare/core';
 import type { Topup } from '@anyfare/db';
+import { formatTokenAmount } from '@anyfare/topups';
 
 import { authenticatedAccount } from '../accounts/auth.js';
 import { errorStatuses } from '../errors.js';
-import { formatTokenAmount, TopupMismatchError, TopupsUnavailableError, type TopupService } from './service.js';
+import { TopupMismatchError, TopupsUnavailableError, type TopupService } from './service.js';
 
 export interface TopupRoutesOptions {
   readonly topups: TopupService;

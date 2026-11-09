@@ -2,13 +2,15 @@ import {
   createMetricsServer, randomIdGenerator, systemClock, systemTimers, type Clock, type IdGenerator, type Logger, type MetricsServer, type Timers,
 } from '@anyfare/common';
 import { treasuryWallets, type BalanceReader, type PlatformConfig } from '@anyfare/core';
-import { createLedger, createPaymentRepository, createRoutingRepository, createTreasuryRepository, type Postgres } from '@anyfare/db';
+import { createLedger, createPaymentRepository, createRoutingRepository, createTopupRepository, createTreasuryRepository, type Postgres } from '@anyfare/db';
 import { createFacilitatorLookup, type Facilitator, type MppSettlementCheck } from '@anyfare/payments';
+import type { OneClickClient } from '@anyfare/topups';
 
 import { createHoldExpiry, holdExpiryIntervalMs, holdExpiryJobName, holdExpiryLockId, holdTtlMs } from './holdExpiry.js';
 import { createRoutingLossMetrics, createRoutingLosses, routingLossesIntervalMs, routingLossesJobName, routingLossesLockId } from './routingLosses.js';
 import { createScheduler, type Job, type JobOutcome, type Scheduler } from './scheduler.js';
 import { createSettlementFollowUp, settlementFollowUpIntervalMs, settlementFollowUpJobName, settlementFollowUpLockId } from './settlementFollowUp.js';
+import { createTopupStatus, createTopupStatusMetrics, pollsTopups, topupStatusIntervalMs, topupStatusJobName, topupStatusLockId } from './topupStatus.js';
 import {
   createReconciliationJob, createTreasuryBalancesJob, createTreasuryMetrics, reconciliationIntervalMs, reconciliationJobName, reconciliationLockId,
   treasuryBalancesIntervalMs, treasuryBalancesJobName, treasuryBalancesLockId,
@@ -33,6 +35,9 @@ export interface WorkersDependencies {
   readonly nearHeight?: () => Promise<bigint>;
   // Balance readers per chain. The treasury jobs run only with one.
   readonly balanceReaders?: { readonly evm?: BalanceReader; readonly solana?: BalanceReader; readonly near?: BalanceReader };
+  // The 1Click API of NEAR Intents, which the top-up status job polls. The job runs only with it, while
+  // the top-ups section names a recipient and an asset, on or off.
+  readonly oneClick?: OneClickClient;
 }
 
 export interface WorkersServer extends MetricsServer {
@@ -58,7 +63,8 @@ const outcomeOf = <TCounts extends { readonly [Name in keyof TCounts]: number }>
 /**
  * Workers have no public listener. Health, readiness (Postgres), and metrics share the metrics port.
  * Jobs start with the listener and stop before it closes: hold expiry, the settlement follow-up, routing
- * losses, and with a balance reader, the treasury's balance monitor and the daily reconciliation.
+ * losses, with the top-ups section configured and a 1Click client, the top-up status job, and with a
+ * balance reader, the treasury's balance monitor and the daily reconciliation.
  */
 export const createApp = ({
   config,
@@ -71,6 +77,7 @@ export const createApp = ({
   mppCheck,
   nearHeight,
   balanceReaders,
+  oneClick,
 }: WorkersDependencies): WorkersServer => {
   const server = createMetricsServer({
     logger,
@@ -113,6 +120,26 @@ export const createApp = ({
     intervalMs: routingLossesIntervalMs,
     run: async () => outcomeOf(await routingLosses(), ['booked']),
   }];
+
+  // Whether or not top-ups are on: open ones are still credited after new ones are switched off
+  if (pollsTopups(config) && oneClick) {
+    const topupStatus = createTopupStatus({
+      topups: createTopupRepository({ db: postgres.db, clock }),
+      ledger: db => createLedger({ db, clock, ids }),
+      oneClick,
+      config,
+      metrics: createTopupStatusMetrics(server.registry),
+      clock,
+      logger,
+    });
+    jobs.push({
+      name: topupStatusJobName,
+      lockId: topupStatusLockId,
+      intervalMs: topupStatusIntervalMs,
+      // Polls that changed nothing, and swaps still under way, aren't news
+      run: async () => outcomeOf(await topupStatus(), ['credited', 'refunded', 'failed', 'review', 'stuck']),
+    });
+  }
 
   if (balanceReaders?.evm || balanceReaders?.solana || balanceReaders?.near) {
     const pickReader = readerFor(balanceReaders);

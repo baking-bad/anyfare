@@ -7,7 +7,7 @@ export type {
 } from './oneClick.js';
 export { AmbiguousTokenError, createTokenCatalog, UnknownTokenError } from './tokens.js';
 export type { StaleTokenList, TokenCatalog, TokenCatalogOptions, TokenQuery } from './tokens.js';
-export { buildQuoteRequest, isStablecoin, parseTokenAmount } from './quote.js';
+export { buildQuoteRequest, formatTokenAmount, isStablecoin, parseTokenAmount } from './quote.js';
 export type { BuildQuoteRequestInput, TopupSettings } from './quote.js';
 export { fromOneClickStatus, UnknownOneClickStatusError } from './status.js';
 export type { SwapProgress } from './status.js';
