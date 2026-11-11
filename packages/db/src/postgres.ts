@@ -20,6 +20,8 @@ export interface PostgresOptions {
   readonly logger: Logger;
   // Default: 5 s. Without it, a query waits forever while Postgres accepts connections but never answers.
   readonly connectTimeoutMs?: number;
+  // The most connections the pool opens. Default: node-postgres's, 10.
+  readonly maxConnections?: number;
 }
 
 export interface Postgres {
@@ -37,8 +39,8 @@ export interface Postgres {
 }
 
 /** Connects lazily: the pool opens connections on the first query. */
-export const createPostgres = ({ url, logger, connectTimeoutMs = defaultConnectTimeoutMs }: PostgresOptions): Postgres => {
-  const pool = new pg.Pool({ connectionString: url.expose(), connectionTimeoutMillis: connectTimeoutMs });
+export const createPostgres = ({ url, logger, connectTimeoutMs = defaultConnectTimeoutMs, maxConnections }: PostgresOptions): Postgres => {
+  const pool = new pg.Pool({ connectionString: url.expose(), connectionTimeoutMillis: connectTimeoutMs, ...maxConnections === undefined ? {} : { max: maxConnections } });
   // An idle connection failed. The pool drops it; without a listener the process would crash.
   pool.on('error', error => logger.error({ error }, 'Postgres connection error'));
   let closing: Promise<void> | undefined;

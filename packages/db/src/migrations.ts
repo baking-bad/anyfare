@@ -12,10 +12,16 @@ export const migrationsFolder = fileURLToPath(new URL('../migrations', import.me
 // Session-level advisory lock, so two runs against one database apply each migration once
 const migrationLockId = 7_301_746_117;
 
+// A migration gives up waiting for a table's lock after this: while it waits, every write to that table
+// queues behind it, payments' too
+export const migrationLockTimeoutMs = 10_000;
+
 export interface MigrateDatabaseOptions {
   // DATABASE_URL. It carries the password, so it stays in a Secret and is never logged.
   readonly url: Secret;
   readonly logger: Logger;
+  // Default: 10 s
+  readonly lockTimeoutMs?: number;
 }
 
 const countApplied = async (client: pg.Client): Promise<number> => {
@@ -30,14 +36,18 @@ const countApplied = async (client: pg.Client): Promise<number> => {
 
 /**
  * Applies pending migrations and returns how many it applied. Running it again applies nothing. A
- * one-off command runs it before the apps roll; apps never migrate on boot.
+ * one-off command runs it before the apps roll; apps never migrate on boot. A statement that waits for a
+ * lock longer than `lockTimeoutMs` fails the run, and the migration's transaction rolls back.
  */
-export const migrateDatabase = async ({ url, logger }: MigrateDatabaseOptions): Promise<number> => {
+export const migrateDatabase = async ({ url, logger, lockTimeoutMs = migrationLockTimeoutMs }: MigrateDatabaseOptions): Promise<number> => {
   const client = new pg.Client({ connectionString: url.expose() });
   client.on('error', error => logger.error({ error }, 'Postgres connection error'));
   await client.connect();
   try {
     await client.query('select pg_advisory_lock($1)', [migrationLockId]);
+    // Only once the runner holds its own lock: a second runner waits for the first however long it takes,
+    // and a migration that can't get a table's lock fails instead of stalling writes behind it
+    await client.query(`set lock_timeout = ${Math.max(1, Math.trunc(lockTimeoutMs))}`);
     const before = await countApplied(client);
     await migrate(drizzle({ client }), { migrationsFolder });
     const applied = await countApplied(client) - before;

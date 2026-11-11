@@ -1,7 +1,7 @@
 export * from './schema/index.js';
 export { createPostgres, defaultConnectTimeoutMs, withSnapshot, withTransaction } from './postgres.js';
 export type { Database, DatabaseExecutor, DatabaseTransaction, Postgres, PostgresOptions } from './postgres.js';
-export { migrateDatabase, migrationsFolder } from './migrations.js';
+export { migrateDatabase, migrationLockTimeoutMs, migrationsFolder } from './migrations.js';
 export type { MigrateDatabaseOptions } from './migrations.js';
 export { createAuditLogRepository } from './auditLogRepository.js';
 export type { AuditLogRepositoryOptions } from './auditLogRepository.js';
@@ -30,6 +30,10 @@ export type {
 export { callDetailsTimeoutMs, createCallRepository } from './callRepository.js';
 export type { CallFilter, CallLeg, CallPage, CallRecord, CallRepository, CallRepositoryOptions, NewCallDetails } from './callRepository.js';
 export { finalCallStatuses, finishedCallStatuses, freeCallStatuses, paidCallStatuses } from './schema/callStatuses.js';
+export { createStatsRepository } from './statsRepository.js';
+export type { CountKind, CountMarks, ServicesSort, StatsRepository, StatsRepositoryOptions, StoredAnswer, StoredEndpointRow } from './statsRepository.js';
+export { createStatsCounter } from './statsCounts.js';
+export type { CallScope, CountedPeriod, StatsCounter, StatsCounterOptions } from './statsCounts.js';
 export { createCatalogRepository } from './catalogRepository.js';
 export type { CatalogRepository, CatalogRepositoryOptions, RoutedCatalogEntry } from './catalogRepository.js';
 export { createTreasuryRepository } from './treasuryRepository.js';
