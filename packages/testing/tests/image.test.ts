@@ -12,9 +12,14 @@ describe('the image\'s commit', () => {
     expect(await repoFile('Dockerfile')).toMatch(/ARG GIT_SHA=""\nENV GIT_SHA=\$\{GIT_SHA\}/);
   });
 
-  it('CI passes the commit to the image build', async () => {
+  it('the website\'s Dockerfile sets GIT_SHA from a build argument', async () => {
+    expect(await repoFile('packages/web/Dockerfile')).toMatch(/ARG GIT_SHA=""\nENV GIT_SHA=\$\{GIT_SHA\}/);
+  });
+
+  // One build for the backend image, one for the website's
+  it('CI passes the commit to both image builds', async () => {
     const ci = await repoFile('.github/workflows/ci.yml');
 
-    expect(ci.match(/build-args: \|\n\s+GIT_SHA=\$\{\{ github\.sha \}\}/g)).toHaveLength(1);
+    expect(ci.match(/build-args: \|\n\s+GIT_SHA=\$\{\{ github\.sha \}\}/g)).toHaveLength(2);
   });
 });
