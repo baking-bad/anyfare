@@ -74,7 +74,7 @@ export const StartSteps = ({ hosts }: { readonly hosts: Hosts }) => (
           <div key={step.number} className="card stack">
             <div className="row"><span className="badge">{step.number}</span><span className="card-title">{step.title}</span>{step.optional === true ? <span className="badge">Optional</span> : null}</div>
             <CodeBlock code={curlById(hosts, step.example)} wrap copyName={`Copy the command of step ${step.number}`}>{curlById(hosts, step.example)}{'\n'}<AnswerLine answer={step.answer} /></CodeBlock>
-            <p className="small muted">{step.note}</p>
+            <p className="small muted step-note">{step.note}</p>
           </div>
         ))}
       </div>

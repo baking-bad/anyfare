@@ -22,3 +22,6 @@
 /* A card that is a link keeps its column layout (a.card is a block) */
 a.card.agent-card { display: flex; flex-direction: column; }
 @media (min-width: 900px) { .start-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* A note may hold a whole link of a long host: it wraps inside its card at any width */
+.start-grid > .card { min-width: 0; }
+.step-note { min-width: 0; overflow-wrap: anywhere; }
