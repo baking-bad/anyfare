@@ -1,0 +1,24 @@
+{
+  "name": "x402-near-wallet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pays x402 APIs in USDC from a NEAR wallet.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "demo": "node --env-file-if-exists=.env --env-file-if-exists=.env.local src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  },
+  "dependencies": {
+    "@x402/core": "2.30.0",
+    "@x402/near": "2.30.0"
+  }
+}
