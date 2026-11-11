@@ -4,6 +4,8 @@ import { Button } from '../src/components/Button';
 
 /** A page whose data didn't load, such as while the Platform API is down. No detail leaks. */
 const PageError = ({ reset }: { readonly error: Error; readonly reset: () => void }) => (
+  <>
+  <meta name="robots" content="noindex" />
   <section className="band">
     <div className="container ruled section">
       <div className="stack-lg">
@@ -17,6 +19,7 @@ const PageError = ({ reset }: { readonly error: Error; readonly reset: () => voi
       </div>
     </div>
   </section>
+  </>
 );
 
 export default PageError;

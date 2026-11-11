@@ -11,6 +11,7 @@ import { loadServices, servicesJson, servicesRequests } from '../../src/services
 import { parseServicesFilters } from '../../src/services/filters';
 import { ServicesList } from '../../src/services/ServicesList';
 import { servicesMarkdown } from '../../src/markdown/services';
+import { socialTags } from '../../src/seo/social';
 import { markdownUrl } from '../../src/markdown/negotiate';
 
 export const generateMetadata = (): Metadata => {
@@ -21,8 +22,7 @@ export const generateMetadata = (): Metadata => {
     title: servicesTitle,
     description: servicesDescription,
     alternates: { canonical: url, types: { 'text/markdown': `${siteUrl}${markdownUrl('/services')}` } },
-    openGraph: { type: 'website', siteName: 'Anyfare', title: `${servicesTitle} | Anyfare`, description: servicesDescription, url },
-    twitter: { card: 'summary', title: `${servicesTitle} | Anyfare`, description: servicesDescription },
+    ...socialTags({ siteUrl, title: `${servicesTitle} | Anyfare`, description: servicesDescription, url }),
   };
 };
 

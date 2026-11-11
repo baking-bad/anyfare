@@ -12,6 +12,7 @@ import { callsJson, callsRequests, loadCalls, loadSuggestions } from '../../src/
 import { parseFilters } from '../../src/calls/filters';
 import { TopFive } from '../../src/calls/TopFive';
 import { callsMarkdown } from '../../src/markdown/calls';
+import { socialTags } from '../../src/seo/social';
 import { markdownUrl } from '../../src/markdown/negotiate';
 
 export const generateMetadata = (): Metadata => {
@@ -22,8 +23,7 @@ export const generateMetadata = (): Metadata => {
     title: callsTitle,
     description: callsDescription,
     alternates: { canonical: url, types: { 'text/markdown': `${siteUrl}${markdownUrl('/calls')}` } },
-    openGraph: { type: 'website', siteName: 'Anyfare', title: `${callsTitle} | Anyfare`, description: callsDescription, url },
-    twitter: { card: 'summary', title: `${callsTitle} | Anyfare`, description: callsDescription },
+    ...socialTags({ siteUrl, title: `${callsTitle} | Anyfare`, description: callsDescription, url }),
   };
 };
 

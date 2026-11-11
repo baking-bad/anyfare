@@ -12,6 +12,7 @@ import { CheckEmpty, CheckPayable, CheckRefused, CheckUnavailable } from '../../
 import { checkAddress, checkDescription, maxFieldLength, parseCheckParams, titleFor, unavailableLine, unavailableTitle } from '../../src/check/content';
 import { checkJson, checkRequests, loadCheckData } from '../../src/check/data';
 import { checkMarkdown } from '../../src/markdown/check';
+import { socialTags } from '../../src/seo/social';
 import { markdownUrl } from '../../src/markdown/negotiate';
 
 type Props = { readonly searchParams: Promise<Readonly<Record<string, string | string[] | undefined>>> };
@@ -26,9 +27,8 @@ export const generateMetadata = async ({ searchParams }: Props): Promise<Metadat
     description: checkDescription,
     // A check is for the one who pasted the link: the page is not for a search engine
     robots: { index: false, follow: false },
-    alternates: { types: { 'text/markdown': `${siteUrl}${checkAddress({ url, tab: 'overview', period: '30d', page: 1 }, markdownUrl('/check'))}` } },
-    openGraph: { type: 'website', siteName: 'Anyfare', title: `${title} | Anyfare`, description: checkDescription },
-    twitter: { card: 'summary', title: `${title} | Anyfare`, description: checkDescription },
+    alternates: { canonical: `${siteUrl}/check`, types: { 'text/markdown': `${siteUrl}${checkAddress({ url, tab: 'overview', period: '30d', page: 1 }, markdownUrl('/check'))}` } },
+    ...socialTags({ siteUrl, title: `${title} | Anyfare`, description: checkDescription }),
   };
 };
 

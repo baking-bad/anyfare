@@ -7,6 +7,7 @@ import type { Metadata } from 'next';
 import { serverReader } from '../../../src/api/server';
 import { PageView } from '../../../src/components/AgentView';
 import { readSettings } from '../../../src/config';
+import { socialTags } from '../../../src/seo/social';
 import { markdownUrl } from '../../../src/markdown/negotiate';
 import { serviceMarkdown } from '../../../src/markdown/service';
 import { isHost, parsePeriod, serviceDescription } from '../../../src/services/content';
@@ -30,8 +31,7 @@ export const generateMetadata = async ({ params }: Props): Promise<Metadata> => 
     title: host,
     description,
     alternates: { canonical: url, types: { 'text/markdown': `${siteUrl}${markdownUrl(`/services/${encodeURIComponent(host)}`)}` } },
-    openGraph: { type: 'website', siteName: 'Anyfare', title: `${host} | Anyfare`, description, url },
-    twitter: { card: 'summary', title: `${host} | Anyfare`, description },
+    ...socialTags({ siteUrl, title: `${host} | Anyfare`, description, url }),
   };
 };
 

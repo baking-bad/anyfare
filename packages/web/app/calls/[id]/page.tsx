@@ -8,6 +8,7 @@ import { serverReader } from '../../../src/api/server';
 import { PageView } from '../../../src/components/AgentView';
 import { readSettings } from '../../../src/config';
 import { receiptMarkdown, receiptUnavailableMarkdown } from '../../../src/markdown/receipt';
+import { socialTags } from '../../../src/seo/social';
 import { markdownUrl } from '../../../src/markdown/negotiate';
 import { isReceiptId, receiptDescription, receiptTitle } from '../../../src/receipt/content';
 import { loadReceipt, receiptRequests } from '../../../src/receipt/data';
@@ -28,8 +29,7 @@ export const generateMetadata = async ({ params }: Params): Promise<Metadata> =>
     // A receipt is one of many thin pages
     robots: { index: false, follow: true },
     alternates: { canonical: url, types: { 'text/markdown': `${siteUrl}${markdownUrl(`/calls/${encodeURIComponent(id)}`)}` } },
-    openGraph: { type: 'website', siteName: 'Anyfare', title: `${title} | Anyfare`, description: receiptDescription, url },
-    twitter: { card: 'summary', title: `${title} | Anyfare`, description: receiptDescription },
+    ...socialTags({ siteUrl, title: `${title} | Anyfare`, description: receiptDescription, url }),
   };
 };
 
