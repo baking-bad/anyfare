@@ -24,6 +24,8 @@ export interface CurlExample {
   readonly needs: readonly string[];
   // True when running it changes the account for good, such as a rotation or a revoke
   readonly destructive?: boolean;
+  // Why it can't run against the local stack. Without one, the test of the examples must run it.
+  readonly cannotRunLocally?: string;
 }
 
 /** An API that asks for payment only on POST, the one the home page's second link tries. */

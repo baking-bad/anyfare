@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { endpointGroups } from '../src/agents/content';
+import { endpointGroups, startSteps } from '../src/agents/content';
 import { endpoints, endpointUrl, groupOrder } from '../src/agents/endpoints';
 import { errorDocs } from '../src/agents/errors';
 import { curlExamples, curlOf, type CurlExample } from '../src/agents/examples';
@@ -11,6 +11,7 @@ import { readSettings } from '../src/config';
 import { agentsMarkdown } from '../src/markdown/agents';
 import { markdownPageFor } from '../src/markdown/pages';
 import { curlCommands } from './support/curl';
+import { printedAnswers } from './support/printed';
 
 const settings = readSettings({ SITE_URL: 'https://site.example.net', API_URL: 'https://api.example.net', PAY_URL: 'https://pay.example.net', CONSOLE_URL: 'https://console.example.net' });
 const hosts = ['https://site.example.net', 'https://api.example.net', 'https://pay.example.net', 'https://console.example.net'];
@@ -184,3 +185,34 @@ describe('the curl examples', () => {
     expect(curlOf(examples.find(example => example.id === 'paid-call')!)).toContain('Bearer $ANYFARE_PAYMENT_KEY');
   });
 });
+
+describe('the answers the text prints', () => {
+  const printed = printedAnswers(files['llms-full.txt']);
+  const examples = curlExamples(settings);
+  const endpointOf = (heading: string) => endpoints.find(endpoint => heading.startsWith(`${endpoint.method === 'SSE' ? 'GET' : endpoint.method} ${endpoint.path} `));
+
+  it('are in llms-full.txt for every JSON answer of the list, and are its JSON', () => {
+    expect(printed.map(answer => endpointOf(answer.heading)?.id)).toEqual(endpoints.filter(endpoint => endpoint.answer.json !== undefined).map(endpoint => endpoint.id));
+    for (const answer of printed)
+      expect(JSON.parse(JSON.stringify(endpointOf(answer.heading)!.answer.json).replaceAll('<pay host>', settings.payUrl)), answer.heading).toEqual(answer.json);
+  });
+
+  it('show every field their example promises, at the top level', () => {
+    for (const answer of printed) {
+      const endpoint = endpointOf(answer.heading)!;
+      for (const example of examples.filter(candidate => candidate.id === endpoint.example || endpoint.alsoExamples?.includes(candidate.id) === true)) {
+        for (const field of example.expect.fields)
+          expect(Object.keys(answer.json as object), `${example.id}: ${field}`).toContain(field);
+      }
+    }
+  });
+
+  it('show on the For agents page only fields their example promises', () => {
+    for (const step of startSteps(settings)) {
+      const example = examples.find(candidate => candidate.id === step.example)!;
+      for (const match of step.answer.matchAll(/"(\w+)":/g))
+        expect(example.expect.fields, `step ${step.number}: ${match[1]}`).toContain(match[1]);
+    }
+  });
+});
+
