@@ -124,6 +124,11 @@ export const unpricedHost = 'tts03.example.org';
 /** The service whose numbers can't be read: its page and its endpoints answer 503. */
 export const unavailableHost = 'rpc05.example.org';
 
+/** The paid service with no paid call in the last 30 days: its row and page have zero numbers, and it stays in the list. */
+export const zeroPaidHost = 'ocr22.example.org';
+/** The busy paid service with one paid endpoint that has no call in the period: zero numbers, and its pay link. */
+export const quietEndpointHost = 'geo02.example.org';
+
 /** The services only a check listed, newest first: `fresh01` is the newest. */
 export const checkedHosts: readonly string[] = ['fresh01.example.net', 'fresh02.example.net', 'fresh03.example.net', 'fresh04.example.net'];
 /** The paid service that also has an endpoint only a check listed. */
@@ -193,6 +198,9 @@ const rowOf = (host: string, index: number, now: number): ServiceRow => {
     // A check also listed one more endpoint of it: it counts, and it says when it was checked
     return { ...row, paidEndpoints: row.paidEndpoints + 1, checkedAt: new Date(now - 5 * hour).toISOString() };
   }
+
+  if (host === zeroPaidHost)
+    return { ...row, calls: 0, buyers: 0, volume: '0', successRate: null, p50Ms: null, trend: noTrend };
 
   return host === unpricedHost ? { ...row, priceFrom: null } : row;
 };
@@ -382,6 +390,18 @@ const checkedService = (row: ServiceRow, period: Period, now: number, payUrl: st
   exact: true,
 });
 
+/** A paid service with no paid call in the period, as the API answers it: zero numbers, every endpoint paid, with its pay link. */
+const zeroPaidService = (row: ServiceRow, period: Period, now: number, payUrl: string): ServiceDetail => {
+  const checked = checkedService(row, period, now, payUrl);
+
+  return {
+    ...checked,
+    status: 'paid',
+    checkedAt: null,
+    endpoints: checked.endpoints.map(endpoint => ({ ...endpoint, status: 'paid' as const, checkedAt: null })),
+  };
+};
+
 /**
  * One service for a period, or undefined for a host the fake doesn't know (the hosts of `serviceHosts`).
  * `maps.example.com` has no call in the period before, so it has no change to show. The top buyers hold
@@ -396,6 +416,8 @@ export const sampleService = (host: string, period: Period, now: number, payUrl 
   if (!paid || index < 0 && edgeIndex < 0)
     return undefined;
   const row = edgeIndex >= 0 ? edgeRow(host, edgeIndex, now) : rowOf(host, index, now);
+  if (host === zeroPaidHost)
+    return zeroPaidService(row, period, now, payUrl);
   const scale = topScale[period];
   const calls = Math.round(row.calls * scale);
   const buyers = Math.max(1, Math.round(row.buyers * Math.min(1, scale)));
@@ -421,19 +443,24 @@ export const sampleService = (host: string, period: Period, now: number, payUrl 
       p50Ms: row.p50Ms,
       p95Ms: row.p50Ms === null ? null : Math.round(row.p50Ms * 2.4),
     },
-    endpoints: [...servicePaths.slice(0, edgeIndex >= 0 ? row.paidEndpoints - 1 : host === mixedHost ? row.paidEndpoints - 1 : row.paidEndpoints).map((samplePath, step) => ({
-      path: edgeIndex === 1 && step === 0 ? longPath : samplePath,
-      method: step === row.paidEndpoints - 1 && row.paidEndpoints > 2 ? null : step === 1 ? 'POST' : 'GET',
-      priceNow: row.priceFrom === null ? null : money(Number(row.priceFrom) * (1 + step)),
-      calls: Math.round(calls * pathShares[step]!),
-      buyers: Math.max(1, Math.round(buyers * pathShares[step]!)),
-      volume: volume(Math.round(calls * pathShares[step]!)),
-      successRate: row.successRate,
-      p50Ms: row.p50Ms,
-      link: `${payUrl}/${host}${edgeIndex === 1 && step === 0 ? longPath : samplePath}`,
-      status: 'paid' as const,
-      checkedAt: null,
-    })), ...host === mixedHost ? [{
+    endpoints: [...servicePaths.slice(0, edgeIndex >= 0 ? row.paidEndpoints - 1 : host === mixedHost ? row.paidEndpoints - 1 : row.paidEndpoints).map((samplePath, step) => {
+      // A paid endpoint with no call in the period comes after those with calls, with zero numbers
+      const quiet = host === quietEndpointHost && step === row.paidEndpoints - 1;
+
+      return {
+        path: edgeIndex === 1 && step === 0 ? longPath : samplePath,
+        method: step === row.paidEndpoints - 1 && row.paidEndpoints > 2 ? null : step === 1 ? 'POST' : 'GET',
+        priceNow: row.priceFrom === null ? null : money(Number(row.priceFrom) * (1 + step)),
+        calls: quiet ? 0 : Math.round(calls * pathShares[step]!),
+        buyers: quiet ? 0 : Math.max(1, Math.round(buyers * pathShares[step]!)),
+        volume: quiet ? '0' : volume(Math.round(calls * pathShares[step]!)),
+        successRate: quiet ? null : row.successRate,
+        p50Ms: quiet ? null : row.p50Ms,
+        link: `${payUrl}/${host}${edgeIndex === 1 && step === 0 ? longPath : samplePath}`,
+        status: 'paid' as const,
+        checkedAt: null,
+      };
+    }), ...host === mixedHost ? [{
       // An endpoint only a check listed comes after the paid ones, with zero numbers
       path: '/v1/sample/preview',
       method: 'POST',
@@ -501,6 +528,8 @@ const checkHosts = {
   limited: 'limited.example.com',
   // A link with more than one page of calls
   busy: 'busy.example.com',
+  // Payable, and the API doesn't show its numbers (`404` from the endpoint's stats, as for a blocked host)
+  hidden: 'hidden.example.com',
   // Payable, but a limit kept it out of the list of services: `listed` is false, and its service page would be a 404
   unlisted: 'unlisted.example.com',
 } as const;
@@ -560,7 +589,7 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
   const refused = refusals[host];
   if (refused !== undefined)
     return refused;
-  const known: readonly string[] = [checkHosts.base, checkHosts.near, checkHosts.mpp, checkHosts.hostile, checkHosts.slow, checkHosts.busy, checkHosts.postOnly, checkHosts.fallback, checkHosts.unlisted, unavailableHost, ...checkedHosts, ...edgeHosts];
+  const known: readonly string[] = [checkHosts.base, checkHosts.near, checkHosts.mpp, checkHosts.hostile, checkHosts.slow, checkHosts.busy, checkHosts.postOnly, checkHosts.fallback, checkHosts.hidden, checkHosts.unlisted, unavailableHost, ...checkedHosts, ...edgeHosts];
   if (!known.includes(host) || host === checkHosts.postOnly && method !== 'POST')
     return refuse('not_payable', 'no_payment_asked', `The link answered 200 without asking for a payment. Anyfare routes paid calls only.`, 200);
 
@@ -613,7 +642,7 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
       upstream: { status: 402, headers, ...mpp ? { mpp: [mppRequest] } : { x402 } },
       payWith: ways.map(way => ({ ...way, amount: price, currency: 'USD' })),
       // Null when the numbers can't be read
-      stats: host === unavailableHost ? null : sampleStats.stats,
+      stats: host === unavailableHost || host === checkHosts.hidden ? null : sampleStats.stats,
       listed: host !== checkHosts.unlisted,
       checkedAt: new Date(now - 4_000).toISOString(),
       ms: 340,
@@ -679,6 +708,8 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
       return { status: 400, body: { error: { code: 'invalid_request', message: 'Unknown period' } } };
     if ([unavailableHost, checkHosts.fallback].includes(searchParams.get('host')?.toLowerCase() ?? ''))
       return unavailable;
+    if (searchParams.get('host')?.toLowerCase() === checkHosts.hidden)
+      return { status: 404, body: { error: { code: 'not_found', message: 'No such endpoint' } } };
 
     return { status: 200, body: sampleEndpointStats(searchParams.get('host') ?? '', searchParams.get('path') ?? '', period as Period, now, empty) };
   }

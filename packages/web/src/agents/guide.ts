@@ -59,7 +59,7 @@ ANYFARE_PAYMENT_KEY=$(jq -r .key anyfare-key.json)
 ANYFARE_KEY_ID=$(jq -r .id anyfare-key.json)
 \`\`\`
 
-4. Call. Only a 2xx answer is charged, and it carries Anyfare-Receipt: id="pay_...". Read the receipt at ${apiUrl}/v1/calls/<id>.
+4. Call. Only a 2xx answer is charged, and it carries Anyfare-Receipt: id="pay_...". Read the receipt at ${apiUrl}/v1/calls/<id>. It is there a moment after the answer: on 404, wait a second and read again.
 
 \`\`\`sh
 ${curl('paid-call')}

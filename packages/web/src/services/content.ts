@@ -154,9 +154,9 @@ export const lastCall = (at: string, now: number): string => {
 };
 
 /**
- * The count of paid endpoints under a service's name: "7 paid endpoints". The API counts every endpoint the
- * service ever had a paid call on, and lists only those with calls in the chosen period, so when fewer are
- * listed the line says how many: "7 paid endpoints, 6 with calls in this period".
+ * The count of paid endpoints under a service's name: "7 paid endpoints". The API counts every listed endpoint of
+ * the host, each once, and the page lists them all (up to its cap), so the line says how many had calls in the
+ * chosen period when some had none: "7 paid endpoints, 6 with calls in this period".
  */
 export const endpointsLine = (paid: number, listed: number, checked = 0): string => {
   // The listed endpoints and the count both hold the ones a check listed, which have no calls to speak of
@@ -205,12 +205,13 @@ export const rowStatus = (row: Pick<ServiceRow, 'status' | 'checkedAt'>, now: nu
  * What the head of a service's page says: the count of its endpoints, whether nobody has paid it, and when a
  * check last confirmed it (a paid service says it too when a check did).
  */
-export const headStatus = (service: Pick<ServiceDetail, 'status' | 'checkedAt' | 'paidEndpoints'> & { readonly endpoints: readonly Pick<ServiceDetail['endpoints'][number], 'status'>[] }, now: number): {
+export const headStatus = (service: Pick<ServiceDetail, 'status' | 'checkedAt' | 'paidEndpoints'> & { readonly endpoints: readonly (Pick<ServiceDetail['endpoints'][number], 'status'> & { readonly calls?: number })[] }, now: number): {
   readonly endpoints: string;
   readonly notPaid: boolean;
   readonly checked: string | undefined;
 } => ({
-  endpoints: endpointsLine(service.paidEndpoints, service.endpoints.length, service.endpoints.filter(endpoint => isChecked(endpoint.status)).length),
+  // The API lists every endpoint of the host, paid ones with no call in the period too: those are not "with calls"
+  endpoints: endpointsLine(service.paidEndpoints, service.endpoints.filter(endpoint => isChecked(endpoint.status) || (endpoint.calls ?? 1) > 0).length, service.endpoints.filter(endpoint => isChecked(endpoint.status)).length),
   notPaid: isChecked(service.status),
   checked: checkedLine(service.checkedAt, now),
 });

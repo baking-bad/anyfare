@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { paths } from '../src/api/endpoints';
-import type { ApiResult } from '../src/api/reader';
+import { getEndpointStats, paths } from '../src/api/endpoints';
+import type { ApiResult, Reader } from '../src/api/reader';
 import type { CallsPage, ServiceDetail, ServicesPage } from '../src/api/types';
 import { readCheckAnswer } from '../src/check/answer';
 import { unlistedLine } from '../src/check/content';
@@ -15,7 +15,7 @@ import {
   addServiceLine, checkedDay, checkedLine, endpointNote, endpointsLine, headStatus, nobodyPaidLine, notPaidYet, rowStatus, serviceMissingLine, servicesLead, servicesNumberLabels,
 } from '../src/services/content';
 import { apiServicesQuery, parseServicesFilters, servicesHref, sortChoices, withSort } from '../src/services/filters';
-import { answer, checkedHosts, mixedHost, sampleCheck, sampleCheckHosts, sampleService, unpricedCheckedHost } from './support/fakeApi';
+import { answer, checkedHosts, mixedHost, quietEndpointHost, sampleCheck, sampleCheckHosts, sampleService, unpricedCheckedHost, zeroPaidHost } from './support/fakeApi';
 
 // A clock three days after the first day the site existed, so every time in these tests is from today or later
 const now = Date.parse('2026-11-14T12:00:00.000Z');
@@ -94,10 +94,54 @@ describe('what a row, a head and an endpoint say for each status', () => {
     expect(endpointsLine(2, 2, 2)).toBe('2 paid endpoints');
   });
 
+  it('does not count a paid endpoint with no call in the period as one with calls', () => {
+    const listed = [{ status: 'paid', calls: 5 }, { status: 'paid', calls: 2 }, { status: 'paid', calls: 0 }, { status: 'checked', calls: 0 }] as const;
+
+    expect(headStatus({ status: 'paid', checkedAt: null, paidEndpoints: 4, endpoints: listed }, now).endpoints).toBe('4 paid endpoints, 2 with calls in this period');
+    expect(headStatus({ status: 'paid', checkedAt: null, paidEndpoints: 3, endpoints: listed.slice(0, 3) }, now).endpoints).toBe('3 paid endpoints, 2 with calls in this period');
+    expect(headStatus({ status: 'paid', checkedAt: null, paidEndpoints: 2, endpoints: [{ status: 'paid', calls: 4 }, { status: 'paid', calls: 1 }] }, now).endpoints).toBe('2 paid endpoints');
+  });
+
   it('marks only a checked endpoint, with its day', () => {
     expect(endpointNote({ status: 'checked', checkedAt: '2026-11-13T08:00:00.000Z' }, now)).toBe('Checked yesterday');
     expect(endpointNote({ status: 'checked', checkedAt: null }, now)).toBeUndefined();
     expect(endpointNote({ status: 'paid', checkedAt: '2026-11-13T08:00:00.000Z' }, now)).toBeUndefined();
+  });
+});
+
+describe('the fake API\'s answers for a paid service with zero numbers', () => {
+  it('keeps the service in the list with zeros, and its page lists every endpoint as paid with its link', () => {
+    const row = list('?q=ocr22').services[0]!;
+    expect(row).toMatchObject({ host: zeroPaidHost, status: 'paid', calls: 0, buyers: 0, volume: '0', successRate: null, p50Ms: null, checkedAt: null });
+    expect(row.trend).toHaveLength(30);
+    expect(row.trend.every(value => value === 0)).toBe(true);
+    const page = detail(zeroPaidHost)!;
+    expect(page).toMatchObject({ status: 'paid', checkedAt: null, stats: { calls: 0, buyers: 0 }, daily: [], byPaidWith: [] });
+    expect(page.endpoints).toHaveLength(page.paidEndpoints);
+    for (const endpoint of page.endpoints)
+      expect(endpoint).toMatchObject({ status: 'paid', calls: 0, volume: '0', checkedAt: null, link: expect.stringContaining(zeroPaidHost) });
+  });
+
+  it('has a busy service with one paid endpoint with no call, after those with calls', () => {
+    const page = detail(quietEndpointHost)!;
+    const last = page.endpoints.at(-1)!;
+
+    expect(page.endpoints).toHaveLength(page.paidEndpoints);
+    expect(last).toMatchObject({ status: 'paid', calls: 0, buyers: 0, volume: '0', successRate: null });
+    expect(page.endpoints.slice(0, -1).every(endpoint => endpoint.calls > 0)).toBe(true);
+  });
+
+  it('answers 404 for the endpoint numbers of a hidden host, and the endpoint reader turns it into zeros', async () => {
+    const url = new URL(`https://x.example.com/v1/endpoints/stats?host=${sampleCheckHosts.hidden}&path=/v1/x`);
+    expect(answer(url, 'full', now)!.status).toBe(404);
+    const read: Reader = async () => ({ ok: false, error: { status: 404, code: 'not_found', message: 'x' } });
+    const result = await getEndpointStats(read, sampleCheckHosts.hidden, '/v1/x', '7d');
+
+    expect(result.ok && result.value).toMatchObject({ host: sampleCheckHosts.hidden, path: '/v1/x', period: '7d', stats: { calls: 0, buyers: 0, volume: '0', successRate: null }, byPaidWith: [], exact: true });
+    expect(result.ok && result.value.daily).toHaveLength(14);
+    // Any other failure stays a failure
+    const failing: Reader = async () => ({ ok: false, error: { status: 503, code: 'stats_unavailable', message: 'x' } });
+    expect((await getEndpointStats(failing, 'a.example.com', '/x')).ok).toBe(false);
   });
 });
 

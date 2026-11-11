@@ -113,6 +113,10 @@ const pay = (path: string, init: RequestInit = {}): Promise<Reply> => fetch(`${r
 
   return { status: response.status, headers: response.headers, text, json: parse(text) };
 });
+const expectCursorRefused = (reply: Reply): void => {
+  expect(reply.status).toBe(400);
+  expect(reply.json?.error?.code).toBe('invalid_request');
+};
 const bearer = (key: string): Record<string, string> => ({ authorization: `Bearer ${key}` });
 const jsonBody = { 'content-type': 'application/json' };
 
@@ -123,9 +127,10 @@ beforeAll(async () => {
   vars['ANYFARE_SERVICE_PATH'] = '/base';
 }, 120_000);
 
+// Stopping the whole stack can take longer than the default hook limit on a busy machine
 afterAll(async () => {
   await running?.stop();
-});
+}, 60_000);
 
 describe('the examples, in the order an agent runs them', () => {
   it('checks a link, free, and a link that asks on POST', async () => {
@@ -217,6 +222,20 @@ describe('the examples, in the order an agent runs them', () => {
       expect((await send(exampleOf('paid-call'))).status).toBe(200);
     await running.countNumbers();
     await run('catalog');
+    // Two endpoints are listed, so a page of one has a next: its cursor goes back as it came, and the page after it answers
+    const nearCheck = await pay(`/_/check?url=${running.stack.paidApiHost}/near`);
+    expect(nearCheck.json, nearCheck.text).toMatchObject({ payable: true, listed: true });
+    // The page is kept a few seconds once read, so wait on the service's page, then read the catalog once
+    await expect.poll(async () => (await api(`/v1/services/${running.stack.paidApiHost}`)).json?.paidEndpoints, { timeout: 4_000, interval: 100 }).toBe(2);
+    const first = await api('/v1/catalog?limit=1');
+    expect(first.json.endpoints).toHaveLength(1);
+    expect(typeof first.json.partial).toBe('boolean');
+    const second = await api(`/v1/catalog?limit=1&cursor=${first.json.next}`);
+    expect(second.status).toBe(200);
+    expect(second.json.endpoints.length).toBeGreaterThan(0);
+    expect(second.json.endpoints[0].id).not.toBe(first.json.endpoints[0].id);
+    // A cursor no page gave, such as an old page number, is refused
+    expectCursorRefused(await api('/v1/catalog?cursor=2'));
     await expect.poll(async () => (await send(exampleOf('calls'))).json?.calls?.length, { timeout: 5_000, interval: 100 }).toBeGreaterThan(0);
     await run('calls');
     const stream = await run('calls-stream');

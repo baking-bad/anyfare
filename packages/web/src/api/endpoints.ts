@@ -84,6 +84,23 @@ export const listCalls = (read: Reader, q: CallsQuery = {}): Promise<ApiResult<C
 
 export const getTopStats = (read: Reader, period: Period): Promise<ApiResult<TopStats>> => read(paths.topStats(period), isTopStats);
 
-export const getEndpointStats = (read: Reader, host: string, path: string, period?: Period): Promise<ApiResult<EndpointStats>> => read(paths.endpointStats(host, path, period), isEndpointStats);
+/** An endpoint the API doesn't show, such as a blocked host: no calls, in the shape of an answer. */
+export const noEndpointStats = (host: string, path: string, period: Period, now: number): EndpointStats => ({
+  host,
+  path,
+  period,
+  updatedAt: null,
+  stats: { calls: 0, buyers: 0, volume: '0', successRate: null, p50Ms: null },
+  daily: Array.from({ length: 14 }, (_, index) => ({ day: new Date(now - (13 - index) * 86_400_000).toISOString().slice(0, 10), calls: 0 })),
+  byPaidWith: [],
+  exact: true,
+});
+
+/** An endpoint's numbers. A `404` is an endpoint the API doesn't show: its numbers are zeros, not a failure. */
+export const getEndpointStats = async (read: Reader, host: string, path: string, period?: Period): Promise<ApiResult<EndpointStats>> => {
+  const result = await read(paths.endpointStats(host, path, period), isEndpointStats);
+
+  return !result.ok && result.error.status === 404 ? { ok: true, value: noEndpointStats(host, path, period ?? '30d', Date.now()) } : result;
+};
 
 export const getReceipt = (read: Reader, id: string): Promise<ApiResult<Receipt>> => read(paths.call(id), isReceipt);

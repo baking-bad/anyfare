@@ -1005,6 +1005,16 @@ describe('the answers of the real API that are not the usual ones', () => {
     expect(body).toMatch(/<a [^>]*aria-current="true"[^>]*>30 days<\/a>|<a [^>]*href="[^"]*"[^>]*aria-current="true"[^>]*>30 days<\/a>/);
   });
 
+  it('shows the stats card\'s empty state, not an error, when the API answers 404 for the endpoint\'s numbers', async () => {
+    const { response, body } = await get(full, checkPath('hidden.example.com/v1/sample/quotes/latest'));
+    const text = textOf(body);
+
+    expect(response.status).toBe(200);
+    expect(body).not.toContain('This endpoint&#x27;s numbers didn&#x27;t load');
+    expect(text).toContain('0 Paid calls');
+    expect(text).toContain('No paid calls in this period.');
+  });
+
   it('shows the receipt of a payment that is still settling, with no fee yet', async () => {
     const { response, body } = await get(full, '/calls/pay_settling');
 
@@ -2382,6 +2392,65 @@ describe('the Service page of a paid service with a checked endpoint', () => {
 
     expect(text).not.toContain('Checked ');
     expect(text).not.toContain('Not paid yet');
+  });
+});
+
+describe('a paid service with no paid call in the last 30 days', () => {
+  it('stays in the list with zero calls, dashes for the rates and a flat trend, and is not "Not paid yet"', async () => {
+    const { body } = await get(full, '/services?q=ocr22');
+    const row = body.slice(body.indexOf('<tbody'), body.indexOf('</tbody>'));
+    const cells = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(match => match[1]!);
+
+    expect(hostsInOrder(body)).toEqual(['ocr22.example.org']);
+    expect(row).not.toContain('Not paid yet');
+    expect(row).not.toContain('Checked');
+    expect(textOf(cells[3]!).trim()).toBe('0');
+    expect(cells[4]).toContain('<svg class="spark"');
+    expect(textOf(cells[5]!).trim()).toBe('0');
+    expect(textOf(cells[7]!).trim()).toBe('-');
+    expect(textOf(cells[8]!).trim()).toBe('-');
+    noBrokenValues(body);
+  });
+
+  it('has a page with zero numbers, its endpoints with their pay links, no "Checked" line and no "Not paid yet"', async () => {
+    const { response, body } = await get(full, '/services/ocr22.example.org');
+    const rows = [...body.matchAll(/<tr class="click">([\s\S]*?)<\/tr>/g)].map(match => match[1]!);
+    const text = textOf(pageText(body));
+
+    expect(response.status).toBe(200);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row).not.toContain('Checked');
+      expect(row).toContain('aria-label="Copy the pay link of ');
+      expect(textOf(row)).toMatch(/ 0 0 \$0 - - /);
+    }
+    expect(text).not.toContain('Not paid yet');
+    expect(text).not.toContain('Nobody has paid');
+    noBrokenValues(body);
+  });
+
+  it('has its twin with zero numbers, as paid', async () => {
+    const { body } = await get(full, '/services/ocr22.example.org.md');
+
+    expect(body).toMatch(/Status: paid\./);
+    expect(body).not.toContain('Not paid yet');
+    expect(body).toMatch(/\| paid \| \$0\.\d+ \| 0 \| 0 \| \$0 \| - \| - \|/);
+  });
+});
+
+describe('a busy paid service with one paid endpoint that had no call in the period', () => {
+  it('lists it after the endpoints with calls, with zeros, and counts the ones with calls in the head', async () => {
+    const { body } = await get(full, '/services/geo02.example.org');
+    const rows = [...body.matchAll(/<tr class="click">([\s\S]*?)<\/tr>/g)].map(match => match[1]!);
+    const text = textOf(pageText(body));
+
+    expect(rows).toHaveLength(3);
+    expect(textOf(rows[2]!)).toMatch(/ 0 0 \$0 - - /);
+    expect(rows[2]).toContain('aria-label="Copy the pay link of ');
+    expect(rows[2]).not.toContain('Checked');
+    expect(textOf(rows[0]!)).not.toMatch(/ 0 0 \$0 - - /);
+    expect(text).toContain('3 paid endpoints, 2 with calls in this period');
+    noBrokenValues(body);
   });
 });
 

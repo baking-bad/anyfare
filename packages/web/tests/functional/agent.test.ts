@@ -86,7 +86,7 @@ afterAll(async () => {
   rmSync(join(webRoot, distDir), { recursive: true, force: true });
   if (work !== undefined)
     rmSync(work, { recursive: true, force: true });
-});
+}, 60_000);
 
 interface Result {
   readonly status: number;
@@ -226,9 +226,16 @@ describe('an agent with only /llms.txt', () => {
   it('reads the receipt at the place the text names', async () => {
     const place = /Read the receipt at (\S+)\/<id>\./.exec(guide)![1]!;
     expect(existsSync(join(work, 'anyfare-account.json'))).toBe(true);
-    const list = await (await fetch(`${place}?size=5`)).json() as { calls: { id: string; service: string }[] };
-    expect(list.calls.some(call => call.service === running.stack.paidApiHost)).toBe(true);
-    const found = await fetch(`${place}/${list.calls[0]!.id}`);
+    // A call is finished a moment after its answer went out, so the text says to read again on 404
+    let call: { id: string; service: string } | undefined;
+    for (let attempt = 0; attempt < 20 && call === undefined; attempt++) {
+      const list = await (await fetch(`${place}?size=5`)).json() as { calls: { id: string; service: string }[] };
+      call = list.calls.find(each => each.service === running.stack.paidApiHost);
+      if (call === undefined)
+        await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    expect(call).toBeDefined();
+    const found = await fetch(`${place}/${call!.id}`);
     expect(found.status).toBe(200);
   });
 });

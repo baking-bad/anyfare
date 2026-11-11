@@ -98,7 +98,7 @@ export const curlExamples = ({ apiUrl, payUrl }: Hosts): readonly CurlExample[] 
     expect: { status: 200, fields: ['id', 'status', 'message', 'network', 'token', 'amount', 'depositAddress', 'depositMemo', 'send', 'sendAtLeast', 'estimatedCredits', 'payBy', 'addressExpiresAt', 'createdAt', 'updatedAt', 'deposited', 'credited', 'transaction', 'refunded', 'refundReason'] },
     needs: ['ANYFARE_MASTER_KEY', 'ANYFARE_TOPUP_ID'],
   },
-  { id: 'catalog', method: 'GET', url: `${apiUrl}/v1/catalog?limit=3`, headers: {}, expect: { status: 200, fields: ['endpoints', 'next'] }, needs: [] },
+  { id: 'catalog', method: 'GET', url: `${apiUrl}/v1/catalog?limit=3`, headers: {}, expect: { status: 200, fields: ['endpoints', 'next', 'partial'] }, needs: [] },
   { id: 'calls', method: 'GET', url: `${apiUrl}/v1/calls?status=paid&size=3`, headers: {}, expect: { status: 200, fields: ['calls', 'page', 'size', 'total', 'totalCapped'] }, needs: [] },
   { id: 'calls-stream', method: 'GET', url: `${apiUrl}/v1/calls/stream`, headers: {}, flags: ['-N'], expect: { status: 200, fields: [], headers: ['content-type'] }, needs: [] },
   {

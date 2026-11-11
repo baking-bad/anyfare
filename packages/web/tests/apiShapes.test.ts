@@ -417,6 +417,7 @@ describe('the website\'s types against the pay host\'s check', () => {
 
 describe('the agent files against the API\'s response schemas', () => {
   const documented = [
+    { id: 'catalog', file: 'catalog/routes.ts', schema: 'catalogSchema' },
     { id: 'calls', file: 'calls/schemas.ts', schema: 'listResponseSchema' },
     { id: 'receipt', file: 'calls/schemas.ts', schema: 'receiptSchema' },
     { id: 'stats', file: 'stats/schemas.ts', schema: 'platformSchema' },
@@ -434,12 +435,25 @@ describe('the agent files against the API\'s response schemas', () => {
     expect(Object.keys(json).sort()).toEqual([...schemaFacts(apiSource(entry.file), entry.schema).top].sort());
   });
 
+  it('shows a catalog endpoint with the fields the schema names, and its cursor and partial flag', () => {
+    const schema = schemaFacts(apiSource('catalog/routes.ts'), 'catalogSchema');
+    expect(schema.top).toEqual(['endpoints', 'next', 'partial']);
+    expect([...schema.nullable]).toEqual(['next']);
+    const json = agentEndpoints.find(candidate => candidate.id === 'catalog')!.answer.json as { endpoints: Record<string, unknown>[]; next: unknown; partial: unknown };
+    const entry = [...schema.names].filter(name => !schema.top.includes(name));
+
+    expect(json.endpoints.length).toBeGreaterThan(0);
+    expect(Object.keys(json.endpoints[0]!).sort()).toEqual(entry.sort());
+    expect(json.next).toBeNull();
+    expect(typeof json.partial).toBe('boolean');
+  });
+
   it('lists the error codes the public reads answer with, and the stream\'s', () => {
     const codes = new Set(errorDocs.map(error => error.code));
     expect(codes.has('stats_unavailable')).toBe(true);
     expect(codes.has('shutting_down')).toBe(true);
     const answers = (id: string): readonly string[] => agentEndpoints.find(candidate => candidate.id === id)!.errors;
-    for (const id of ['stats-live', 'service', 'endpoint-stats'])
+    for (const id of ['catalog', 'stats-live', 'service', 'endpoint-stats'])
       expect(answers(id), id).toContain('503 stats_unavailable');
     expect(answers('calls-stream')).toContain('503 shutting_down');
     // The two names the code gives them
