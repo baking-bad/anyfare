@@ -101,6 +101,10 @@ Ask before you sign up, before you make a payment key (and agree its limits), be
 
 ${fence(curl('check'), 'sh')}
 
+Some APIs ask for payment only on POST. A GET check of such a link answers "payable": false with the reason "not_payable": check it again with \`&method=POST\` and the header \`X-Anyfare-Check: 1\`. The header is there so that a plain link can't make Anyfare send a POST to an API: without it the answer is 400. For example, an API that asks only on POST:
+
+${fence(curl('check-post'), 'sh')}
+
 2. Sign up. The answer has "masterKey" and "freeCredits": a new account may get free Credits, and the answer says how much ("0" when none). The command writes the answer to anyfare-account.json, which only the user can read (umask 077). "masterKey" is shown once. (The sign-up endpoint below has the same request without the file.)
 
 ${fence(`umask 077\n${curl('signup-to-file')}`, 'sh')}

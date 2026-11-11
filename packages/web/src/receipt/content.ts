@@ -105,7 +105,7 @@ export const stepWords = (name: string, receipt: Receipt): { readonly title: str
       return { title: 'The buyer asked, with a payment' };
     case 'authorized':
       return credits
-        ? { title: `We held ${usdOf(buyer.amount, 3)} on the buyer's balance` }
+        ? { title: `We held ${usdOf(buyer.amount)} on the buyer's balance` }
         : { title: 'We checked the buyer\'s payment', note: `${protocolOf(buyer.paidWith)} on ${chain}. Not settled yet` };
     case 'api_signed':
       return api === null
@@ -135,7 +135,7 @@ export const statusWords = (receipt: Receipt): string => {
 };
 
 /** What the buyer paid, for the head: a free call reads `$0`. */
-export const paidAmount = (receipt: Receipt): string => receipt.status === 'paid' ? usdOf(receipt.buyer.amount, 3) : '$0';
+export const paidAmount = (receipt: Receipt): string => receipt.status === 'paid' ? usdOf(receipt.buyer.amount) : '$0';
 
 /** The call as the details show it: method and path, or the path alone when the method is unknown. */
 export const callLine = (receipt: Receipt): string => receipt.method === null ? receipt.path : `${receipt.method} ${receipt.path}`;

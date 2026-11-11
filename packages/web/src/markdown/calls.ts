@@ -21,7 +21,7 @@ const callRow = (call: Call): string => {
   const paid = call.status === 'paid';
   const status = paid ? 'Paid' : call.apiStatus === null ? 'free' : `${call.apiStatus} · free`;
 
-  return `| ${call.at} | ${cell(call.service)} | ${cell(call.path)} | ${paidWithName(call.paidWith)} | ${call.apiPaidWith === null ? '-' : paidWithName(call.apiPaidWith)} | ${call.payer === null ? '-' : cell(call.payer)} | ${paid ? usdOf(call.amount, 3) : '$0'} | ${status} | ${call.ms === null ? '-' : ms(call.ms)} |`;
+  return `| ${call.at} | ${cell(call.service)} | ${cell(call.path)} | ${paidWithName(call.paidWith)} | ${call.apiPaidWith === null ? '-' : paidWithName(call.apiPaidWith)} | ${call.payer === null ? '-' : cell(call.payer)} | ${paid ? usdOf(call.amount) : '$0'} | ${status} | ${call.ms === null ? '-' : ms(call.ms)} |`;
 };
 
 const filterLines = (filters: CallsFilters): string => [
@@ -59,7 +59,7 @@ export const callsMarkdown = (settings: SiteSettings, data: CallsData, filters: 
   const { siteUrl, apiUrl } = settings;
 
   const today = section(data.live, ({ today: numbers }) => `- Paid calls: ${count(numbers.calls)}
-- Volume: ${usdOf(numbers.volume, 2)}
+- Volume: ${usdOf(numbers.volume)}
 - Buyers: ${count(numbers.buyers)}
 - Paid from NEAR: ${Math.round(numbers.nearShare * 100)}%`);
 

@@ -32,7 +32,11 @@ export const platformGuide = (hosts: Hosts): string => {
 
 ## Steps
 
-1. Check a link. Free, no key. "payable": true comes with the price and our quote.
+1. Check a link. Free, no key. "payable": true comes with the price and our quote. A link that asks for payment only on POST is "not_payable" to this GET check: add \`&method=POST\` and the header \`X-Anyfare-Check: 1\` to the check:
+
+\`\`\`sh
+${curl('check-post')}
+\`\`\`
 
 \`\`\`sh
 ${curl('check')}

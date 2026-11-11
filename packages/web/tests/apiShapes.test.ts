@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { endpoints as agentEndpoints } from '../src/agents/endpoints';
 import { errorDocs } from '../src/agents/errors';
+import { checkMethods, refusalDetails } from '../src/check/content';
 
 // The website's types against the API's response schemas, both read as text: nothing of another package is
 // imported. For each response schema a page reads, the website's type for that endpoint must know every
@@ -86,6 +87,11 @@ const inside = (text: string, from: number): string => {
   let depth = 0;
   for (let index = from; index < text.length; index += 1) {
     const char = text[index]!;
+    // An arrow is no bracket
+    if (char === '=' && text[index + 1] === '>') {
+      index += 1;
+      continue;
+    }
     if (opens.includes(char))
       depth += 1;
     else if (closes.includes(char)) {
@@ -366,6 +372,46 @@ describe('the website\'s types against the API\'s response schemas', () => {
     const nullable = stats.replace('  updatedAt: time,\n  paidEndpoints', '  updatedAt: nullableTime,\n  paidEndpoints');
     expect(nullable).not.toBe(stats);
     expect(differences(schema(nullable), type)).toEqual(['the type does not allow null for updatedAt']);
+  });
+});
+
+// The pay host's check, `GET /_/check`: its response schema is in the proxy's source, read as text the same way
+const checkSource = readFileSync(`${packages}/proxy/src/routing/check.ts`, 'utf8');
+const answerTypes = readFileSync(fileURLToPath(new URL('../src/check/answer.ts', import.meta.url)), 'utf8');
+
+describe('the website\'s types against the pay host\'s check', () => {
+  it.each([
+    ['a payable link', 'payableSchema', 'PayableAnswer'],
+    ['a link it won\'t quote', 'refusedSchema', 'RefusedAnswer'],
+  ] as const)('%s: the type knows exactly what the schema names', (_name, schemaName, typeName) => {
+    const schema = schemaFacts(checkSource, schemaName);
+    const type = typeFacts(answerTypes, typeName);
+
+    expect(schema.top.length, 'the schema was found and has properties').toBeGreaterThan(3);
+    expect(differences(schema, type)).toEqual([]);
+  });
+
+  it('reads the check\'s schema well: the fields and the nulls it is known to have', () => {
+    const payable = schemaFacts(checkSource, 'payableSchema');
+    expect(payable.top).toEqual(['payable', 'method', 'target', 'price', 'quote', 'link', 'protocol', 'asks', 'upstream', 'payWith', 'stats', 'checkedAt', 'ms']);
+    expect([...payable.nullable].sort()).toEqual(['network', 'p50Ms', 'stats', 'successRate']);
+    expect(payable.names).toContain('mpp');
+    const refused = schemaFacts(checkSource, 'refusedSchema');
+    expect(refused.top).toEqual(['payable', 'method', 'reason', 'message', 'detail', 'upstream']);
+  });
+
+  it('knows every detail the check can give, and takes only methods the check takes', () => {
+    const details = /export type CheckDetail =([\s\S]*?);\n/.exec(checkSource)?.[1]?.match(/'(\w+)'/g)?.map(word => word.slice(1, -1)) ?? [];
+    const methods = /export const checkMethods = \[([^\]]*)\]/.exec(checkSource)?.[1]?.match(/'(\w+)'/g)?.map(word => word.slice(1, -1)) ?? [];
+    const worded = refusalDetails.flatMap(([, list]) => list);
+
+    expect(details.length).toBeGreaterThan(10);
+    // Every detail the pay host gives is worded; the website may word one the pay host doesn't give yet
+    for (const detail of details)
+      expect(worded, detail).toContain(detail);
+    for (const method of checkMethods)
+      expect(methods, method).toContain(method);
+    expect(checkSource).toMatch(/method: \{ type: 'string', enum: \[\.\.\.checkMethods\], default: 'GET' \}/);
   });
 });
 

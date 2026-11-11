@@ -1,4 +1,5 @@
 import type { Period } from '../api/types';
+import { defaultMethod, knownMethod } from '../check/method';
 import { ago, pct } from '../format';
 
 // The words and small rules of the Services page and the Service page. The pages and their Markdown
@@ -64,9 +65,15 @@ export const comparedWith = (period: Period): string => ({ today: 'the day befor
 export const serviceHref = (host: string, period: Period = defaultPeriod, base = '/services'): string =>
   `${base}/${encodeURIComponent(host)}${period === defaultPeriod ? '' : `?period=${period}`}`;
 
-/** The check page's address for a host and a path: the path's characters are escaped, its slashes stay. */
-export const checkHref = (host: string, path = ''): string =>
-  `/check?url=${host}${path.split('/').map(part => encodeURIComponent(part)).join('/')}`;
+/**
+ * The check page's address for a host and a path: the path's characters are escaped, its slashes stay. The
+ * endpoint's method, as the API lists it (`null` when it isn't known), goes along when it is not GET.
+ */
+export const checkHref = (host: string, path = '', method?: string | null): string => {
+  const probe = knownMethod(method?.toUpperCase());
+
+  return `/check?url=${host}${path.split('/').map(part => encodeURIComponent(part)).join('/')}${probe === undefined || probe === defaultMethod ? '' : `&method=${probe}`}`;
+};
 
 /**
  * How much the paid calls changed against the period before, as a share (0.18 is +18%). `null` when there
@@ -79,7 +86,12 @@ export const callsChange = (calls: number, before: number | null): number | null
 export const perBuyer = (volume: string, buyers: number): number | null => {
   const total = Number(volume);
 
-  return buyers > 0 && Number.isFinite(total) && volume.trim() !== '' ? total / buyers : null;
+  if (!(buyers > 0 && Number.isFinite(total)) || volume.trim() === '')
+    return null;
+  const average = total / buyers;
+
+  // A division has no digits of its own: under a dollar it keeps three significant digits, so $0.14533333 reads $0.145
+  return average < 1 ? Number(average.toPrecision(3)) : average;
 };
 
 /** How long ago a buyer's last call was: "2m ago", "5h ago", then "Yesterday" for one day and "3 days ago" from two. */

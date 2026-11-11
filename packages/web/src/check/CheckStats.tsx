@@ -14,10 +14,21 @@ import { Skeleton } from '../components/Skeleton';
 import { paidWithName } from '../content/home';
 import { count, ms, pct, usdOf } from '../format';
 import { inexactLine } from '../services/content';
+import type { CheckNumbers } from './answer';
 import { checkAddress, parseCheckParams, periodChoices, periodName, type CheckParams } from './content';
 
 const Stat = ({ value, label }: { readonly value: string; readonly label: string }) => (
   <div className="card"><span className="v">{value}</span><span className="l">{label}</span></div>
+);
+
+const NumberCards = ({ numbers }: { readonly numbers: { readonly calls: number; readonly buyers: number; readonly volume: string; readonly successRate: number | null; readonly p50Ms: number | null } }) => (
+  <>
+    <Stat value={count(numbers.calls)} label="Paid calls" />
+    <Stat value={count(numbers.buyers)} label="Unique payers" />
+    <Stat value={usdOf(numbers.volume)} label="Volume" />
+    <Stat value={numbers.successRate === null ? '-' : pct(numbers.successRate)} label="Answered 2xx" />
+    <Stat value={numbers.p50Ms === null ? '-' : ms(numbers.p50Ms)} label="Median time" />
+  </>
 );
 
 /**
@@ -26,13 +37,15 @@ const Stat = ({ value, label }: { readonly value: string; readonly label: string
  * the numbers straight from the public API, shows a loading state, and rewrites the address with
  * `&period=`. It makes no navigation, so the link is not checked again.
  */
-export const CheckStats = ({ host, path, params, period: first, stats: firstStats }: {
+export const CheckStats = ({ host, path, params, period: first, stats: firstStats, fallback }: {
   readonly host: string;
   // The URL's state, for the links of the periods
   readonly params: CheckParams;
   readonly path: string;
   readonly period: Period;
   readonly stats: ApiResult<EndpointStats>;
+  // The check's own numbers over 30 days, shown when the API's read fails
+  readonly fallback: CheckNumbers | null;
 }) => {
   const { apiUrl } = useSettings();
   const [period, setPeriod] = useState(first);
@@ -59,6 +72,9 @@ export const CheckStats = ({ host, path, params, period: first, stats: firstStat
   }, [apiUrl, host, path]);
 
   const link = (value: Period): string => checkAddress({ ...params, period: value });
+  // The API's read failed but the check carries its 30-day numbers: show those, and say which period they are
+  const fallen = !loading && !stats.ok && fallback !== null;
+  const selected = fallen ? '30d' : period;
 
   return (
     <div className="card" aria-busy={loading}>
@@ -69,7 +85,7 @@ export const CheckStats = ({ host, path, params, period: first, stats: firstStat
             <a
               key={choice.value}
               href={link(choice.value)}
-              aria-current={choice.value === period ? 'true' : undefined}
+              aria-current={choice.value === selected ? 'true' : undefined}
               onClick={event => {
                 if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0)
                   return;
@@ -88,6 +104,11 @@ export const CheckStats = ({ host, path, params, period: first, stats: firstStat
           <Skeleton shape="block" />
           <Skeleton shape="block" />
         </div>
+      ) : fallen ? (
+        <>
+          <div className="stat-cards ep-stats"><NumberCards numbers={fallback} /></div>
+          <p className="small muted mt-8">The last 30 days, from the check. The chart and the other periods didn&apos;t load.</p>
+        </>
       ) : !stats.ok ? (
         <ErrorState title="This endpoint's numbers didn't load">
           {stats.error.code === 'stats_unavailable' ? 'These numbers can\'t be read right now. Reload the page in a moment.' : 'The Platform API didn\'t answer. Reload the page in a moment.'}
@@ -105,13 +126,7 @@ const StatsBody = ({ stats, period }: { readonly stats: EndpointStats; readonly 
 
   return (
     <>
-      <div className="stat-cards ep-stats">
-        <Stat value={count(numbers.calls)} label="Paid calls" />
-        <Stat value={count(numbers.buyers)} label="Unique payers" />
-        <Stat value={usdOf(numbers.volume, 2)} label="Volume" />
-        <Stat value={numbers.successRate === null ? '-' : pct(numbers.successRate)} label="Answered 2xx" />
-        <Stat value={numbers.p50Ms === null ? '-' : ms(numbers.p50Ms)} label="Median time" />
-      </div>
+      <div className="stat-cards ep-stats"><NumberCards numbers={numbers} /></div>
       {stats.exact ? null : <p className="small muted mt-8 ep-inexact">{inexactLine}</p>}
       <div className="split even ep-split mt-24">
         <div>

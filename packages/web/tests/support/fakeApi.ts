@@ -20,8 +20,10 @@ import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, P
 // link to it is payable). The link `busy.example.com` has endpoint numbers that stopped at their cap.
 // `pay_settling` is a receipt whose fee is not booked yet.
 //
-// The same server also answers the pay host's `GET /_/check?url=`: the host of the link picks the case (see
-// `sampleCheck`). Every case answers 200 with `payable`, except `limited.example.com`, which is a 429.
+// The same server also answers the pay host's `GET /_/check?url=&method=`: the host of the link picks the case (see
+// `sampleCheck`). The method is GET or POST, and any other value is a 400 `invalid_request`. A POST is honoured only with the
+// header `X-Anyfare-Check: 1`, and is that 400 without it. `post.example.com` is
+// payable only with POST: a GET check of it is `not_payable`. Every case answers 200 with `payable`, except `limited.example.com`, which is a 429.
 //
 // A page that reads a new endpoint adds its answer to `answer` below, built from `sample`.
 //
@@ -31,6 +33,7 @@ import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, P
 export type FakeApiMode = 'full' | 'empty' | 'down' | 'capped';
 
 const day = 86_400_000;
+const checkMethods: readonly string[] = ['GET', 'POST'];
 const periods: readonly Period[] = ['today', '7d', '30d', 'all'];
 
 const hosts = ['api.example.com', 'data.example.com', 'quotes.example.com', 'search.example.com', 'maps.example.com'] as const;
@@ -333,13 +336,26 @@ const checkHosts = {
   mpp: 'search.example.com',
   hostile: 'hostile.example.com',
   slow: 'slow.example.com',
-  // Refused, each reason; a path with `/detail` adds a detail
+  // Payable, with its numbers in the check, while the API's read of them answers 503
+  fallback: 'fallback.example.com',
+  // Payable only when checked with POST
+  postOnly: 'post.example.com',
+  // Refused: each host is one detail of the pay host's. A link with an IP address is `ip_address`, one with no
+  // dot in its host `invalid_host`, and one that is no URL `not_a_url`.
   notPayable: 'free.example.com',
   unsupported: 'unsupported.example.com',
+  noChallenge: 'nochallenge.example.com',
   blocked: 'blocked.example.com',
+  // A name that resolves only to private addresses: `dns`, as a name that doesn't resolve. A private literal IP is `private_address`.
   private: 'private.example.com',
   own: 'own.example.com',
+  optedOut: 'optout.example.com',
   dead: 'dead.example.com',
+  refused: 'refused.example.com',
+  timeout: 'timeout.example.com',
+  unreachable: 'unreachable.example.com',
+  headersTooLarge: 'bigheaders.example.com',
+  // A reason the page doesn't know
   other: 'surprise.example.com',
   // A 429 from the pay host
   limited: 'limited.example.com',
@@ -359,38 +375,51 @@ const base64 = (value: unknown): string => Buffer.from(JSON.stringify(value)).to
  * The answer of the pay host's check for a typed link. The host picks the case: `api.example.com` is x402 on
  * Base, `data.example.com` x402 on NEAR, `search.example.com` MPP on Tempo, `hostile.example.com` an answer
  * whose description and header values hold HTML, `slow.example.com` a slow one (see `checkDelayMs`), and the
- * hosts of `sampleCheckHosts` the refusals. Any other host is "not a paid link". A typed link that isn't one
- * is `invalid_target`.
+ * hosts of `sampleCheckHosts` the refusals, one for each detail the pay host gives. Any other host is "not a paid
+ * link". A typed link that isn't one is `invalid_target`, `not_a_url`.
  */
-export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.example.com'): { readonly status: number; readonly body: unknown } => {
+export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.example.com', method = 'GET'): { readonly status: number; readonly body: unknown } => {
+  const answered = (body: unknown): { readonly status: number; readonly body: unknown } => ({ status: 200, body });
+  // A refusal as the pay host answers it: `method`, the reason, the message of its detail, and the target's
+  // status in `upstream` when the target answered
+  const refuse = (reason: string, detail: string, message: string, status?: number): { readonly status: number; readonly body: unknown } =>
+    answered({ payable: false, method, reason, message, detail, ...status === undefined ? {} : { upstream: { status } } });
   let target: URL;
   try {
     target = new URL(typed.includes('://') ? typed : `https://${typed}`);
-    if (target.host === '' || !target.host.includes('.'))
-      throw new Error('not a link');
   }
   catch {
-    return { status: 200, body: { payable: false, reason: 'invalid_target', message: 'The link isn\'t a URL' } };
+    return refuse('invalid_target', 'not_a_url', 'The link isn\'t a URL.');
   }
+  if (/^(10|127)\.\d{1,3}\.\d{1,3}\.\d{1,3}$|^192\.168\.\d{1,3}\.\d{1,3}$|^169\.254\.\d{1,3}\.\d{1,3}$|^\[(::1|fe80:.*|fc.*)\]$/.test(target.hostname))
+    return refuse('host_not_allowed', 'private_address', 'This link points to a private or reserved address, which Anyfare never calls.');
+  if (/^(\d{1,3}(\.\d{1,3}){3}|\[.*\])$/.test(target.hostname))
+    return refuse('invalid_target', 'ip_address', 'The link must name a host, such as api.example.com, not an IP address.');
+  if (target.host === '' || !target.host.includes('.'))
+    return refuse('invalid_target', 'invalid_host', 'The link must name a host, such as api.example.com.');
   const { host } = target;
-  const detail = target.pathname.includes('/detail');
-  const refuse = (reason: string, message: string, text?: string): { readonly status: number; readonly body: unknown } => ({ status: 200, body: { payable: false, reason, message, ...detail || text !== undefined ? { detail: text ?? 'sample detail' } : {} } });
   const refusals: Readonly<Record<string, { readonly status: number; readonly body: unknown }>> = {
-    [checkHosts.notPayable]: refuse('not_payable', 'The link didn\'t ask for a payment'),
-    [checkHosts.unsupported]: refuse('unsupported_payment', 'The link asks for a payment Anyfare doesn\'t make'),
-    [checkHosts.blocked]: refuse('host_not_allowed', 'This host is not allowed'),
-    [checkHosts.private]: refuse('host_not_allowed', 'This host is not allowed', 'private or reserved address'),
-    [checkHosts.own]: refuse('host_not_allowed', 'This host is not allowed', 'our own host'),
-    [checkHosts.dead]: refuse('upstream_unavailable', 'The host did not answer'),
-    [checkHosts.other]: refuse('surprise', 'Something we did not expect <b>happened</b>'),
+    [checkHosts.notPayable]: refuse('not_payable', 'no_payment_asked', `The link answered 200 without asking for a payment. Anyfare routes paid calls only.`, 200),
+    [checkHosts.unsupported]: refuse('unsupported_payment', 'no_option', 'The link asks for a payment, but in no way Anyfare can pay yet.', 402),
+    [checkHosts.noChallenge]: refuse('unsupported_payment', 'no_challenge', 'The link answered 402, but without a payment request Anyfare can read.', 402),
+    [checkHosts.blocked]: refuse('host_not_allowed', 'blocklisted', 'Anyfare doesn\'t route payments to this host.'),
+    [checkHosts.private]: refuse('upstream_unavailable', 'dns', 'The link\'s host name doesn\'t resolve.'),
+    [checkHosts.own]: refuse('host_not_allowed', 'own_host', 'This is one of Anyfare\'s own hosts.'),
+    [checkHosts.optedOut]: refuse('host_not_allowed', 'opted_out', 'This host asked Anyfare not to route payments to it.'),
+    [checkHosts.dead]: refuse('upstream_unavailable', 'dns', 'The link\'s host name doesn\'t resolve.'),
+    [checkHosts.refused]: refuse('upstream_unavailable', 'refused', 'The host refused the connection.'),
+    [checkHosts.timeout]: refuse('upstream_unavailable', 'timeout', 'The host didn\'t answer in time.'),
+    [checkHosts.unreachable]: refuse('upstream_unavailable', 'unreachable', 'The host couldn\'t be reached.'),
+    [checkHosts.headersTooLarge]: refuse('upstream_unavailable', 'headers_too_large', 'The API answered with headers too large to read.'),
+    [checkHosts.other]: answered({ payable: false, method, reason: 'surprise', message: 'Something we did not expect <b>happened</b>' }),
     [checkHosts.limited]: { status: 429, body: { error: { code: 'rate_limited', message: 'Too many requests' } } },
   };
   const refused = refusals[host];
   if (refused !== undefined)
     return refused;
-  const known: readonly string[] = [checkHosts.base, checkHosts.near, checkHosts.mpp, checkHosts.hostile, checkHosts.slow, checkHosts.busy, unavailableHost];
-  if (!known.includes(host))
-    return refuse('not_payable', 'The link didn\'t ask for a payment');
+  const known: readonly string[] = [checkHosts.base, checkHosts.near, checkHosts.mpp, checkHosts.hostile, checkHosts.slow, checkHosts.busy, checkHosts.postOnly, checkHosts.fallback, unavailableHost];
+  if (!known.includes(host) || host === checkHosts.postOnly && method !== 'POST')
+    return refuse('not_payable', 'no_payment_asked', `The link answered 200 without asking for a payment. Anyfare routes paid calls only.`, 200);
 
   const mpp = host === checkHosts.mpp;
   const onNear = host === checkHosts.near;
@@ -429,6 +458,7 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
     status: 200,
     body: {
       payable: true,
+      method,
       target: `https://${host}${target.pathname}${target.search}`,
       price: { amount: price, currency: 'USD', asset: mpp ? 'usdce-tempo' : onNear ? 'usdc-near' : 'usdc-base', network },
       quote: { amount: price, fee: '0', currency: 'USD' },
@@ -437,9 +467,10 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
       asks: mpp
         ? { amount: price, asset, network, paidWith, method: 'tempo', intent: 'charge', realm: host, recipient: mppRequest.recipient, expires: mppRequest.expires, description }
         : { amount: price, asset, network, paidWith, payTo, scheme: 'exact', x402Version: 2, maxTimeoutSeconds: 60, description, mimeType: 'application/json' },
-      upstream: { status: 402, headers, ...mpp ? { mpp: mppRequest } : { x402 } },
+      upstream: { status: 402, headers, ...mpp ? { mpp: [mppRequest] } : { x402 } },
       payWith: ways.map(way => ({ ...way, amount: price, currency: 'USD' })),
-      stats: sampleStats.stats,
+      // Null when the numbers can't be read
+      stats: host === unavailableHost ? null : sampleStats.stats,
       checkedAt: new Date(now - 4_000).toISOString(),
       ms: 340,
     },
@@ -451,7 +482,7 @@ export const checkDelayMs = (typed: string): number => /(^|\/\/)slow\.example\.c
 
 /** The endpoint's numbers for a period: the sample hosts' calls scaled, and zeros for any other endpoint. */
 export const sampleEndpointStats = (host: string, path: string, period: Period, now: number, empty = false): EndpointStats => {
-  const known = !empty && (serviceHosts.includes(host) && servicePaths.includes(path as never) || host === checkHosts.busy || host === checkHosts.hostile);
+  const known = !empty && (serviceHosts.includes(host) && servicePaths.includes(path as never) || host === checkHosts.busy || host === checkHosts.hostile || host === checkHosts.postOnly || host === checkHosts.fallback);
   const scale = known ? topScale[period] : 0;
   const calls = Math.round(402 * scale);
 
@@ -473,7 +504,7 @@ export const sampleEndpointStats = (host: string, path: string, period: Period, 
 const unavailable = { status: 503, body: { error: { code: 'stats_unavailable', message: 'These numbers can\'t be read right now: try again shortly' } } } as const;
 
 /** The answer to a read: its status and body. Undefined for a path the fake doesn't know. */
-export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number): { readonly status: number; readonly body: unknown } | undefined => {
+export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number, headers: Readonly<Record<string, string | string[] | undefined>> = {}): { readonly status: number; readonly body: unknown } | undefined => {
   const empty = mode === 'empty';
   const { pathname, searchParams } = url;
   if (pathname === '/v1/stats')
@@ -487,13 +518,21 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
 
     return { status: 200, body: sampleTop(period as Period, now, empty) };
   }
-  if (pathname === '/_/check')
-    return sampleCheck(searchParams.get('url') ?? '', now);
+  if (pathname === '/_/check') {
+    const method = searchParams.get('method') ?? 'GET';
+    if (!checkMethods.includes(method))
+      return { status: 400, body: { error: { code: 'invalid_request', message: 'The method is GET or POST' } } };
+    // A POST check is honoured only with the header, so a plain link can't make the pay host send a POST
+    if (method === 'POST' && !Object.entries(headers).some(([name, value]) => name.toLowerCase() === 'x-anyfare-check' && value === '1'))
+      return { status: 400, body: { error: { code: 'invalid_request', message: 'A POST check needs the header X-Anyfare-Check: 1' } } };
+
+    return sampleCheck(searchParams.get('url') ?? '', now, undefined, method);
+  }
   if (pathname === '/v1/endpoints/stats') {
     const period = searchParams.get('period') ?? '30d';
     if (!periods.includes(period as Period))
       return { status: 400, body: { error: { code: 'invalid_request', message: 'Unknown period' } } };
-    if (searchParams.get('host')?.toLowerCase() === unavailableHost)
+    if ([unavailableHost, checkHosts.fallback].includes(searchParams.get('host')?.toLowerCase() ?? ''))
       return unavailable;
 
     return { status: 200, body: sampleEndpointStats(searchParams.get('host') ?? '', searchParams.get('path') ?? '', period as Period, now, empty) };
@@ -631,7 +670,7 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0): Promise<FakeApi
 
       return;
     }
-    const found = answer(url, mode, Date.now());
+    const found = answer(url, mode, Date.now(), request.headers);
     const delay = url.pathname === '/_/check' ? checkDelayMs(url.searchParams.get('url') ?? '') : 0;
     const send = (): void => {
       if (found === undefined)

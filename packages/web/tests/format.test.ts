@@ -1,19 +1,49 @@
 import { describe, expect, it } from 'vitest';
 
-import { ago, count, ms, pct, usd } from '../src/format';
+import { ago, count, ms, pct, usd, usdOf } from '../src/format';
 
 describe('usd', () => {
-  it('shows two digits, and three for an amount under ten cents', () => {
-    expect(usd(18.42)).toBe('$18.42');
-    expect(usd(0.002)).toBe('$0.002');
-    expect(usd(0.1)).toBe('$0.10');
-    expect(usd(0)).toBe('$0.00');
+  // One rule: zero is "$0"; from $1 two decimals; under $1 the amount's own digits up to six decimals, at
+  // least two, no trailing zero past the second; a non-zero amount under a millionth is "<$0.000001".
+  it.each([
+    [0, '$0'],
+    [18.42, '$18.42'],
+    [12.3456, '$12.35'],
+    [1, '$1.00'],
+    [5, '$5.00'],
+    [2140.5, '$2,140.50'],
+    [1_947_000, '$1,947,000.00'],
+    [0.9999996, '$1.00'],
+    [0.5, '$0.50'],
+    [0.25, '$0.25'],
+    [0.1, '$0.10'],
+    [0.01, '$0.01'],
+    [0.033, '$0.033'],
+    [0.002, '$0.002'],
+    [0.001, '$0.001'],
+    [0.0105, '$0.0105'],
+    [0.011, '$0.011'],
+    [0.000123, '$0.000123'],
+    [0.0000015, '$0.000002'],
+    [0.000001, '$0.000001'],
+    [0.0000004, '<$0.000001'],
+    [-0.002, '-$0.002'],
+    [-18.4, '-$18.40'],
+    [Number.NaN, '-'],
+  ])('writes %s as %s', (amount, text) => {
+    expect(usd(amount)).toBe(text);
   });
+});
 
-  it('groups thousands and takes explicit digits', () => {
-    expect(usd(2140.5)).toBe('$2,140.50');
-    expect(usd(5, 0)).toBe('$5');
-    expect(usd(0.01, 3)).toBe('$0.010');
+describe('usdOf', () => {
+  it('reads the API\'s decimal string with the same rule, and a dash for a missing or unreadable one', () => {
+    expect(usdOf('0.002')).toBe('$0.002');
+    expect(usdOf('0.01')).toBe('$0.01');
+    expect(usdOf('0')).toBe('$0');
+    expect(usdOf('18.42')).toBe('$18.42');
+    expect(usdOf(null)).toBe('-');
+    expect(usdOf('')).toBe('-');
+    expect(usdOf('abc')).toBe('-');
   });
 });
 

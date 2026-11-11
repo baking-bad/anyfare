@@ -119,22 +119,32 @@ const share = { paidWith: 'base', calls: 12, volume: '0.12' };
 /** Every endpoint, in the order the page and the files list them. */
 export const endpoints: readonly Endpoint[] = [
   {
-    id: 'check', group: 'pay', method: 'GET', host: 'pay', path: '/_/check?url=<link>', summary: 'Is a link payable, at what price, and what we quote. Free, and pays nothing', who: 'No key', example: 'check',
-    request: ['`url`: the API\'s link, with or without `https://`. A query string in it stays.'],
+    id: 'check', group: 'pay', method: 'GET', host: 'pay', path: '/_/check?url=<link>', summary: 'Is a link payable, at what price, and what we quote. Free, and pays nothing', who: 'No key', example: 'check', alsoExamples: ['check-post'],
+    request: ['`url`: the API\'s link, with or without `https://`. A query string in it stays.', '`method`: how the probe is sent, `GET` (the default) or `POST`. No body is sent. `POST` is honoured only with the header `X-Anyfare-Check: 1`; without it, and for any other value, the answer is a `400`.'],
     answer: {
       status: 200,
       json: {
         payable: true,
+        method: 'GET',
         target: `https://${exampleLink}`,
         price: { amount: '0.01', currency: 'USD', asset: 'base-usdc', network: 'eip155:8453' },
         quote: { amount: '0.01', fee: '0', currency: 'USD' },
         link: `<pay host>/${exampleLink}`,
+        protocol: 'x402',
+        asks: { amount: '0.01', asset: 'USDC', network: 'eip155:8453', paidWith: 'base' },
+        upstream: { status: 402, headers: {} },
+        payWith: [{ paidWith: 'base', protocol: 'x402', asset: 'USDC', amount: '0.01', currency: 'USD' }],
+        stats: { calls: 0, buyers: 0, volume: '0', successRate: null, p50Ms: null },
+        checkedAt: '<time>',
+        ms: 340,
       },
     },
-    errors: ['429 rate_limited'],
+    errors: ['400 invalid_request', '429 rate_limited'],
     notes: [
-      'A link that can\'t be paid is still a `200`: `{ "payable": false, "reason": "...", "message": "..." }`. The reasons are `invalid_target` (not a link), `host_not_allowed` (a host we don\'t route to, our own host, or a private address), `not_payable` (the API asks for no payment), `unsupported_payment` (it asks in a way we don\'t pay) and `upstream_unavailable` (it didn\'t answer).',
+      'A link that can\'t be paid is still a `200`: `{ "payable": false, "method": "GET", "reason": "...", "message": "...", "detail": "..." }`, with `upstream: { "status": 200 }` when the API answered. The reasons and their details are `invalid_target` (`not_a_url`, `invalid_host`, `ip_address`), `host_not_allowed` (`blocklisted`, `own_host`, `private_address`, `opted_out`), `not_payable` (`no_payment_asked`: the API asks for no payment), `unsupported_payment` (`no_challenge`, `no_option`: it asks in a way we don\'t pay) and `upstream_unavailable` (`dns`, `refused`, `timeout`, `unreachable`).',
+      'In a payable answer `upstream.x402` is the decoded `PAYMENT-REQUIRED`, and `upstream.mpp` is a list of the decoded MPP challenges. `stats` is the endpoint\'s numbers over 30 days, or `null` when they can\'t be read.',
       '`price` is what the API asks. `quote` is what you pay through Anyfare, in USD. `link` is the link to call.',
+      'Some APIs ask for payment only on a method other than `GET`. A `GET` check of such a link answers `not_payable`: check it again with `&method=POST` and the header `X-Anyfare-Check: 1`. The answer returns the `method` it probed with. The second example is one that asks only on `POST`.',
     ],
     source: { package: 'proxy', method: 'GET', path: '/_/check' },
   },

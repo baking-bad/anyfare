@@ -17,6 +17,8 @@ export interface AgentRequest {
   readonly url: string;
   // What it answers, in a few words
   readonly note?: string;
+  // Request headers it needs, such as `X-Anyfare-Check: 1`
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -53,7 +55,7 @@ const curlLines = (markdownUrl: string, requests: readonly AgentRequest[]): read
   return [
     `curl -H "Accept: text/markdown" ${pageUrlOf(markdownUrl)}`,
     `curl ${markdownUrl}`,
-    ...first === undefined ? [] : [`curl ${first.url}`],
+    ...first === undefined ? [] : [`curl ${first.url}${Object.entries(first.headers ?? {}).map(([name, value]) => ` -H "${name}: ${value}"`).join('')}`],
   ];
 };
 

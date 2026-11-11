@@ -20,7 +20,7 @@ const numbers = (service: ServiceDetail): string => {
   const change = callsChange(stats.calls, stats.callsBefore);
 
   return `- Paid calls: ${count(stats.calls)}${change === null ? '' : ` (${formatChange(change, true)} against ${comparedWith(period)})`}
-- Volume: ${usdOf(stats.volume, 2)}
+- Volume: ${usdOf(stats.volume)}
 - Unique buyers: ${count(stats.buyers)}
 - Came back: ${pct(stats.returningShare)} (buyers who paid on 2 or more days)
 - Answered 2xx: ${stats.successRate === null ? '-' : pct(stats.successRate)} (${failedLine(stats.failedCalls)})
@@ -34,14 +34,14 @@ const byPaidWith = (service: ServiceDetail): string => service.byPaidWith.length
 ${service.byPaidWith.map(way => {
     const average = perBuyer(way.volume, way.buyers);
 
-    return `| ${cell(paidWithName(way.paidWith))} | ${count(way.calls)} | ${pct(way.share)} | ${count(way.buyers)} | ${usdOf(way.volume, 2)} | ${average === null ? '-' : usdOf(String(average), 3)} |`;
+    return `| ${cell(paidWithName(way.paidWith))} | ${count(way.calls)} | ${pct(way.share)} | ${count(way.buyers)} | ${usdOf(way.volume)} | ${average === null ? '-' : usdOf(String(average))} |`;
   }).join('\n')}`;
 
 const endpoints = (service: ServiceDetail): string => service.endpoints.length === 0
   ? 'No paid endpoints.'
   : `| Endpoint | Price now | Paid calls | Buyers | Volume | 2xx | Median | Pay link |
 |---|---|---|---|---|---|---|---|
-${service.endpoints.map(endpoint => `| ${endpoint.method === null ? '' : `${endpoint.method} `}${cell(endpoint.path)} | ${usdOf(endpoint.priceNow, 3)} | ${count(endpoint.calls)} | ${count(endpoint.buyers)} | ${usdOf(endpoint.volume, 2)} | ${endpoint.successRate === null ? '-' : pct(endpoint.successRate)} | ${endpoint.p50Ms === null ? '-' : ms(endpoint.p50Ms)} | ${endpoint.link} |`).join('\n')}`;
+${service.endpoints.map(endpoint => `| ${endpoint.method === null ? '' : `${endpoint.method} `}${cell(endpoint.path)} | ${usdOf(endpoint.priceNow)} | ${count(endpoint.calls)} | ${count(endpoint.buyers)} | ${usdOf(endpoint.volume)} | ${endpoint.successRate === null ? '-' : pct(endpoint.successRate)} | ${endpoint.p50Ms === null ? '-' : ms(endpoint.p50Ms)} | ${endpoint.link} |`).join('\n')}`;
 
 const topBuyers = (service: ServiceDetail): string => service.topBuyers.buyers.length === 0
   ? 'No buyers in this period.'
@@ -49,7 +49,7 @@ const topBuyers = (service: ServiceDetail): string => service.topBuyers.buyers.l
 
 | Buyer | Paid with | Calls | Spent | Last call |
 |---|---|---|---|---|
-${service.topBuyers.buyers.map(buyer => `| ${buyer.payer === null ? 'A Credits account' : cell(shortAddress(buyer.payer, 64))} | ${cell(paidWithName(buyer.paidWith))} | ${count(buyer.calls)} | ${usdOf(buyer.spent, 2)} | ${buyer.lastCallAt} |`).join('\n')}`;
+${service.topBuyers.buyers.map(buyer => `| ${buyer.payer === null ? 'A Credits account' : cell(shortAddress(buyer.payer, 64))} | ${cell(paidWithName(buyer.paidWith))} | ${count(buyer.calls)} | ${usdOf(buyer.spent)} | ${buyer.lastCallAt} |`).join('\n')}`;
 
 /** `/services/<host>.md`: the service as the API read it for the period, and the last calls to it. */
 export const serviceMarkdown = (settings: SiteSettings, host: string, result: ApiResult<ServiceDetail>, calls: ApiResult<CallsPage>): string => {
@@ -62,7 +62,7 @@ export const serviceMarkdown = (settings: SiteSettings, host: string, result: Ap
 
 > ${serviceDescription(host)}
 
-Pay any of its endpoints at ${payUrl}/${host}/<path>, in any way we take. Each endpoint has its own pay link. To see what an endpoint asks before you pay: ${siteUrl}${checkHref(host, first?.path)}
+Pay any of its endpoints at ${payUrl}/${host}/<path>, in any way we take. Each endpoint has its own pay link. To see what an endpoint asks before you pay: ${siteUrl}${checkHref(host, first?.path, first?.method)}
 
 ## Through Anyfare, ${periodSentence(period)}
 
@@ -100,7 +100,7 @@ const callsList = (siteUrl: string, page: CallsPage): string => page.calls.lengt
 
 | When | Path | Paid with | Amount | Status |
 |---|---|---|---|---|
-${page.calls.map(call => `| ${call.at} | [${cell(call.path)}](${siteUrl}/calls/${call.id}) | ${cell(paidWithName(call.paidWith))} | ${call.status === 'paid' ? usdOf(call.amount, 3) : '$0'} | ${call.status === 'paid' ? 'Paid' : call.apiStatus === null ? 'free' : `${call.apiStatus} · free`} |`).join('\n')}`;
+${page.calls.map(call => `| ${call.at} | [${cell(call.path)}](${siteUrl}/calls/${call.id}) | ${cell(paidWithName(call.paidWith))} | ${call.status === 'paid' ? usdOf(call.amount) : '$0'} | ${call.status === 'paid' ? 'Paid' : call.apiStatus === null ? 'free' : `${call.apiStatus} · free`} |`).join('\n')}`;
 
 /** The twin of a service the API doesn't know. */
 export const serviceMissingMarkdown = (line: string): string => `# Not found\n\n${line}\n`;

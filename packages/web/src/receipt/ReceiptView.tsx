@@ -100,7 +100,7 @@ const Details = ({ receipt }: { readonly receipt: Receipt }) => (
   <div className="detail-grid">
     <Detail label="Call" wide><div className="mono small break">{callLine(receipt)}</div></Detail>
     <Detail label="Service"><a className="link break" href={serviceHref(receipt.service)}>{receipt.service}</a></Detail>
-    <Detail label="API price"><span className="num">{receipt.apiPrice === null ? dash : usdOf(receipt.apiPrice, 3)}</span></Detail>
+    <Detail label="API price"><span className="num">{receipt.apiPrice === null ? dash : usdOf(receipt.apiPrice)}</span></Detail>
     <Detail label="Buyer paid"><span className="num">{paidAmount(receipt)}</span></Detail>
     <Detail label="Our fee"><span className="num">{receipt.fee === null ? dash : usdOf(receipt.fee)}</span></Detail>
     <Detail label="API time"><span className="num">{receipt.ms.api === null ? dash : ms(receipt.ms.api)}</span></Detail>

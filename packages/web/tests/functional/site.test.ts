@@ -189,7 +189,7 @@ describe('the home page with a full database', () => {
     expect(body).toContain(`href="${consoleUrl}/topup"`);
     expect(body).toContain(`href="${consoleUrl}/keys"`);
     expect(body).toContain('href="/check?url=pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest"');
-    expect(body).toContain('href="/check?url=merchant-near.mikedotexe.com/v1/evidence/account"');
+    expect(body).toContain('href="/check?url=merchant-near.mikedotexe.com/v1/evidence/account&amp;method=POST"');
     expect(body).not.toContain('MPP on Tempo</a>');
     expect(body).toContain('href="https://near-intents.org"');
     expect(body).toContain('href="/llms.txt"');
@@ -281,7 +281,7 @@ describe('the home page with an empty database', () => {
     expect(response.status).toBe(200);
     for (const text of sectionTexts.filter(text => text !== 'What if the API fails?'))
       expect(body).toContain(text);
-    expect(body).toContain('$0.00');
+    expect(body).toContain('$0');
     expect(body).toMatch(/0<!-- --> paid calls today/);
     expect(body).toContain('No calls yet');
     expect(body).toContain('No services yet');
@@ -463,7 +463,7 @@ describe('the receipt page with a full database', () => {
     const { response, body } = await get(full, '/calls/pay_sample0000');
 
     expect(response.status).toBe(200);
-    for (const text of ['Receipt', 'Paid · API answered 200', 'The buyer paid', 'We paid the API', 'Details', 'Steps', 'Overview', 'JSON', 'Copy link', 'Receipt id', 'The buyer asked, with a payment', 'We checked the buyer&#x27;s payment', 'x402 on NEAR. Not settled yet', 'From our Base hot wallet', 'The answer went to the buyer as it came', 'Only now: a failed call is never settled', 'We signed 0.001 USDC on Base for the API', 'The API answered 200 in 120 ms', 'The buyer&#x27;s payment settled on NEAR', 'sample.near', 'GET /v1/sample/quotes/latest', 'Fee <!-- -->$0.00'])
+    for (const text of ['Receipt', 'Paid · API answered 200', 'The buyer paid', 'We paid the API', 'Details', 'Steps', 'Overview', 'JSON', 'Copy link', 'Receipt id', 'The buyer asked, with a payment', 'We checked the buyer&#x27;s payment', 'x402 on NEAR. Not settled yet', 'From our Base hot wallet', 'The answer went to the buyer as it came', 'Only now: a failed call is never settled', 'We signed 0.001 USDC on Base for the API', 'The API answered 200 in 120 ms', 'The buyer&#x27;s payment settled on NEAR', 'sample.near', 'GET /v1/sample/quotes/latest', 'Fee <!-- -->$0'])
       expect(body, text).toContain(text);
     expect(body).toContain('$0.001');
     expect(body).toContain('0.001 USDC on NEAR');
@@ -535,7 +535,7 @@ describe('the receipt page with a full database', () => {
     expect(response.status).toBe(200);
     expect(body).toContain('0.010 in Credits');
     expect(body).toContain('Paid from a balance. No transaction per call.');
-    expect(body).toContain('We held $0.010 on the buyer&#x27;s balance');
+    expect(body).toContain('We held $0.01 on the buyer&#x27;s balance');
     expect(body).toContain('The hold was taken from the balance');
     expect(page).not.toMatch(/account/i);
     expect(page.match(/Transaction /g)).toHaveLength(1);
@@ -909,6 +909,17 @@ describe('the answers of the real API that are not the usual ones', () => {
     expect(unavailable.body).toContain('Latest quotes for sample assets');
   });
 
+  it('shows the check\'s own 30-day numbers when the endpoint numbers don\'t load, and not the error state', async () => {
+    const { response, body } = await get(full, checkPath('fallback.example.com/v1/sample/quotes/latest'));
+    const text = textOf(body);
+
+    expect(response.status).toBe(200);
+    expect(text).toContain('402 Paid calls');
+    expect(text).toContain('The last 30 days, from the check.');
+    expect(body).not.toContain('This endpoint&#x27;s numbers didn&#x27;t load');
+    expect(body).toMatch(/<a [^>]*aria-current="true"[^>]*>30 days<\/a>|<a [^>]*href="[^"]*"[^>]*aria-current="true"[^>]*>30 days<\/a>/);
+  });
+
   it('shows the receipt of a payment that is still settling, with no fee yet', async () => {
     const { response, body } = await get(full, '/calls/pay_settling');
 
@@ -937,6 +948,123 @@ describe('the answers of the real API that are not the usual ones', () => {
   });
 });
 
+describe('the method of the check', () => {
+  const postOnly = 'post.example.com/v1/sample/quotes/latest';
+  const checks = (before: number): string[] => full.api!.requests.slice(before).filter(request => request.path.startsWith('/_/check')).map(request => request.path);
+
+  it('has a method select before the link field, on the check page and on Home, that works without scripts', async () => {
+    const check = await get(full, checkPath(postOnly, '&method=POST'));
+    const home = await get(full, '/');
+    const select = /<select [^>]*class="method-select"[^>]*>([\s\S]*?)<\/select>/;
+
+    for (const { body } of [check, home]) {
+      const found = select.exec(body);
+      expect(found, 'a method select').not.toBeNull();
+      expect(found![0]).toContain('name="method"');
+      expect(found![0]).toContain('aria-label="HTTP method"');
+      expect(found![1]).not.toMatch(/PUT|PATCH|DELETE/);
+      for (const method of ['GET', 'POST'])
+        expect(found![1]).toContain(`<option value="${method}"`);
+      expect(body.indexOf('class="method-select"')).toBeLessThan(body.indexOf('name="url"'));
+    }
+    expect(/<option value="POST" selected=""/.test(select.exec(check.body)![1]!)).toBe(true);
+    expect(/<option value="GET" selected=""/.test(select.exec(home.body)![1]!)).toBe(true);
+  });
+
+  it('shows "Check it as POST" under a GET check that is not payable, and the button leads to the same check as POST', async () => {
+    const before = full.api!.requests.length;
+    const { response, body } = await get(full, checkPath(postOnly));
+    const text = textOf(body);
+
+    expect(response.status).toBe(200);
+    expect(text).toContain('Not a paid link');
+    expect(text).toContain('Some APIs ask for payment only on POST.');
+    expect(body).toContain(`href="/check?url=${encodeURIComponent(postOnly)}&amp;method=POST"`);
+    expect(text).toContain('Check it as POST');
+    expect(checks(before)).toEqual([`/_/check?url=${encodeURIComponent(postOnly)}`]);
+  });
+
+  it('asks the pay host with the method, and shows a payable POST with its chip, curl lines, prompt, title and twin', async () => {
+    const before = full.api!.requests.length;
+    const { response, body } = await get(full, checkPath(postOnly, '&method=POST'));
+    const text = textOf(body);
+    const link = `https://pay.example.com/${postOnly}`;
+
+    expect(response.status).toBe(200);
+    expect(checks(before)).toEqual([`/_/check?url=${encodeURIComponent(postOnly)}&method=POST`]);
+    // The header goes with a POST check, and only with it
+    const sent = full.api!.requests.slice(before).filter(request => request.path.startsWith('/_/check'));
+    expect(sent.map(request => request.headers['x-anyfare-check'])).toEqual(['1']);
+    await get(full, checkPath(postOnly));
+    expect(full.api!.requests.filter(request => request.path.startsWith('/_/check') && !request.path.includes('method=')).every(request => request.headers['x-anyfare-check'] === undefined)).toBe(true);
+    expect(text).toContain('Payable through Anyfare');
+    expect(body).toMatch(/<span class="method post url-method">POST<\/span><span class="host">post\.example\.com<\/span>/);
+    expect(body).toContain('<title>Check: POST post.example.com/v1/sample/quotes/latest | Anyfare</title>');
+    expect(body).toContain(`<link rel="canonical" href="${site}/check?method=POST"/>`);
+    expect(body).toContain(`Call ${link} with POST through Anyfare.`);
+    expect(body).toContain(`curl -X POST ${link}`);
+    expect(body).toContain(`curl -i -X POST ${link}`);
+    expect(body).toContain('curl -i -X POST https://post.example.com/v1/sample/quotes/latest');
+    expect(body).toContain('rel="alternate" type="text/markdown" href="https://anyfare.example.com/check.md?url=post.example.com%2Fv1%2Fsample%2Fquotes%2Flatest&amp;method=POST"');
+    expect(body).not.toContain('Check it as POST');
+    const twin = await get(full, `/check.md?url=${encodeURIComponent(postOnly)}&method=POST`);
+    expect(twin.response.status).toBe(200);
+    expect(twin.body).toMatch(/^# POST post\.example\.com\/v1\/sample\/quotes\/latest\n\nPayable through Anyfare\. Checked with POST\./);
+  });
+
+  it('says which method was tried when a POST check is not payable, with no POST button', async () => {
+    const { body } = await get(full, checkPath('free.example.com/v1/free', '&method=POST'));
+    const text = textOf(body);
+
+    expect(text).toContain('Not a paid link');
+    expect(text).toContain('We sent POST to this link and it answered 200 without asking for a payment.');
+    expect(text).not.toContain('Check it as POST');
+    expect(text).not.toContain('Some APIs ask for payment only on POST.');
+    expect(body).toMatch(/<span class="method post url-method">POST<\/span>/);
+  });
+
+  it('takes a method that is not one of the five as GET, in the request and in the page', async () => {
+    const before = full.api!.requests.length;
+    for (const method of ['post', 'HEAD', 'PUT', 'DELETE', 'nope']) {
+      const { response, body } = await get(full, checkPath(postOnly, `&method=${method}`));
+
+      expect(response.status).toBe(200);
+      expect(textOf(body)).toContain('Check it as POST');
+      expect(body).toContain('<title>Check: post.example.com/v1/sample/quotes/latest | Anyfare</title>');
+    }
+    expect(checks(before)).toEqual(Array.from({ length: 5 }, () => `/_/check?url=${encodeURIComponent(postOnly)}`));
+  });
+
+  it('keeps plain GET curl lines and prompt for a GET check', async () => {
+    const { body } = await get(full, checkPath('api.example.com/v1/sample/quotes/latest'));
+
+    expect(body).not.toContain('-X ');
+    expect(body).not.toMatch(/Call [^<]* with GET/);
+    expect(body).not.toContain('url-method');
+    expect(body).toContain('<link rel="canonical" href="https://anyfare.example.com/check"/>');
+  });
+
+  it('answers a bad method with a 400 on the fake pay host, as the real one does', async () => {
+    const answered = await fetch(`${full.api!.url}/_/check?url=api.example.com&method=TRACE`);
+
+    expect(answered.status).toBe(400);
+  });
+
+  it('links Home\'s second chip with method=POST and the first as it is, and the service\'s POST endpoint with its method', async () => {
+    const home = (await get(full, '/')).body;
+    const service = (await get(full, '/services/api.example.com')).body;
+    const markdown = (await get(full, '/index.md')).body;
+
+    expect(home).toContain('href="/check?url=pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest"');
+    expect(home).toContain('href="/check?url=merchant-near.mikedotexe.com/v1/evidence/account&amp;method=POST"');
+    expect(markdown).toContain('/check?url=merchant-near.mikedotexe.com/v1/evidence/account&method=POST');
+    expect(markdown).not.toContain('quotes/latest&method');
+    // The first endpoint is a GET, the second a POST, the last one's method is not known
+    expect(service).toContain('href="/check?url=api.example.com/v1/sample/quotes/latest"');
+    expect(service).toContain('href="/check?url=api.example.com/v1/sample/lookup&amp;method=POST"');
+  });
+});
+
 describe('the Check page', () => {
   const base = 'api.example.com/v1/sample/quotes/latest';
 
@@ -948,7 +1076,7 @@ describe('the Check page', () => {
     expect(body).toMatch(/<form [^>]*action="\/check" method="get"/);
     expect(body).toMatch(/<input [^>]*name="url"[^>]*value="api\.example\.com\/v1\/sample\/quotes\/latest"/);
     expect(body).not.toContain('Mockup state');
-    for (const part of ['Check again', 'Payable through Anyfare', 'Checked', '340 ms', 'Copy pay link', 'Service', 'Overview', 'JSON', 'Headers', 'Code', 'What the API asks', 'This API asks $0.010 in USDC on Base for each call, over x402.', 'x402 version 2, scheme exact', 'eip155:8453', 'Latest quotes for sample assets', 'Stats', 'Today', '7 days', '30 days', 'All', 'Paid calls', 'Unique payers', 'Volume', 'Answered 2xx', 'Median time', 'Paid calls per day', 'Buyers paid with', 'Pay it through Anyfare', 'Fee $0.00', 'Your link through Anyfare', 'Pay it from your agent', 'Make a payment key', 'Give your agent this', 'Watch the calls', 'Last calls'])
+    for (const part of ['Check again', 'Payable through Anyfare', 'Checked', '340 ms', 'Copy pay link', 'Service', 'Overview', 'JSON', 'Headers', 'Code', 'What the API asks', 'This API asks $0.01 in USDC on Base for each call, over x402.', 'x402 version 2, scheme exact', 'eip155:8453', 'Latest quotes for sample assets', 'Stats', 'Today', '7 days', '30 days', 'All', 'Paid calls', 'Unique payers', 'Volume', 'Answered 2xx', 'Median time', 'Paid calls per day', 'Buyers paid with', 'Pay it through Anyfare', 'Fee $0', 'Your link through Anyfare', 'Pay it from your agent', 'Make a payment key', 'Give your agent this', 'Watch the calls', 'Last calls'])
       expect(text).toContain(part);
     expect(text).toContain('402 Paid calls');
     expect(body).toContain('href="/services/api.example.com"');
@@ -986,7 +1114,7 @@ describe('the Check page', () => {
     const near = await get(full, checkPath('data.example.com/v1/sample/lookup'));
     const mpp = await get(full, checkPath('search.example.com/v1/sample/lookup'));
 
-    expect(textOf(near.body)).toContain('$0.010 in USDC on NEAR for each call, over x402.');
+    expect(textOf(near.body)).toContain('$0.01 in USDC on NEAR for each call, over x402.');
     expect(textOf(near.body)).toContain('merchant.sample.near');
     expect(textOf(mpp.body)).toMatch(/\$0\.005 in USDC\.e on Tempo for each call, over MPP\. It wants a signed charge by the tempo method\./);
     expect(textOf(mpp.body)).toContain('MPP, method tempo, intent charge');
@@ -1069,7 +1197,7 @@ describe('the Check page', () => {
       expect(response.status).toBe(200);
       expect(textOf(body)).toContain('Paste the link of one paid endpoint, the one that answers 402.');
       expect(body).toContain('href="/check?url=pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest"');
-      expect(body).toContain('href="/check?url=merchant-near.mikedotexe.com/v1/evidence/account"');
+      expect(body).toContain('href="/check?url=merchant-near.mikedotexe.com/v1/evidence/account&amp;method=POST"');
       expect(body).toContain('<title>Check a link | Anyfare</title>');
     }
     expect(full.api!.requests.slice(before)).toEqual([]);
@@ -1077,15 +1205,23 @@ describe('the Check page', () => {
 
   it('shows the card of each refusal, worded by its reason', async () => {
     const cases: readonly (readonly [string, string, string])[] = [
-      ['free.example.com/v1/free', 'Not a paid link', 'This link answered without asking for a payment.'],
-      ['free.example.com/detail', 'Not a paid link', 'This link answered without asking for a payment.'],
-      ['unsupported.example.com/v1/x', 'A paid link we can&#x27;t pay yet', 'in a way Anyfare doesn&#x27;t make yet.'],
-      ['blocked.example.com/v1/x', 'We don&#x27;t route to this host', 'Anyfare doesn&#x27;t send calls to this host.'],
-      ['private.example.com/v1/x', 'We don&#x27;t route to this host', 'This link points to a private address.'],
+      ['free.example.com/v1/free', 'Not a paid link', 'This link answered 200 without asking for a payment.'],
+      ['unsupported.example.com/v1/x', 'A paid link we can&#x27;t pay yet', 'in a way Anyfare can&#x27;t pay yet.'],
+      ['nochallenge.example.com/v1/x', 'A paid link we can&#x27;t pay yet', 'but without a payment request Anyfare can read.'],
+      ['blocked.example.com/v1/x', 'We don&#x27;t route to this host', 'Anyfare doesn&#x27;t route payments to this host.'],
+      ['private.example.com/v1/x', 'The link didn&#x27;t answer', 'This host name doesn&#x27;t resolve.'],
+      ['10.0.0.5/v1/x', 'We don&#x27;t route to this host', 'This link points to a private address.'],
+      ['bigheaders.example.com/v1/x', 'The link didn&#x27;t answer', 'The API answered with headers too large to read.'],
       ['own.example.com/v1/x', 'We don&#x27;t route to this host', 'This is one of Anyfare&#x27;s own hosts.'],
-      ['dead.example.com/v1/x', 'The link didn&#x27;t answer', 'We couldn&#x27;t reach this host. Check the link and try again.'],
+      ['optout.example.com/v1/x', 'We don&#x27;t route to this host', 'This API asked not to be routed through Anyfare.'],
+      ['dead.example.com/v1/x', 'The link didn&#x27;t answer', 'This host name doesn&#x27;t resolve.'],
+      ['refused.example.com/v1/x', 'The link didn&#x27;t answer', 'This host refused the connection.'],
+      ['timeout.example.com/v1/x', 'The link didn&#x27;t answer', 'This host didn&#x27;t answer in time.'],
+      ['unreachable.example.com/v1/x', 'The link didn&#x27;t answer', 'This host couldn&#x27;t be reached.'],
       ['surprise.example.com/v1/x', 'We couldn&#x27;t check this link', 'Something we did not expect &lt;b&gt;happened&lt;/b&gt;'],
       ['not a link', 'This isn&#x27;t a link', 'such as api.example.com/v1/quote.'],
+      ['203.0.113.7/v1/x', 'This isn&#x27;t a link', 'Paste a link with a host name, not an IP address.'],
+      ['localhost/v1/x', 'This isn&#x27;t a link', 'Paste a link with a host name, such as api.example.com.'],
       ['limited.example.com/v1/x', 'Too many checks', 'Wait a minute and try again.'],
     ];
     for (const [link, title, line] of cases) {
@@ -1193,7 +1329,7 @@ describe('the Check page', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
     expect(body).toMatch(/^# api\.example\.com\/v1\/sample\/quotes\/latest\n\nPayable through Anyfare\./);
-    expect(body).toContain('This API asks $0.010 in USDC on Base for each call, over x402.');
+    expect(body).toContain('This API asks $0.01 in USDC on Base for each call, over x402.');
     expect(body).toContain('- Link: https://pay.example.com/api.example.com/v1/sample/quotes/latest');
     expect(body).toContain('- Paid calls: 402');
     expect(body).toContain('https://anyfare.example.com/calls/pay_sample0000');

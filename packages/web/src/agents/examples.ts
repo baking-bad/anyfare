@@ -26,6 +26,9 @@ export interface CurlExample {
   readonly destructive?: boolean;
 }
 
+/** An API that asks for payment only on POST, the one the home page's second link tries. */
+export const exampleLinkPost = 'merchant-near.mikedotexe.com/v1/evidence/account';
+
 /** The link the examples check and call: the one the home page offers to try. */
 export const exampleLink = 'pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest';
 // The same API with the query it needs for an answer
@@ -40,6 +43,10 @@ const titleCase = (name: string): string => name.split('-').map(part => part.cha
 /** Every example, with the hosts of this deployment. */
 export const curlExamples = ({ apiUrl, payUrl }: Hosts): readonly CurlExample[] => [
   { id: 'check', method: 'GET', url: `${payUrl}/_/check?url=${exampleLink}`, headers: {}, expect: { status: 200, fields: ['payable', 'target', 'price', 'quote', 'link'] }, needs: [] },
+  {
+    id: 'check-post', method: 'GET', url: `${payUrl}/_/check?url=${exampleLinkPost}&method=POST`, headers: { 'x-anyfare-check': '1' },
+    expect: { status: 200, fields: ['payable', 'target', 'price', 'quote', 'link', 'method'] }, needs: [],
+  },
   {
     id: 'unpaid', method: 'GET', url: `${payUrl}/${exampleCall}`, headers: {}, flags: ['-i'],
     expect: { status: 402, fields: ['x402Version', 'error', 'resource', 'accepts', 'credits'], headers: ['payment-required', 'www-authenticate'] }, needs: [],

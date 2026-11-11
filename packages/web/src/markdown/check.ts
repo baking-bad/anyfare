@@ -3,9 +3,9 @@ import type { CallsPage, EndpointStats } from '../api/types';
 import type { SiteSettings } from '../config';
 import { paidWithName } from '../content/home';
 import { count, ms, pct, usdOf } from '../format';
-import type { PayableCheck } from '../check/answer';
+import type { CheckNumbers, PayableCheck } from '../check/answer';
 import {
-  askRows, asksSentence, checkDescription, cut, describedAs, emptyLine, linkParts, noCallsLine, periodName, refusalWords, titleFor, unavailableLine, wayWords,
+  askRows, asksSentence, checkAddress, checkDescription, cut, defaultMethod, offersPost, tryPostLine, describedAs, emptyLine, linkParts, noCallsLine, periodName, refusalWords, titleFor, unavailableLine, wayWords,
 } from '../check/content';
 import type { CheckData } from '../check/data';
 import { inexactLine } from '../services/content';
@@ -21,11 +21,11 @@ const unavailable = 'Not available right now.';
 
 const quote = (check: PayableCheck): string => check.quote === undefined
   ? ''
-  : `\n- Our quote: ${usdOf(check.quote.amount, 3)}, fee ${usdOf(check.quote.fee, 2)}`;
+  : `\n- Our quote: ${usdOf(check.quote.amount)}, fee ${usdOf(check.quote.fee)}`;
 
 const payWith = (check: PayableCheck): string => check.payWith.length === 0
   ? 'No way to pay is listed right now.'
-  : check.payWith.map(way => `- ${wayWords(way).name}: ${usdOf(way.amount, 3)} (${wayWords(way).note})`).join('\n');
+  : check.payWith.map(way => `- ${wayWords(way).name}: ${usdOf(way.amount)} (${wayWords(way).note})`).join('\n');
 
 const numbers = (stats: ApiResult<EndpointStats>): string => {
   if (!stats.ok)
@@ -35,13 +35,22 @@ const numbers = (stats: ApiResult<EndpointStats>): string => {
 
   return `- Paid calls: ${count(figures.calls)}
 - Unique payers: ${count(figures.buyers)}
-- Volume: ${usdOf(figures.volume, 2)}
+- Volume: ${usdOf(figures.volume)}
 - Answered 2xx: ${figures.successRate === null ? '-' : pct(figures.successRate)}
 - Median time: ${figures.p50Ms === null ? '-' : ms(figures.p50Ms)}
 - Buyers paid with: ${ways.length === 0 ? 'no paid call in this period' : ways.map(way => `${paidWithName(way.paidWith)} ${count(way.calls)}`).join(', ')}
 
 ${stats.value.exact ? '' : `${inexactLine}\n\n`}Another period: add \`&period=7d\` to the address (today, 7d, 30d or all). Another page of calls: \`&page=2\`.`;
 };
+
+// The check's own 30-day numbers, for when the API's read of them failed
+const checkNumbers = (figures: CheckNumbers): string => `- Paid calls: ${count(figures.calls)}
+- Unique payers: ${count(figures.buyers)}
+- Volume: ${usdOf(figures.volume)}
+- Answered 2xx: ${figures.successRate === null ? '-' : pct(figures.successRate)}
+- Median time: ${figures.p50Ms === null ? '-' : ms(figures.p50Ms)}
+
+These are the numbers from the check. The other periods and the chart are not available right now.`;
 
 const callsList = (siteUrl: string, calls: ApiResult<CallsPage>): string => {
   if (!calls.ok)
@@ -57,17 +66,19 @@ const callsList = (siteUrl: string, calls: ApiResult<CallsPage>): string => {
 
 | When | Paid with | Amount | Status |
 |---|---|---|---|
-${value.calls.map(call => `| ${call.at} | ${cell(paidWithName(call.paidWith))} | ${call.status === 'paid' ? usdOf(call.amount, 3) : '$0'} | [${call.status === 'paid' ? 'Paid' : call.apiStatus === null ? 'free' : `${call.apiStatus} free`}](${siteUrl}/calls/${call.id}) |`).join('\n')}`;
+${value.calls.map(call => `| ${call.at} | ${cell(paidWithName(call.paidWith))} | ${call.status === 'paid' ? usdOf(call.amount) : '$0'} | [${call.status === 'paid' ? 'Paid' : call.apiStatus === null ? 'free' : `${call.apiStatus} free`}](${siteUrl}/calls/${call.id}) |`).join('\n')}`;
 };
 
 const payable = (settings: SiteSettings, check: PayableCheck, data: CheckData): string => {
   const { params } = data;
+  const fallen = data.stats !== undefined && !data.stats.ok && check.stats !== null;
+  const probed = params.method === defaultMethod ? '' : `${params.method} `;
   const description = describedAs(check.asks);
   const rows = askRows(check);
 
-  return `# ${check.host}${check.path}
+  return `# ${probed}${check.host}${check.path}
 
-Payable through Anyfare.${check.checkedAt === undefined ? '' : ` Checked at ${check.checkedAt}${check.ms === undefined ? '' : `, ${ms(check.ms)}`}.`}
+Payable through Anyfare.${probed === '' ? '' : ` Checked with ${params.method}.`}${check.checkedAt === undefined ? '' : ` Checked at ${check.checkedAt}${check.ms === undefined ? '' : `, ${ms(check.ms)}`}.`}
 
 ## What the API asks
 
@@ -82,9 +93,9 @@ ${payWith(check)}
 
 Put ${settings.payUrl}/ in front of any paid link. The price that counts is the one the API asks at call time.
 
-## Through Anyfare, ${periodName(params.period)}
+## Through Anyfare, ${fallen ? periodName('30d') : periodName(params.period)}
 
-${data.stats === undefined ? unavailable : numbers(data.stats)}
+${data.stats === undefined ? unavailable : fallen ? checkNumbers(check.stats!) : numbers(data.stats)}
 
 ## Last calls
 
@@ -106,15 +117,15 @@ export const checkMarkdown = (settings: SiteSettings, data: CheckData): { readon
     };
   }
   if (state.kind === 'unavailable')
-    return { status: 503, body: `# ${titleFor(params.url)}\n\n${unavailableLine}\n` };
+    return { status: 503, body: `# ${titleFor(params.url, params.method)}\n\n${unavailableLine}\n` };
   if (state.kind === 'refused') {
-    const { title, text } = refusalWords(state.refusal);
+    const { title, text } = refusalWords(state.refusal, params.method);
     const { host, path } = linkParts(params.url);
     const shown = host === '' ? cut(oneLine(params.url), 120) : `${host}${path}`;
 
     return {
       status: state.status,
-      body: `# ${shown === '' ? titleFor('') : shown}\n\nNot payable: ${title}. ${text}\n\nReason: \`${state.refusal.reason}\`\n\nAnyfare checks paid links only. Send the link of one paid endpoint, the one that answers 402.\n`,
+      body: `# ${shown === '' ? titleFor('') : `${params.method === defaultMethod ? '' : `${params.method} `}${shown}`}\n\nNot payable: ${title}. ${text}${offersPost(state.refusal, params.method) ? ` ${tryPostLine} Ask as ${settings.siteUrl}${checkAddress({ ...params, method: 'POST' }, '/check.md')}` : ''}\n\nReason: \`${state.refusal.reason}\`\n\nAnyfare checks paid links only. Send the link of one paid endpoint, the one that answers 402.\n`,
     };
   }
 

@@ -17,7 +17,12 @@ export type ApiResult<TValue> =
   | { readonly ok: false; readonly error: ReadFailure };
 
 /** Reads one path of the API. `check` rejects an answer that isn't the shape the page needs. */
-export type Reader = <TValue>(path: string, check?: (value: unknown) => value is TValue) => Promise<ApiResult<TValue>>;
+export type Reader = <TValue>(path: string, check?: (value: unknown) => value is TValue, options?: ReadOptions) => Promise<ApiResult<TValue>>;
+
+/** What one read adds to the reader's own: more request headers. */
+export interface ReadOptions {
+  readonly headers?: Readonly<Record<string, string>>;
+}
 
 export interface ReaderOptions {
   // The API's origin, as the code that reads it reaches it
@@ -32,12 +37,12 @@ export interface ReaderOptions {
 const unexpected: ReadFailure = { status: 502, code: 'unexpected_answer', message: 'The Platform API answered with something this page can\'t read.' };
 
 export const createReader = ({ apiUrl, forwardedFor, timeoutMs = defaultTimeoutMs, fetch: fetchFn, onFailure }: ReaderOptions): Reader =>
-  async <TValue>(path: string, check?: (value: unknown) => value is TValue): Promise<ApiResult<TValue>> => {
+  async <TValue>(path: string, check?: (value: unknown) => value is TValue, options?: ReadOptions): Promise<ApiResult<TValue>> => {
     try {
       const value = await callApi<unknown>(apiUrl, {
         path,
         timeoutMs,
-        ...forwardedFor === undefined || forwardedFor === '' ? {} : { headers: { 'x-forwarded-for': forwardedFor } },
+        headers: { ...forwardedFor === undefined || forwardedFor === '' ? {} : { 'x-forwarded-for': forwardedFor }, ...options?.headers },
         ...fetchFn === undefined ? {} : { fetch: fetchFn },
         ...onFailure === undefined ? {} : { onFailure },
       });

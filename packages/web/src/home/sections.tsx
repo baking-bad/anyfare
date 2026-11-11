@@ -8,7 +8,8 @@ import { DataTable } from '../components/DataTable';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import { Icon } from '../components/Icon';
-import { agentPrompt, agentsText, hero, nearIntentsUrl, questions, topText, tryLinks, ways } from '../content/home';
+import { MethodSelect } from '../check/MethodSelect';
+import { agentPrompt, agentsText, hero, nearIntentsUrl, questions, topText, tryHref, tryLinks, ways } from '../content/home';
 import { count, usdOf } from '../format';
 
 /** The hero: the line, the link field, and the console. The field is a plain GET form, so it works without scripts. */
@@ -23,6 +24,7 @@ export const Hero = ({ consoleUrl }: { readonly consoleUrl: string }) => (
           <div className="check-row">
             <div className="check-box">
               <span className="lead-icon"><Icon name="link" /></span>
+              <MethodSelect value="GET" />
               <input name="url" autoComplete="off" spellCheck={false} placeholder={hero.placeholder} aria-label="A paid API link" />
               <Button size="xl" type="submit">Check link</Button>
             </div>
@@ -32,7 +34,7 @@ export const Hero = ({ consoleUrl }: { readonly consoleUrl: string }) => (
             <div className="row small muted">
               <span>Try:</span>
               {tryLinks.map(link => (
-                <Link key={link.url} className="chip" href={`/check?url=${link.url}`}>{link.label} <span className="muted">{link.note}</span></Link>
+                <Link key={link.url} className="chip" href={tryHref(link)}>{link.label} <span className="muted">{link.note}</span></Link>
               ))}
             </div>
             <span className="small muted">{hero.freeCredits}</span>
@@ -112,10 +114,10 @@ export const TopServices = ({ services }: { readonly services: ApiResult<Service
               <tr key={service.host} className="click">
                 <td><Link className="row-link row-title" href={`/services/${encodeURIComponent(service.host)}`}>{service.host}</Link></td>
                 <td className="r">{count(service.paidEndpoints)}</td>
-                <td className="r">{usdOf(service.priceFrom, 3)}</td>
+                <td className="r">{usdOf(service.priceFrom)}</td>
                 <td className="r semi">{count(service.calls)}</td>
                 <td className="r">{count(service.buyers)}</td>
-                <td className="r">{usdOf(service.volume, 2)}</td>
+                <td className="r">{usdOf(service.volume)}</td>
                 <td className="r"><Icon name="chev" className="chev" /></td>
               </tr>
             ))}

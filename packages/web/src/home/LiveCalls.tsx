@@ -79,7 +79,7 @@ export const LiveCalls = ({ calls: firstCalls, numbers, now: serverNow }: LiveCa
             <div className="row-between live-head">
               <div className="stack live-total">
                 <span className="muted small">Paid through Anyfare in the last 24 hours</span>
-                <span className="balance">{usd(volume, 2)}</span>
+                <span className="balance">{usd(volume)}</span>
               </div>
               <div className="row">
                 {change === null ? null : (

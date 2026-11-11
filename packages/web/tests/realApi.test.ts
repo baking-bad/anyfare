@@ -38,7 +38,7 @@ describe('the fake API answers in the real shapes', () => {
     expect(list.ok && list.value.services[0]!.priceFrom).toBeNull();
     expect(service.ok && service.value.endpoints.length).toBeGreaterThan(0);
     expect(service.ok && service.value.endpoints.every(endpoint => endpoint.priceNow === null)).toBe(true);
-    expect(usdOf(null, 3)).toBe('-');
+    expect(usdOf(null)).toBe('-');
   });
 
   it('puts a service with no price last when the list is sorted by price', async () => {

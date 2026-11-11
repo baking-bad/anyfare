@@ -94,7 +94,7 @@ describe('the words of each step', () => {
   });
 
   it('words a call paid from Credits', () => {
-    expect(stepWords('authorized', credits)).toEqual({ title: 'We held $0.010 on the buyer\'s balance' });
+    expect(stepWords('authorized', credits)).toEqual({ title: 'We held $0.01 on the buyer\'s balance' });
     expect(stepWords('settled', credits)).toEqual({ title: 'The hold was taken from the balance' });
   });
 
@@ -123,7 +123,7 @@ describe('the Markdown twin', () => {
     expect(markdown).toContain('- Paid: $0.001. The API answered 200 in 120 ms.');
     expect(markdown).toContain('- Buyer: sample.near paid 0.001 USDC on NEAR, tx NearSample0000Tx9 on [NearBlocks](https://nearblocks.io/txns/NearSample0000Tx9)');
     expect(markdown).toContain('- API: we paid 0.001 USDC on Base to api.example.com, tx ');
-    expect(markdown).toContain('- Fee: $0.00');
+    expect(markdown).toContain('- Fee: $0');
     expect(markdown).toMatch(/- 11:59:57\.120 UTC: We checked the buyer's payment\. x402 on NEAR\. Not settled yet/);
     expect(markdown).toContain('UTC: We signed 0.001 USDC on Base for the API');
     expect(markdown).toContain('`GET https://api.example.com/v1/calls/pay_sample0000`');

@@ -60,15 +60,15 @@ export const EndpointsTable = ({ host, endpoints }: { readonly host: string; rea
         ) : endpoints.map(endpoint => (
           <tr key={`${endpoint.method ?? ''} ${endpoint.path}`} className="click">
             <td>
-              <Link prefetch={false} className="row-link svc-endpoint" href={checkHref(host, endpoint.path)}>
+              <Link prefetch={false} className="row-link svc-endpoint" href={checkHref(host, endpoint.path, endpoint.method)}>
                 {endpoint.method === null ? null : <span className={`method ${methodClass(endpoint.method)}`.trim()}>{endpoint.method.toUpperCase()}</span>}
                 <code>{endpoint.path}</code>
               </Link>
             </td>
-            <td className="r">{usdOf(endpoint.priceNow, 3)}</td>
+            <td className="r">{usdOf(endpoint.priceNow)}</td>
             <td className="r semi">{count(endpoint.calls)}</td>
             <td className="r">{count(endpoint.buyers)}</td>
-            <td className="r">{usdOf(endpoint.volume, 2)}</td>
+            <td className="r">{usdOf(endpoint.volume)}</td>
             <td className="r">{endpoint.successRate === null ? '-' : pct(endpoint.successRate)}</td>
             <td className="r">{endpoint.p50Ms === null ? '-' : ms(endpoint.p50Ms)}</td>
             <td className="r"><CopyButton text={endpoint.link} size="xs" withIcon className="row-copy" name={`Copy the pay link of ${endpoint.path}`} /></td>
@@ -117,7 +117,7 @@ export const ServiceStats = ({ host, service }: { readonly host: string; readonl
       <div className="card flush mt-16">
         <div className="kpis">
           <Kpi value={count(stats.calls)} label="Paid calls" note={<ChangePill calls={stats.calls} before={stats.callsBefore} period={service.period} />} />
-          <Kpi value={usdOf(stats.volume, 2)} label="Volume" note="Paid to the API by us" />
+          <Kpi value={usdOf(stats.volume)} label="Volume" note="Paid to the API by us" />
           <Kpi value={count(stats.buyers)} label="Unique buyers" note="Wallets, plus Credits accounts" />
           <Kpi value={pct(stats.returningShare)} label="Came back" why="Buyers who paid on 2 or more days" />
           <Kpi value={stats.successRate === null ? '-' : pct(stats.successRate)} label="Answered 2xx" note={failedLine(stats.failedCalls)} />
@@ -156,8 +156,8 @@ export const PaidWithTable = ({ service }: { readonly service: ServiceDetail }) 
                   {' '}<span className="small muted num">{pct(way.share)}</span>
                 </td>
                 <td className="r">{count(way.buyers)}</td>
-                <td className="r">{usdOf(way.volume, 2)}</td>
-                <td className="r">{average === null ? '-' : usd(average, 3)}</td>
+                <td className="r">{usdOf(way.volume)}</td>
+                <td className="r">{average === null ? '-' : usd(average)}</td>
               </tr>
             );
           })}
@@ -186,7 +186,7 @@ export const TopBuyers = ({ service, now }: { readonly service: ServiceDetail; r
             </td>
             <td><Rail rail={buyer.paidWith} /></td>
             <td className="r">{count(buyer.calls)}</td>
-            <td className="r">{usdOf(buyer.spent, 2)}</td>
+            <td className="r">{usdOf(buyer.spent)}</td>
             <td className="small muted">{lastCall(buyer.lastCallAt, now)}</td>
           </tr>
         ))}

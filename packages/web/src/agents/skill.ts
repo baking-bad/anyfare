@@ -37,7 +37,13 @@ Free, no key, and it pays nothing. Do it before the first call to any API.
 ${curl('check')}
 \`\`\`
 
-"payable": true comes with "price" (what the API asks) and "quote" (what you pay). If the quote is above what the user allowed, ask. "payable": false has a "reason" and a "message": use another API.
+"payable": true comes with "price" (what the API asks) and "quote" (what you pay). If the quote is above what the user allowed, ask. "payable": false has a "reason" and a "message". When the reason is "not_payable" for a link the user says is paid, it may ask only on another method: check it again with &method=POST and the header X-Anyfare-Check: 1 Otherwise use another API.
+
+A check with POST:
+
+\`\`\`sh
+${curl('check-post')}
+\`\`\`
 
 ## 2. Find a key, or sign up
 

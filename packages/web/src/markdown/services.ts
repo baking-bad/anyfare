@@ -11,7 +11,7 @@ import { apiServicesQuery, servicesHref, servicesPageSize, sortChoices, type Ser
 const cell = (text: string): string => text.replaceAll('|', '\\|');
 
 const row = (siteUrl: string, service: ServicesPage['services'][number]): string =>
-  `| [${cell(service.host)}](${siteUrl}/services/${service.host}) | ${count(service.paidEndpoints)} | ${usdOf(service.priceFrom, 3)} | ${count(service.calls)} | ${count(service.buyers)} | ${usdOf(service.volume, 2)} | ${service.successRate === null ? '-' : pct(service.successRate)} | ${service.p50Ms === null ? '-' : ms(service.p50Ms)} |`;
+  `| [${cell(service.host)}](${siteUrl}/services/${service.host}) | ${count(service.paidEndpoints)} | ${usdOf(service.priceFrom)} | ${count(service.calls)} | ${count(service.buyers)} | ${usdOf(service.volume)} | ${service.successRate === null ? '-' : pct(service.successRate)} | ${service.p50Ms === null ? '-' : ms(service.p50Ms)} |`;
 
 const list = (siteUrl: string, page: ServicesPage, filters: ServicesFilters): string => {
   const pages = Math.max(1, Math.ceil(page.total / page.size));

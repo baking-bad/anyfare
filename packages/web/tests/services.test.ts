@@ -103,6 +103,16 @@ describe('the numbers of a service', () => {
     expect(checkHref('a.example.com', '/v1/x y')).toBe('/check?url=a.example.com/v1/x%20y');
     expect(checkHref('a.example.com')).toBe('/check?url=a.example.com');
   });
+
+  it('adds the endpoint\'s method to the check link when it is known and is not GET', () => {
+    expect(checkHref('a.example.com', '/v1/x', 'POST')).toBe('/check?url=a.example.com/v1/x&method=POST');
+    expect(checkHref('a.example.com', '/v1/x', 'post')).toBe('/check?url=a.example.com/v1/x&method=POST');
+    expect(checkHref('a.example.com', '/v1/x', 'DELETE')).toBe('/check?url=a.example.com/v1/x');
+    expect(checkHref('a.example.com', '/v1/x', 'GET')).toBe('/check?url=a.example.com/v1/x');
+    expect(checkHref('a.example.com', '/v1/x', null)).toBe('/check?url=a.example.com/v1/x');
+    expect(checkHref('a.example.com', '/v1/x', 'HEAD')).toBe('/check?url=a.example.com/v1/x');
+    expect(checkHref('a.example.com', '/v1/x', undefined)).toBe('/check?url=a.example.com/v1/x');
+  });
 });
 
 describe('the Services twin', () => {

@@ -18,11 +18,14 @@ export const hero = {
   freeCredits: 'Make an account in one request. $0.10 of free Credits to try.',
 } as const;
 
-/** The two links the hero offers to try. */
-export const tryLinks: readonly { readonly label: string; readonly note: string; readonly url: string }[] = [
+/** The two links the hero offers to try. The NEAR one asks for payment only on POST. */
+export const tryLinks: readonly { readonly label: string; readonly note: string; readonly url: string; readonly method?: 'POST' }[] = [
   { label: 'x402 on Base', note: 'CoinMarketCap', url: 'pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest' },
-  { label: 'x402 on NEAR', note: 'Evidence API', url: 'merchant-near.mikedotexe.com/v1/evidence/account' },
+  { label: 'x402 on NEAR', note: 'Evidence API', url: 'merchant-near.mikedotexe.com/v1/evidence/account', method: 'POST' },
 ];
+
+/** The check page's address for a link to try, with its method when it is not GET. */
+export const tryHref = (link: { readonly url: string; readonly method?: 'POST' }): string => `/check?url=${link.url}${link.method === undefined ? '' : `&method=${link.method}`}`;
 
 export const ways = {
   heading: 'Two ways to pay. Neither needs the API to change.',

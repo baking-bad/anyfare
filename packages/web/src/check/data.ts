@@ -4,7 +4,7 @@ import type { CallsPage, EndpointStats } from '../api/types';
 import type { AgentRequest } from '../components/AgentView';
 import type { SiteSettings } from '../config';
 import { readCheckAnswer, type PayableCheck, type Refusal } from './answer';
-import { callsSize, isTooLong, tooLongRefusal, type CheckParams } from './content';
+import { callsSize, checkHeader, defaultMethod, isTooLong, tooLongRefusal, type CheckMethod, type CheckParams } from './content';
 
 /** What the check of the typed link came to. */
 export type CheckState =
@@ -32,15 +32,15 @@ const refusalOf = (error: ReadFailure): Refusal | undefined => {
 };
 
 /**
- * Checks a link on the pay host, as the visitor typed it. No link is `empty`. A link that is too long makes
+ * Checks a link on the pay host, as the visitor typed it, probed with `method`. No link is `empty`. A link that is too long makes
  * no request: it is "not a link". The server never requests the link itself: the pay host does, under its own rules.
  */
-export const loadCheck = async (read: Reader, url: string): Promise<CheckState> => {
+export const loadCheck = async (read: Reader, url: string, method: CheckMethod = defaultMethod): Promise<CheckState> => {
   if (url === '')
     return { kind: 'empty' };
   if (isTooLong(url))
     return { kind: 'refused', refusal: tooLongRefusal, status: 200, raw: { payable: false, reason: tooLongRefusal.reason, message: tooLongRefusal.message } };
-  const result = await read(paths.check(url), isCheckBody);
+  const result = await read(paths.check(url, method), isCheckBody, method === 'POST' ? { headers: checkHeader } : undefined);
   if (!result.ok) {
     const refusal = refusalOf(result.error);
 
@@ -65,7 +65,7 @@ export interface CheckData {
 
 /** Reads the check on the pay host, then the endpoint's numbers and its last calls from the API. */
 export const loadCheckData = async (payRead: Reader, apiRead: Reader, params: CheckParams): Promise<CheckData> => {
-  const state = await loadCheck(payRead, params.url);
+  const state = await loadCheck(payRead, params.url, params.method);
   if (state.kind !== 'payable')
     return { params, state };
   const { host, path } = state.check;
@@ -80,7 +80,12 @@ export const loadCheckData = async (payRead: Reader, apiRead: Reader, params: Ch
 /** The requests behind the page, with the addresses a browser or an agent uses. */
 export const checkRequests = ({ apiUrl, payUrl }: Pick<SiteSettings, 'apiUrl' | 'payUrl'>, data: CheckData): readonly AgentRequest[] => {
   const requests: AgentRequest[] = [
-    { method: 'GET', url: `${payUrl}${data.params.url === '' ? '/_/check?url=<link>' : paths.check(data.params.url)}`, note: 'The check: our quote, the link to pay, what the API asks, and its decoded 402' },
+    {
+      method: 'GET',
+      url: `${payUrl}${data.params.url === '' ? '/_/check?url=<link>' : paths.check(data.params.url, data.params.method)}`,
+      note: 'The check: our quote, the link to pay, what the API asks, and its decoded 402. method: GET (the default) or POST, the one the probe is sent with. POST needs the header X-Anyfare-Check: 1',
+      ...data.params.method === 'POST' ? { headers: checkHeader } : {},
+    },
   ];
   if (data.state.kind === 'payable') {
     const { host, path } = data.state.check;

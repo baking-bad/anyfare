@@ -54,7 +54,7 @@ export const BarChart = ({ data, unit = 'count', height = 200, label }: {
 }) => {
   const [ref, measured] = useWidth();
   const width = Math.max(240, measured);
-  const padLeft = 40;
+  const padLeft = unit === 'usd' ? 56 : 40;
   const padBottom = 24;
   const padTop = 8;
   const empty = data.every(point => point.value <= 0);
@@ -62,7 +62,7 @@ export const BarChart = ({ data, unit = 'count', height = 200, label }: {
   const slot = data.length > 0 ? (width - padLeft) / data.length : 0;
   const gap = Math.max(2, slot * 0.28);
   const format = unit === 'usd' ? usd : count;
-  const axis = (value: number): string => unit === 'usd' ? `$${compact(value)}` : compact(value);
+  const axis = (value: number): string => unit === 'usd' ? (value >= 1_000 ? `$${compact(value)}` : usd(value)) : compact(value);
   const y = (value: number): number => padTop + (height - padTop - padBottom) * (1 - value / max);
   let lastTick = -1e9;
 

@@ -25,7 +25,7 @@ export const CallRow = ({ call, now, fresh = false }: { readonly call: Call; rea
     </span>
     <span className="amt">
       {call.status === 'paid'
-        ? usdOf(call.amount, 3)
+        ? usdOf(call.amount)
         : <span className="badge danger">{call.apiStatus === null ? 'free' : `${call.apiStatus} · free`}</span>}
     </span>
     <span className="ms">{call.ms === null ? '' : ms(call.ms)}</span>

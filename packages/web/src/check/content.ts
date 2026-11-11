@@ -2,7 +2,10 @@ import type { Period } from '../api/types';
 import { chainName } from '../receipt/content';
 import { usdOf } from '../format';
 import { defaultPeriod, parsePeriod } from '../services/content';
+import { checkHeader, checkMethods, defaultMethod, knownMethod, parseMethod, type CheckMethod } from './method';
 import { maxLinkLength, type Asks, type PayableCheck, type PayWay, type Refusal } from './answer';
+
+export { checkHeader, checkMethods, defaultMethod, knownMethod, parseMethod, type CheckMethod };
 
 // The words and small rules of the Check page. The page and its Markdown twin both read them, so they say
 // the same. Everything that comes from the pay host's answer is plain text: a function here returns text,
@@ -58,10 +61,12 @@ export const callsSize = 10;
 // The API reads 10,000 calls deep and no further
 const maxPage = 1_000;
 
-/** What the page's URL holds: `?url=&tab=&period=&page=`. */
+/** What the page's URL holds: `?url=&method=&tab=&period=&page=`. */
 export interface CheckParams {
   // The link as the visitor typed it, trimmed
   readonly url: string;
+  // The method the check probes with
+  readonly method: CheckMethod;
   readonly tab: CheckTab;
   readonly period: Period;
   // From 1
@@ -79,24 +84,27 @@ const valueOf = (source: Source, name: string): string => {
 
 const isTab = (value: string): value is CheckTab => checkTabs.some(tab => tab.id === value);
 
-/** The state a URL's query holds. Anything the page doesn't know is dropped: the tab is Overview, the period 30 days, the page 1. */
+/** The state a URL's query holds. Anything the page doesn't know is dropped: the method is GET, the tab is Overview, the period 30 days, the page 1. */
 export const parseCheckParams = (source: Source): CheckParams => {
   const tab = valueOf(source, 'tab');
   const page = Number(valueOf(source, 'page'));
 
   return {
     url: valueOf(source, 'url').trim(),
+    method: parseMethod(valueOf(source, 'method')),
     tab: isTab(tab) ? tab : 'overview',
     period: parsePeriod(valueOf(source, 'period')),
     page: Number.isInteger(page) && page >= 1 ? Math.min(page, maxPage) : 1,
   };
 };
 
-/** The query string of the state, in a fixed order, without what is default. The link goes as typed. */
+/** The query string of the state, in a fixed order, without what is default (the method GET included). The link goes as typed. */
 export const checkQuery = (params: CheckParams): string => {
   const search = new URLSearchParams();
   if (params.url !== '')
     search.set('url', params.url);
+  if (params.method !== defaultMethod)
+    search.set('method', params.method);
   if (params.tab !== 'overview')
     search.set('tab', params.tab);
   if (params.period !== defaultPeriod)
@@ -130,13 +138,16 @@ export const linkParts = (link: string): { readonly host: string; readonly path:
   return slash < 0 ? { host: bare, path: '' } : { host: bare.slice(0, slash), path: bare.slice(slash) };
 };
 
-/** The page's title for a link: "Check: <host><path>", cut at 80 characters. Without a link it is "Check a link". */
-export const titleFor = (link: string): string => {
+/** The page's title for a link: "Check: <host><path>", with the method before the link when it is not GET, cut at 80 characters. Without a link it is "Check a link". */
+export const titleFor = (link: string, method: CheckMethod = defaultMethod): string => {
   const { host, path } = linkParts(link);
   const shown = `${host}${path}`;
 
-  return shown === '' ? checkTitle : cut(`Check: ${shown}`, maxTitleLength);
+  return shown === '' ? checkTitle : cut(`Check: ${method === defaultMethod ? '' : `${method} `}${shown}`, maxTitleLength);
 };
+
+/** The flag of a call by hand: ` -X POST` for a method that is not GET, nothing for GET (curl's own default). */
+export const methodFlag = (method: CheckMethod): string => method === defaultMethod ? '' : ` -X ${method}`;
 
 /** A word for a shell: left as it is when it holds only safe characters, otherwise in single quotes with a quote inside closed and reopened. */
 export const shellWord = (value: string): string =>
@@ -144,7 +155,7 @@ export const shellWord = (value: string): string =>
 
 // ---------- What the API asks ----------
 
-const asDollars = (amount: string | undefined, digits = 3): string => amount === undefined ? '' : usdOf(amount, digits);
+const asDollars = (amount: string | undefined): string => amount === undefined ? '' : usdOf(amount);
 
 /** The chain or network a payment is on, as a sentence names it: NEAR, Base, Solana, Tempo; an unknown one reads as its ID. */
 const where = (asks: Asks): string => asks.paidWith === undefined ? asks.network ?? '' : chainName(asks.paidWith);
@@ -295,8 +306,8 @@ export const wayWords = (way: PayWay): { readonly name: string; readonly note: s
   };
 };
 
-/** The prompt to give an agent, with the pay link. */
-export const agentPrompt = (link: string): string => `Call ${link} through Anyfare.
+/** The prompt to give an agent, with the pay link. A method that is not GET is named in the first line. */
+export const agentPrompt = (link: string, method: CheckMethod = defaultMethod): string => `Call ${link}${method === defaultMethod ? '' : ` with ${method}`} through Anyfare.
 Pay with my payment key from $ANYFARE_PAYMENT_KEY.
 Don't pay more than $0.05 for one call.`;
 
@@ -316,32 +327,75 @@ const refusals: Readonly<Record<string, RefusalWords>> = {
   rate_limited: { title: 'Too many checks', text: 'Wait a minute and try again.' },
 };
 
-/** The words for a refusal by its `reason`, and its `detail` when it has one. Any other reason shows the API's message as text. */
-export const refusalWords = (refusal: Refusal): RefusalWords => {
-  if (refusal.reason === 'host_not_allowed') {
-    const detail = refusal.detail ?? '';
-    const text = /private|reserved|internal|loopback/i.test(detail)
-      ? 'This link points to a private address.'
-      : /own|anyfare/i.test(detail)
-        ? 'This is one of Anyfare\'s own hosts.'
-        : 'Anyfare doesn\'t send calls to this host.';
-
-    return { title: 'We don\'t route to this host', text };
-  }
-
-  return refusals[refusal.reason] ?? { title: 'We couldn\'t check this link', text: cut(refusal.message, maxDescriptionLength) };
+// One sentence for each detail the pay host gives, under its reason's title
+const detailText: Readonly<Record<string, string>> = {
+  not_a_url: 'Paste a full link to one endpoint, such as api.example.com/v1/quote.',
+  invalid_host: 'Paste a link with a host name, such as api.example.com.',
+  ip_address: 'Paste a link with a host name, not an IP address.',
+  blocklisted: 'Anyfare doesn\'t route payments to this host.',
+  own_host: 'This is one of Anyfare\'s own hosts.',
+  private_address: 'This link points to a private address.',
+  opted_out: 'This API asked not to be routed through Anyfare.',
+  no_challenge: 'This link answered 402, but without a payment request Anyfare can read.',
+  no_option: 'This link asks for a payment, but in a way Anyfare can\'t pay yet.',
+  dns: 'This host name doesn\'t resolve.',
+  headers_too_large: 'The API answered with headers too large to read.',
+  refused: 'This host refused the connection.',
+  timeout: 'This host didn\'t answer in time.',
+  unreachable: 'This host couldn\'t be reached.',
 };
 
+// The details each reason has: a detail of another reason is not worded as this one
+const detailsOf: Readonly<Record<string, readonly string[]>> = {
+  invalid_target: ['not_a_url', 'invalid_host', 'ip_address'],
+  host_not_allowed: ['blocklisted', 'own_host', 'private_address', 'opted_out'],
+  unsupported_payment: ['no_challenge', 'no_option'],
+  upstream_unavailable: ['dns', 'refused', 'timeout', 'unreachable', 'headers_too_large'],
+};
+
+/** Every reason that has details, with them. `not_payable` has the one, `no_payment_asked`, which its text covers. */
+export const refusalDetails: readonly (readonly [string, readonly string[]])[] = [...Object.entries(detailsOf), ['not_payable', ['no_payment_asked']]];
+
+/**
+ * The words for a refusal by its `reason` and its `detail`, and the method of the check. A link that answered
+ * with a status says it; a probe that wasn't a GET says which method was tried. A reason or detail the page
+ * doesn't know shows the API's message as text.
+ */
+export const refusalWords = (refusal: Refusal, method: CheckMethod = defaultMethod): RefusalWords => {
+  const { reason, detail } = refusal;
+  if (reason === 'host_not_allowed')
+    return { title: 'We don\'t route to this host', text: detail !== undefined && detailsOf[reason]!.includes(detail) ? detailText[detail]! : 'Anyfare doesn\'t send calls to this host.' };
+  if (reason === 'not_payable') {
+    const answered = refusal.status === undefined ? 'answered' : `answered ${refusal.status}`;
+    const sent = method === defaultMethod ? 'This link' : `We sent ${method} to this link and it`;
+
+    return { title: 'Not a paid link', text: `${sent} ${answered} without asking for a payment. Anyfare checks paid links only: paste the link of one paid endpoint, the one that answers 402.` };
+  }
+  const base = refusals[reason];
+  if (base !== undefined)
+    return detail !== undefined && detailsOf[reason]?.includes(detail) ? { title: base.title, text: detailText[detail]! } : base;
+
+  return { title: 'We couldn\'t check this link', text: cut(refusal.message, maxDescriptionLength) };
+};
+
+/** The line and the button under a link that answered a GET without asking for payment: some APIs ask only on POST. */
+export const tryPostLine = 'Some APIs ask for payment only on POST.';
+
+export const tryPostLabel = 'Check it as POST';
+
+/** Whether the refusal is the one that offers the POST check: the link answered a GET without asking for a payment. */
+export const offersPost = (refusal: Refusal, method: CheckMethod): boolean => refusal.reason === 'not_payable' && method === defaultMethod;
+
 /** The refusal for a link that is too long, or not a link at all, before any request. */
-export const tooLongRefusal: Refusal = { reason: 'invalid_target', message: 'The link is too long' };
+export const tooLongRefusal: Refusal = { reason: 'invalid_target', detail: 'not_a_url', message: 'The link is too long' };
 
 // ---------- Code ----------
 
 /** The calls of the Code tab, each with the pay link. */
-export const codeSamples = (link: string): { readonly key: string; readonly byHand: string; readonly prompt: string } => ({
-  key: `curl ${shellWord(link)} \\\n  -H "Authorization: Bearer $ANYFARE_PAYMENT_KEY"`,
-  byHand: `# 1. Call the pay link. It answers 402 and says what to pay.\ncurl -i ${shellWord(link)}\n\n# 2. Call it again with the payment your x402 client signed.\ncurl ${shellWord(link)} \\\n  -H "PAYMENT-SIGNATURE: <the payment your x402 client made>"`,
-  prompt: agentPrompt(link),
+export const codeSamples = (link: string, method: CheckMethod = defaultMethod): { readonly key: string; readonly byHand: string; readonly prompt: string } => ({
+  key: `curl${methodFlag(method)} ${shellWord(link)} \\\n  -H "Authorization: Bearer $ANYFARE_PAYMENT_KEY"`,
+  byHand: `# 1. Call the pay link. It answers 402 and says what to pay.\ncurl -i${methodFlag(method)} ${shellWord(link)}\n\n# 2. Call it again with the payment your x402 client signed.\ncurl${methodFlag(method)} ${shellWord(link)} \\\n  -H "PAYMENT-SIGNATURE: <the payment your x402 client made>"`,
+  prompt: agentPrompt(link, method),
 });
 
 /** The one line under the by-hand calls. */

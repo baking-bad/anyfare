@@ -54,7 +54,7 @@ export const CallTableRow = ({ call, now, fresh = false, showService = true }: {
       <td><Rail rail={call.paidWith} /></td>
       <td>{call.apiPaidWith === null ? <span className="muted">-</span> : <Rail rail={call.apiPaidWith} />}</td>
       <td>{call.payer === null ? <span className="muted">-</span> : <span className="mono buyer" title={call.payer}>{shortAddress(call.payer)}</span>}</td>
-      <td className="r semi">{paid ? usdOf(call.amount, 3) : '$0'}</td>
+      <td className="r semi">{paid ? usdOf(call.amount) : '$0'}</td>
       <td>{paid ? <span className="badge success">Paid</span> : <span className="badge danger">{call.apiStatus === null ? 'free' : `${call.apiStatus} · free`}</span>}</td>
       <td className="r small muted">{call.ms === null ? '-' : ms(call.ms)}</td>
       <td className="r"><Icon name="chev" className="chev" /></td>

@@ -185,8 +185,8 @@ const Components = () => {
           <DataTable label="Sample calls" title="Sample calls" aside="Page 1 updates live">
             <thead><tr><th>Service</th><th>Paid with</th><th className="r">Amount</th><th>Status</th><th className="r">Time</th><th>A very wide column to make the table scroll inside its own box</th><th>Another wide column that keeps going on and on</th></tr></thead>
             <tbody>
-              <tr><td>Sample service</td><td><Rail rail="near" /></td><td className="r semi">{usd(0.01, 3)}</td><td><Badge tone="success">Paid</Badge></td><td className="r small muted">{ms(340)}</td><td className="small muted">example.com/v1/sample</td><td className="small muted">sample</td></tr>
-              <tr><td>Sample service</td><td><Rail rail="credits" /></td><td className="r semi">{usd(0.002, 3)}</td><td><Badge tone="danger">502 · free</Badge></td><td className="r small muted">{ms(1840)}</td><td className="small muted">example.com/v1/other</td><td className="small muted">sample</td></tr>
+              <tr><td>Sample service</td><td><Rail rail="near" /></td><td className="r semi">{usd(0.01)}</td><td><Badge tone="success">Paid</Badge></td><td className="r small muted">{ms(340)}</td><td className="small muted">example.com/v1/sample</td><td className="small muted">sample</td></tr>
+              <tr><td>Sample service</td><td><Rail rail="credits" /></td><td className="r semi">{usd(0.002)}</td><td><Badge tone="danger">502 · free</Badge></td><td className="r small muted">{ms(1840)}</td><td className="small muted">example.com/v1/other</td><td className="small muted">sample</td></tr>
             </tbody>
           </DataTable>
         </Section>

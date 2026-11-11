@@ -9,7 +9,7 @@ import { PageView } from '../../src/components/AgentView';
 import { readSettings } from '../../src/config';
 import { CheckForm } from '../../src/check/CheckForm';
 import { CheckEmpty, CheckPayable, CheckRefused, CheckUnavailable } from '../../src/check/CheckView';
-import { checkAddress, checkDescription, maxFieldLength, parseCheckParams, titleFor, unavailableLine, unavailableTitle } from '../../src/check/content';
+import { checkAddress, checkDescription, defaultMethod, maxFieldLength, parseCheckParams, titleFor, unavailableLine, unavailableTitle } from '../../src/check/content';
 import { checkJson, checkRequests, loadCheckData } from '../../src/check/data';
 import { checkMarkdown } from '../../src/markdown/check';
 import { socialTags } from '../../src/seo/social';
@@ -18,16 +18,16 @@ import { markdownUrl } from '../../src/markdown/negotiate';
 type Props = { readonly searchParams: Promise<Readonly<Record<string, string | string[] | undefined>>> };
 
 export const generateMetadata = async ({ searchParams }: Props): Promise<Metadata> => {
-  const { url } = parseCheckParams(await searchParams);
+  const { url, method } = parseCheckParams(await searchParams);
   const { siteUrl } = readSettings();
-  const title = titleFor(url);
+  const title = titleFor(url, method);
 
   return {
     title,
     description: checkDescription,
     // A check is for the one who pasted the link: the page is not for a search engine
     robots: { index: false, follow: false },
-    alternates: { canonical: `${siteUrl}/check`, types: { 'text/markdown': `${siteUrl}${checkAddress({ url, tab: 'overview', period: '30d', page: 1 }, markdownUrl('/check'))}` } },
+    alternates: { canonical: `${siteUrl}/check${method === defaultMethod ? '' : `?method=${method}`}`, types: { 'text/markdown': `${siteUrl}${checkAddress({ url, method, tab: 'overview', period: '30d', page: 1 }, markdownUrl('/check'))}` } },
     ...socialTags({ siteUrl, title: `${title} | Anyfare`, description: checkDescription }),
   };
 };
@@ -46,12 +46,12 @@ const Check = async ({ searchParams }: Props) => {
   const data = await loadCheckData(payReader(incoming, settings), serverReader(incoming, settings), params);
   const { state } = data;
   const twin = checkMarkdown(settings, data);
-  const agentUrl = `${settings.siteUrl}${checkAddress({ url: params.url, tab: 'overview', period: '30d', page: 1 }, markdownUrl('/check'))}`;
+  const agentUrl = `${settings.siteUrl}${checkAddress({ url: params.url, method: params.method, tab: 'overview', period: '30d', page: 1 }, markdownUrl('/check'))}`;
 
   return (
     <PageView
       agent={{
-        title: titleFor(params.url),
+        title: titleFor(params.url, params.method),
         markdown: twin.body,
         json: checkJson(data),
         requests: checkRequests(settings, data),
@@ -60,13 +60,13 @@ const Check = async ({ searchParams }: Props) => {
     >
       <section className="band">
         <div className="container ruled check-top">
-          <CheckForm value={params.url.slice(0, maxFieldLength)} label="Check again" />
+          <CheckForm value={params.url.slice(0, maxFieldLength)} method={params.method} label="Check again" />
         </div>
       </section>
       <section className="band">
         <div className="container ruled page-pad">
           {state.kind === 'empty' ? <CheckEmpty />
-            : state.kind === 'refused' ? <CheckRefused refusal={state.refusal} url={params.url} />
+            : state.kind === 'refused' ? <CheckRefused refusal={state.refusal} url={params.url} method={params.method} />
               : state.kind === 'unavailable' ? <CheckUnavailable title={unavailableTitle}>{unavailableLine}</CheckUnavailable>
                 : (
                   <CheckPayable

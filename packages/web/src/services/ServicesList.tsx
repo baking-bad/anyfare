@@ -170,11 +170,11 @@ export const ServicesList = ({ first }: ServicesListProps) => {
               <tr key={service.host} className="click">
                 <td><Link prefetch={false} className="row-link row-title mono svc-host" href={`/services/${encodeURIComponent(service.host)}`}>{service.host}</Link></td>
                 <td className="r">{count(service.paidEndpoints)}</td>
-                <td className="r">{usdOf(service.priceFrom, 3)}</td>
+                <td className="r">{usdOf(service.priceFrom)}</td>
                 <td className="r semi">{count(service.calls)}</td>
                 <td><Sparkline values={service.trend} /></td>
                 <td className="r">{count(service.buyers)}</td>
-                <td className="r">{usdOf(service.volume, 2)}</td>
+                <td className="r">{usdOf(service.volume)}</td>
                 <td className="r">{service.successRate === null ? '-' : pct(service.successRate)}</td>
                 <td className="r">{service.p50Ms === null ? '-' : ms(service.p50Ms)}</td>
                 <td className="r"><Icon name="chev" className="chev" /></td>

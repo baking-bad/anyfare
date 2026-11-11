@@ -46,7 +46,7 @@ export const StatsBand = ({ stats }: { readonly stats: Stats | null }) => {
           <>
             <div className="stat-grid">
               <Stat value={count(stats.calls[period])} label={statsText.calls.label} note={statsText.calls.note} />
-              <Stat value={usdOf(stats.volume[period], 2)} label={statsText.volume.label} note={statsText.volume.note} />
+              <Stat value={usdOf(stats.volume[period])} label={statsText.volume.label} note={statsText.volume.note} />
               <Stat value={count(stats.buyers[period])} label={statsText.buyers.label} note={statsText.buyers.note} />
               <Stat value={count(stats.services[period])} label={statsText.services.label} note={statsText.services.note} />
             </div>

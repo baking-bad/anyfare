@@ -39,7 +39,7 @@ export const receiptMarkdown = (settings: SiteSettings, receipt: Receipt): strin
 ${buyerLine}
 - API: ${api === null ? noApiLine : `we paid ${sideLine(api)} to ${receipt.service}${transaction(api.transaction, api.explorerUrl)}`}
 - Route: ${chainName(buyer.paidWith)}${api === null ? '' : ` to ${chainName(api.paidWith)}`}
-- API price: ${receipt.apiPrice === null ? '-' : usdOf(receipt.apiPrice, 3)}
+- API price: ${receipt.apiPrice === null ? '-' : usdOf(receipt.apiPrice)}
 - Fee: ${receipt.fee === null ? '-' : usdOf(receipt.fee)}
 ${steps.length === 0 ? '' : `\n## Steps\n\n${steps.join('\n')}\n`}
 The receipt as JSON: \`GET ${settings.apiUrl}${paths.call(receipt.id)}\`

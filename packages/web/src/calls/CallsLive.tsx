@@ -236,7 +236,7 @@ export const CallsLive = ({ live, calls: firstCalls, suggestions, now: serverNow
           ) : (
             <div className="ops-counts mt-12">
               <div className="stack counter-item"><span className="v">{count(today.calls)}</span><span className="small muted">Paid calls</span></div>
-              <div className="stack counter-item"><span className="v">{usd(today.volume, 2)}</span><span className="small muted">Volume</span></div>
+              <div className="stack counter-item"><span className="v">{usd(today.volume)}</span><span className="small muted">Volume</span></div>
               <div className="stack counter-item"><span className="v">{count(today.buyers)}</span><span className="small muted">Buyers</span></div>
               <div className="stack counter-item"><span className="v">{share}%</span><span className="small muted">Paid from NEAR</span></div>
             </div>

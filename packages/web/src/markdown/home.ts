@@ -1,7 +1,7 @@
 import type { ApiResult } from '../api/reader';
 import type { Call, Period } from '../api/types';
 import type { SiteSettings } from '../config';
-import { agentPrompt, agentsText, hero, homeDescription, homeTitle, paidWithName, questions, statsText, topText, tryLinks, ways } from '../content/home';
+import { agentPrompt, agentsText, hero, homeDescription, homeTitle, paidWithName, questions, statsText, topText, tryHref, tryLinks, ways } from '../content/home';
 import { count, ms, usdOf } from '../format';
 import { changeOf, formatChange } from '../home/change';
 import type { HomeData } from '../home/data';
@@ -11,12 +11,12 @@ import type { HomeData } from '../home/data';
 
 const unavailable = 'Not available right now.';
 
-const money = (value: string | null, digits = 2): string => usdOf(value, digits);
+const money = (value: string | null): string => usdOf(value);
 
 const cell = (text: string): string => text.replaceAll('|', '\\|');
 
 const callRow = (call: Call): string => {
-  const amount = call.status === 'paid' ? money(call.amount, 3) : `free${call.apiStatus === null ? '' : ` (${call.apiStatus})`}`;
+  const amount = call.status === 'paid' ? money(call.amount) : `free${call.apiStatus === null ? '' : ` (${call.apiStatus})`}`;
 
   return `| ${call.at} | ${cell(call.service)} | ${cell(call.path)} | ${paidWithName(call.paidWith)} | ${call.apiPaidWith === null ? '-' : paidWithName(call.apiPaidWith)} | ${amount} | ${call.ms === null ? '-' : ms(call.ms)} |`;
 };
@@ -73,7 +73,7 @@ Details: ${siteUrl}/calls`);
 
 | Service | Paid endpoints | Price from | Calls through Anyfare | Buyers | Volume |
 |---|---|---|---|---|---|
-${services.map(service => `| [${cell(service.host)}](${siteUrl}/services/${service.host}) | ${count(service.paidEndpoints)} | ${money(service.priceFrom, 3)} | ${count(service.calls)} | ${count(service.buyers)} | ${money(service.volume)} |`).join('\n')}
+${services.map(service => `| [${cell(service.host)}](${siteUrl}/services/${service.host}) | ${count(service.paidEndpoints)} | ${money(service.priceFrom)} | ${count(service.calls)} | ${count(service.buyers)} | ${money(service.volume)} |`).join('\n')}
 
 All services: ${siteUrl}/services`);
 
@@ -89,7 +89,9 @@ ${hero.lead}
 
 Answers whether the link can be paid through Anyfare, what it asks, and what it costs. No payment is made and no sign-up is needed. On the website: ${siteUrl}/check?url=<link>
 
-Try: ${tryLinks.map(link => `[${link.label}, ${link.note}](${siteUrl}/check?url=${link.url})`).join(', ')}.
+Some APIs ask for payment only on POST. Add \`&method=POST\` (GET is the default) to the check, on the website and on the pay host. On the pay host a POST check also needs the header \`X-Anyfare-Check: 1\`.
+
+Try: ${tryLinks.map(link => `[${link.label}, ${link.note}](${siteUrl}${tryHref(link)})`).join(', ')}.
 
 ${hero.freeCredits}
 

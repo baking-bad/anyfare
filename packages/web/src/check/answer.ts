@@ -49,13 +49,23 @@ export interface Upstream {
   readonly status?: number;
   // The headers the API returned, in the order they came
   readonly headers: readonly (readonly [string, string])[];
-  // The decoded challenge, and which protocol it is of
+  // The decoded challenge (for MPP, the list of the target's challenges), and which protocol it is of
   readonly decoded?: unknown;
   readonly decodedAs?: 'x402' | 'mpp';
 }
 
+/** An endpoint's paid calls through Anyfare over 30 days, as the check answers them. */
+export interface CheckNumbers {
+  readonly calls: number;
+  readonly buyers: number;
+  readonly volume: string;
+  readonly successRate: number | null;
+  readonly p50Ms: number | null;
+}
+
 export interface PayableCheck {
-  // The link as the pay host normalized it, and the pay link
+  // The method the check probed with
+  readonly method: string;  // The link as the pay host normalized it, and the pay link
   readonly target: string;
   readonly link: string;
   // From the target: the host, and the path without its query
@@ -67,6 +77,8 @@ export interface PayableCheck {
   readonly asks: Asks;
   readonly upstream: Upstream;
   readonly payWith: readonly PayWay[];
+  // The numbers over 30 days; null when the pay host couldn't read them
+  readonly stats: CheckNumbers | null;
   readonly checkedAt: string | undefined;
   readonly ms: number | undefined;
 }
@@ -74,7 +86,59 @@ export interface PayableCheck {
 export interface Refusal {
   readonly reason: string;
   readonly message: string;
+  // Finer than the reason: `no_payment_asked`, `opted_out`, `dns`...
   readonly detail?: string;
+  // The target's status, when it answered
+  readonly status?: number;
+}
+
+// The answer of `GET /_/check` as it comes on the wire. The reader below keeps what the page shows; these
+// two types are the whole answer, and tests/apiShapes.test.ts holds them to the pay host's response schema.
+
+/** What the target asks, on the wire: the four first fields are always there, the rest depend on the protocol. */
+export interface AsksAnswer {
+  readonly amount: string;
+  readonly asset: string;
+  readonly network: string;
+  readonly paidWith: string;
+  readonly payTo: string | undefined;
+  readonly scheme: string | undefined;
+  readonly x402Version: number | undefined;
+  readonly maxTimeoutSeconds: number | undefined;
+  readonly description: string | undefined;
+  readonly mimeType: string | undefined;
+  readonly method: string | undefined;
+  readonly intent: string | undefined;
+  readonly realm: string | undefined;
+  readonly recipient: string | undefined;
+  readonly expires: string | undefined;
+}
+
+/** A payable link, on the wire. */
+export interface PayableAnswer {
+  readonly payable: true;
+  readonly method: string;
+  readonly target: string;
+  readonly price: { readonly amount: string; readonly currency: string; readonly asset: string; readonly network: string | null };
+  readonly quote: { readonly amount: string; readonly fee: string; readonly currency: string };
+  readonly link: string;
+  readonly protocol: string;
+  readonly asks: AsksAnswer;
+  readonly upstream: { readonly status: number; readonly headers: Readonly<Record<string, string>>; readonly x402: unknown | undefined; readonly mpp: readonly unknown[] | undefined };
+  readonly payWith: readonly PayWay[];
+  readonly stats: { readonly calls: number; readonly buyers: number; readonly volume: string; readonly successRate: number | null; readonly p50Ms: number | null } | null;
+  readonly checkedAt: string;
+  readonly ms: number;
+}
+
+/** A link the pay host won't quote, on the wire: still a 200. */
+export interface RefusedAnswer {
+  readonly payable: false;
+  readonly method: string;
+  readonly reason: string;
+  readonly message: string;
+  readonly detail: string | undefined;
+  readonly upstream: { readonly status: number } | undefined;
 }
 
 /** The answer of `GET /_/check`: a payable link, or a refusal. */
@@ -96,6 +160,20 @@ const readAsks = (value: unknown): Asks => {
   ];
 
   return Object.fromEntries(entries.filter(([, entry]) => entry !== undefined)) as Asks;
+};
+
+const readStats = (value: unknown): CheckNumbers | null => {
+  if (!isRecord(value))
+    return null;
+  const calls = whole(value['calls']);
+  const buyers = whole(value['buyers']);
+  const volume = text(value['volume'], 100);
+  if (calls === undefined || buyers === undefined || volume === undefined)
+    return null;
+  const success = whole(value['successRate']);
+  const median = whole(value['p50Ms']);
+
+  return { calls, buyers, volume, successRate: success ?? null, p50Ms: median ?? null };
 };
 
 const readUpstream = (value: unknown): Upstream => {
@@ -160,8 +238,9 @@ export const readCheckAnswer = (value: unknown): CheckAnswer | undefined => {
     if (reason === undefined)
       return undefined;
     const detail = text(value['detail'], 300);
+    const status = isRecord(value['upstream']) ? whole(value['upstream']['status']) : undefined;
 
-    return { payable: false, refusal: { reason, message: text(value['message'], 600) ?? '', ...detail === undefined ? {} : { detail } } };
+    return { payable: false, refusal: { reason, message: text(value['message'], 600) ?? '', ...detail === undefined ? {} : { detail }, ...status === undefined ? {} : { status } } };
   }
   const target = text(value['target'], 4_096);
   const link = text(value['link'], 4_096);
@@ -182,6 +261,7 @@ export const readCheckAnswer = (value: unknown): CheckAnswer | undefined => {
   return {
     payable: true,
     check: {
+      method: text(value['method'], 10) ?? 'GET',
       target,
       link,
       host: url.host,
@@ -192,6 +272,7 @@ export const readCheckAnswer = (value: unknown): CheckAnswer | undefined => {
       asks: readAsks(value['asks']),
       upstream: readUpstream(value['upstream']),
       payWith: readWays(value['payWith']),
+      stats: readStats(value['stats']),
       checkedAt,
       ms,
     },
