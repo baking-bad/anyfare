@@ -5,8 +5,8 @@ import {
 } from '@anyfare/common';
 import { RateLimitedError, type InvalidationBus, type PlatformConfig, type RateLimiter } from '@anyfare/core';
 import {
-  createKeyStore, createLedger, createPaymentRepository, createRedisInvalidationBus, createRedisRateLimiter, createRedisReplayStore, createRoutingRepository,
-  type Postgres, type Redis, type RoutingRepository,
+  createCallRepository, createKeyStore, createLedger, createPaymentRepository, createRedisInvalidationBus, createRedisRateLimiter, createRedisReplayStore,
+  createRoutingRepository, type CallRepository, type Postgres, type Redis, type RoutingRepository,
 } from '@anyfare/db';
 import {
   createCreditsRail, createMppRail, createX402Rail, detectMpp, detectX402, type ClaimStore, type MppSetup, type PaymentRail, type X402Setup,
@@ -18,6 +18,7 @@ import { createKeyCache, type KeyCacheSettings } from './payments/keyCache.js';
 import { createProxyLimits } from './payments/limits.js';
 import { createPaymentStep } from './payments/step.js';
 import { registerKeyRoute } from './platform/key.js';
+import { createCallDetailsRecorder } from './routing/callDetails.js';
 import { createRouting, type Routing } from './routing/routes.js';
 import { createEndpointRegistrar, createOptOutCheck, type SignerClient } from './routing/support.js';
 
@@ -68,6 +69,8 @@ export interface ProxyDependencies {
   readonly internalApi?: { readonly url: string; readonly secret: Secret };
   // The blocklist, endpoint fees, and target legs. Default: the routing tables.
   readonly routingRepository?: Pick<RoutingRepository, 'isBlocked' | 'endpointFee' | 'recordTargetPayment' | 'updateTargetPayment'>;
+  // Where a paid call's method, payer and arrival are kept, best effort. Default: the call_details table.
+  readonly callDetails?: Pick<CallRepository, 'recordDetails'>;
 }
 
 export interface ProxyServer extends Server {
@@ -176,6 +179,7 @@ export const createApp = ({
   signer,
   internalApi,
   routingRepository = createRoutingRepository({ db: postgres.db, clock }),
+  callDetails: callDetailsStore = createCallRepository({ db: postgres.db }),
 }: ProxyDependencies): ProxyServer => {
   const server = createServer({
     logger,
@@ -255,6 +259,7 @@ export const createApp = ({
     metrics,
   });
   registerKeyRoute(app, { credits, limits, ledger, clock });
+  const callDetails = createCallDetailsRecorder({ store: callDetailsStore });
   const routing = createRouting({
     config,
     http: targets,
@@ -265,6 +270,7 @@ export const createApp = ({
     signer,
     optedOut: createOptOutCheck({ http: targets, redis, logger }),
     registrar: createEndpointRegistrar({ url: internalApi?.url, secret: internalApi?.secret, logger }),
+    callDetails,
     limitIp: ip => limits.unpaid(ip),
     limitProbe: ip => limits.probe(ip),
     metrics,
@@ -272,8 +278,10 @@ export const createApp = ({
     logger,
   });
   registerRoutingRoutes(app, routing);
-  // Shutdown finishes or releases the holds of the last answers
-  app.addHook('onClose', async () => payments.drain());
+  // Shutdown finishes or releases the holds of the last answers, and lets the last details writes end
+  app.addHook('onClose', async () => {
+    await Promise.all([payments.drain(), callDetails.drain()]);
+  });
 
   // Drop a key when it changes, and every key after a missed stretch
   const ownedBus = invalidation ? undefined : createRedisInvalidationBus({ redis, logger });

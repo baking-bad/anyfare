@@ -17,6 +17,7 @@ import {
 import { NearPaymentInFlightError, ResponseTooLargeError, UpstreamUnavailableError } from '../errors.js';
 import type { ProxyMetrics } from '../metrics.js';
 import type { PaidCall, PaymentStep } from '../payments/step.js';
+import type { CallDetailsRecorder } from './callDetails.js';
 import { routedRequestHeaders, routedResponseHeaders } from './headers.js';
 import { isOwnHost, ownDomainsOf, SignerUnavailableError, type EndpointRegistrar, type SignerClient, type X402Requirement } from './support.js';
 
@@ -40,6 +41,8 @@ export interface RoutingOptions {
   readonly signer: SignerClient | undefined;
   readonly optedOut: (host: string, log?: LogSink) => Promise<boolean>;
   readonly registrar: Pick<EndpointRegistrar, 'register'>;
+  // Keeps a paid call's method, payer and arrival for the public reads, best effort
+  readonly callDetails: Pick<CallDetailsRecorder, 'record'>;
   // The per-IP limit of `GET /_/check`
   readonly limitIp: (ip: string) => Promise<void>;
   // The per-IP limit of probes: a call whose quote isn't cached, paid or not
@@ -182,7 +185,7 @@ const readAll = async (body: Readable): Promise<Buffer> => {
 
 /** Payment routing: `/<host>/<path>` pays any x402 or MPP API for the buyer, and `GET /_/check` quotes one. */
 export const createRouting = ({
-  config, http, redis, payments, routing, ledger, signer, optedOut, registrar, limitIp, limitProbe, metrics, clock,
+  config, http, redis, payments, routing, ledger, signer, optedOut, registrar, callDetails, limitIp, limitProbe, metrics, clock,
 }: RoutingOptions) => {
   const payUrl = config.urls.pay.replace(/\/+$/, '');
   const ownDomains = ownDomainsOf(config);
@@ -355,6 +358,8 @@ export const createRouting = ({
 
   const serve = async (request: FastifyRequest, reply: FastifyReply): Promise<FastifyReply> => {
     const log = request.log;
+    // When the request arrived: Fastify has been on it since, its body included
+    const arrivedAt = new Date(clock.now().getTime() - Math.round(reply.elapsedTime));
     // A buyer who goes away is never charged, and never settled for. Watched from the start: once the
     // connection has closed, a listener added later never hears it.
     let buyerGone = false;
@@ -388,6 +393,8 @@ export const createRouting = ({
 
     const call: PaidCall = payment.call;
     const { paymentId } = call.authorization;
+    // Returns at once and never throws: the call never waits for it
+    callDetails.record({ authorization: call.authorization, method: request.method, arrivedAt, log });
     const abortBuyer = async (status: number | undefined): Promise<void> => {
       await payments.finish(call, await payments.decide(call, { status, latencyMs: 0 }));
     };
