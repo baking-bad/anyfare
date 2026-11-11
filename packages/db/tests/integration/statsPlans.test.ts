@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 
 import { Secret } from '@anyfare/common';
 import { createPaidWith, hashApiKey, loadPlatformConfig, type PaidWithWay, type PaymentStatus } from '@anyfare/core';
-import { createTestDatabase, type TestDatabase } from '@anyfare/testing';
+import { createTestDatabase, createTestPool, type TestDatabase } from '@anyfare/testing';
 
 import { createAccountRepository, createPaymentKeyRepository } from '../../src/index.js';
 import * as schema from '../../src/schema/index.js';
@@ -84,7 +84,7 @@ beforeAll(async () => {
     host: index < 600 ? `api-${index % 40}.example.com` : `other-${index}.example.com`, path: index < 600 ? `/v1/endpoint/${index % 300}` : '/v1/other',
     lastPrice: 1_000n, createdAt: new Date(first),
   })));
-  pool = new pg.Pool({ connectionString: database.url.expose() });
+  pool = createTestPool(database);
   // The counts' tables, as full as 1,000 services make them, the 40 with calls with 100 endpoints each
   const numbers = { calls: 1, buyers: 1, volume: '0.01', successRate: 1, p50Ms: 100, byPaidWith: [] };
   await db.insert(schema.statsAnswers).values(['platform', 'platform:all', 'services', 'top:today', 'top:7d', 'top:30d', 'top:all', 'live', 'run:recent', 'run:all']

@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { Secret } from '@anyfare/common';
 import { createPaidWith, hashApiKey, loadPlatformConfig, type PaidWithWay } from '@anyfare/core';
-import { createTestDatabase, type TestDatabase } from '@anyfare/testing';
+import { createTestDatabase, createTestPool, type TestDatabase } from '@anyfare/testing';
 
 import { createAccountRepository, createPaymentKeyRepository } from '../../src/index.js';
 import * as schema from '../../src/schema/index.js';
@@ -55,7 +55,7 @@ beforeAll(async () => {
     paymentId: row.id, method: 'GET', payer: row.rail === 'credits' ? null : `0x${String(index % 300).padStart(40, '0')}`, arrivedAt: row.createdAt,
   })));
   await db.insert(schema.routedEndpoints).values(hosts.map(host => ({ host, path: '/v1/item/1', lastPrice: 1_000n, createdAt: now })));
-  pool = new pg.Pool({ connectionString: database.url.expose() });
+  pool = createTestPool(database);
   await pool.query('analyze');
 }, 60_000);
 

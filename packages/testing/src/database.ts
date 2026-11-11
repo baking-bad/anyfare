@@ -113,6 +113,18 @@ export interface TestDatabaseOptions {
 let template: Promise<string> | undefined;
 
 /**
+ * A pool of a test's own on `database`, for statements the repositories don't send (`explain`, `analyze`). `end()`
+ * resolves before its connections close, and `drop()` then ends a closing one by force: the error that gives it is
+ * expected, so the pool takes it. A pool without a listener would throw it, and the run would fail on it.
+ */
+export const createTestPool = (database: Pick<TestDatabase, 'url'>, options: Omit<pg.PoolConfig, 'connectionString'> = {}): pg.Pool => {
+  const pool = new pg.Pool({ ...options, connectionString: database.url.expose() });
+  pool.on('error', () => undefined);
+
+  return pool;
+};
+
+/**
  * A fresh database with every migration applied, for one test file. It is cloned from a template
  * database, so migrations run once per migration set, not once per file. Needs TEST_DATABASE_URL: a
  * role that may create databases.

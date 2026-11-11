@@ -10,7 +10,7 @@ import { createBlocklistMatcher, loadPlatformConfig, type PlatformConfig } from 
 import {
   checkedHosts, createCatalogRepository, createStatsRepository, hostBlocklist, paidHosts, routedEndpoints, statsAnswers, statsServices, type Database,
 } from '@anyfare/db';
-import { createFakeClock, createTestDatabase, createTestRedis, type FakeClock, type TestDatabase, type TestRedis } from '@anyfare/testing';
+import { createFakeClock, createTestDatabase, createTestPool, createTestRedis, type FakeClock, type TestDatabase, type TestRedis } from '@anyfare/testing';
 
 import { createApp, type ApiServer } from '../../src/app.js';
 import { catalogCacheMs } from '../../src/catalog/routes.js';
@@ -92,7 +92,7 @@ beforeAll(async () => {
   server = createApp({ config, logger: createLogger({ level: 'silent' }), postgres: database.postgres, redis, clock });
   url = `http://127.0.0.1:${(await server.listen({ host: '127.0.0.1', port: 0, metricsPort: 0 })).port}`;
   await database.db.execute(sql`vacuum analyze`);
-  pool = new pg.Pool({ connectionString: database.url.expose() });
+  pool = createTestPool(database);
 // Seeding takes longer than the default hook limit on a busy machine
 }, 180_000);
 

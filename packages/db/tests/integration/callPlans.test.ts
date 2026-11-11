@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { Secret } from '@anyfare/common';
 import { hashApiKey, type PaymentStatus } from '@anyfare/core';
-import { createTestDatabase, type TestDatabase } from '@anyfare/testing';
+import { createTestDatabase, createTestPool, type TestDatabase } from '@anyfare/testing';
 
 import { createCallRepository } from '../../src/callRepository.js';
 import { createAccountRepository, createPaymentKeyRepository } from '../../src/index.js';
@@ -64,7 +64,7 @@ beforeAll(async () => {
     })));
     await db.insert(schema.callDetails).values(batch.map(row => ({ paymentId: row.id, method: 'GET', payer: null, arrivedAt: row.createdAt })));
   }
-  pool = new pg.Pool({ connectionString: database.url.expose() });
+  pool = createTestPool(database);
   await pool.query('analyze');
 // Seeding 20,000 calls takes longer than the default hook limit on a busy machine
 }, 120_000);

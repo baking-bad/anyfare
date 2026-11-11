@@ -11,7 +11,7 @@ import * as db from '@anyfare/db';
 import {
   createAccountRepository, createCallRepository, createLedger, createPaymentKeyRepository, createPaymentRepository, createRoutingRepository, type Database, type Ledger,
 } from '@anyfare/db';
-import { createFakeClock, createFakeIdGenerator, createTestDatabase, createTestRedis, fixtureTime, type TestDatabase, type TestRedis } from '@anyfare/testing';
+import { createFakeClock, createFakeIdGenerator, createTestDatabase, createTestPool, createTestRedis, fixtureTime, type TestDatabase, type TestRedis } from '@anyfare/testing';
 
 import { PublicStatsBudgetError } from '../../src/publicStats.js';
 import { RunStoppedError } from '../../src/scheduler.js';
@@ -290,7 +290,7 @@ describe('the public numbers\' counts, next to the payments', () => {
   });
 
   it('run on one connection at a time: a pool of one is enough', async () => {
-    const pool = new pg.Pool({ connectionString: database.url.expose(), max: 1, connectionTimeoutMillis: 2_000 });
+    const pool = createTestPool(database, { max: 1, connectionTimeoutMillis: 2_000 });
     try {
       const on = drizzle({ client: pool, schema: db }) as unknown as Database;
       const result = await jobs({}, on).recent();

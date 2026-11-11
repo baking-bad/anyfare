@@ -3,7 +3,7 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createBlocklistMatcher } from '@anyfare/core';
-import { createTestDatabase, type TestDatabase } from '@anyfare/testing';
+import { createTestDatabase, createTestPool, type TestDatabase } from '@anyfare/testing';
 
 import { catalogScanBudget, createCatalogRepository, type CatalogCursor, type CatalogRepository } from '../../src/catalogRepository.js';
 import * as schema from '../../src/schema/index.js';
@@ -28,7 +28,7 @@ beforeAll(async () => {
   }));
   for (let index = 0; index < rows.length; index += 500)
     await database.db.insert(schema.routedEndpoints).values(rows.slice(index, index + 500));
-  pool = new pg.Pool({ connectionString: database.url.expose() });
+  pool = createTestPool(database);
 });
 
 afterAll(async () => {

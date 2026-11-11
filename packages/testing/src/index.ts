@@ -1,6 +1,6 @@
 export { createFakeClock } from './clock.js';
 export type { FakeClock } from './clock.js';
-export { createTestDatabase } from './database.js';
+export { createTestDatabase, createTestPool } from './database.js';
 export type { TestDatabase, TestDatabaseOptions } from './database.js';
 export { createFakeIdGenerator } from './ids.js';
 export type { FakeIdGenerator } from './ids.js';

@@ -6,7 +6,7 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createBlocklistMatcher } from '@anyfare/core';
-import { createFakeClock, createTestDatabase, type TestDatabase } from '@anyfare/testing';
+import { createFakeClock, createTestDatabase, createTestPool, type TestDatabase } from '@anyfare/testing';
 
 import { catalogScanBudget, createCatalogRepository, type CatalogCursor } from '../../src/catalogRepository.js';
 import { createRoutingRepository, maxCheckedEndpointsPerHost, maxCheckedHosts } from '../../src/index.js';
@@ -82,7 +82,7 @@ beforeAll(async () => {
     { host: 'example.biz', reason: 'abuse', createdAt: now },
   ]);
   await db.insert(schema.statsAnswers).values(['services', 'run:recent', 'run:all'].map(key => ({ key, answer: {}, countedAt: now })));
-  pool = new pg.Pool({ connectionString: database.url.expose() });
+  pool = createTestPool(database);
   await pool.query('vacuum analyze');
 // Seeding takes longer than the default hook limit on a busy machine
 }, 180_000);
