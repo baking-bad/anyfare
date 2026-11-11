@@ -478,7 +478,7 @@ describe('the receipt page with a full database', () => {
   });
 
   it('gives the normal page to a client that sends the missing-receipt header itself', async () => {
-    const forged = { headers: { 'x-receipt-missing': '1' } };
+    const forged = { headers: { 'x-missing-kind': 'receipt', 'x-missing-name': 'x' } };
     const home = await get(full, '/', forged);
     const receipt = await get(full, '/calls/pay_sample0000', forged);
 
@@ -610,6 +610,205 @@ describe('the Markdown twin of a receipt', () => {
 
     expect((await get(full, '/calls/bad$id.md')).response.status).toBe(404);
     expect(full.api!.requests.length).toBe(before);
+  });
+});
+
+const pageText = (body: string): string => body.slice(0, body.indexOf('class="code') === -1 ? undefined : body.indexOf('class="code'));
+
+describe('the Services page', () => {
+  it('answers 200 with the lead, three numbers, the grid and the pages, from the API', async () => {
+    const { response, body } = await get(full, '/services');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('Services agents paid through Anyfare. Any x402 or MPP API can be paid the same way: paste its link on the home page.');
+    for (const text of ['Services paid through Anyfare', 'Paid endpoints on them', 'Calls through Anyfare, 30 days', 'Search by name or host', 'Most paid endpoints', 'Cheapest', '27'])
+      expect(body).toContain(text);
+    expect(body).toContain('href="/services/api.example.com"');
+    expect(body).toMatch(/1<!-- -->–<!-- -->20<!-- --> of <!-- -->27/);
+    expect(body).not.toMatch(/registr|proposal|verified/i);
+    expect(body).not.toContain('In public registries');
+    noBrokenValues(body);
+  });
+
+  it('shows a dash for a missing rate or time', async () => {
+    const { body } = await get(full, '/services?q=geo02');
+
+    expect(body).toContain('geo02.example.org');
+    expect(body).toMatch(/<td class="r">-<\/td><td class="r">-<\/td>/);
+  });
+
+  it('renders the page, the search and the sort the URL names, the same for the same URL', async () => {
+    const before = full.api!.requests.length;
+    const [first, again] = await Promise.all([get(full, '/services?q=maps'), get(full, '/services?q=maps')]);
+    const sorted = await get(full, '/services?sort=price&page=2');
+    const second = await get(full, '/services?page=2');
+
+    expect(first.body.replace(/nonce="[^"]*"/g, '')).toContain('maps.example.com');
+    expect(first.body).not.toContain('api.example.com</a>');
+    const rows = (html: string): string => html.slice(html.indexOf('<tbody'), html.indexOf('</tbody>'));
+    expect(rows(first.body)).toBe(rows(again.body));
+    expect(second.body).toMatch(/21<!-- -->–<!-- -->27/);
+    expect(second.body).toContain('ocr22.example.org');
+    expect(sorted.body).toMatch(/21<!-- -->–<!-- -->27/);
+    expect(full.api!.requests.slice(before).map(request => request.path)).toContain('/v1/services?q=maps&sort=calls&page=1&size=20');
+    expect(full.api!.requests.slice(before).map(request => request.path)).toContain('/v1/services?sort=price&page=2&size=20');
+  });
+
+  it('says nothing matches a search that finds nothing', async () => {
+    const { response, body } = await get(full, '/services?q=zzzz');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('Nothing matches. Any x402 or MPP API can still be paid: paste its link on the home page.');
+  });
+
+  it('has its own title, description, Open Graph tags and a link to its twin', async () => {
+    const { body } = await get(full, '/services');
+
+    expect(body).toContain('<title>Services | Anyfare</title>');
+    expect(body).toContain('property="og:title" content="Services | Anyfare"');
+    expect(body).toContain('rel="alternate" type="text/markdown" href="https://anyfare.example.com/services.md"');
+  });
+
+  it('shows the first-run empty state with an empty database, and the shared error state when the API is down', async () => {
+    const first = await get(empty, '/services');
+    expect(first.response.status).toBe(200);
+    expect(first.body).toContain('No services yet');
+    noBrokenValues(first.body);
+    for (const running of [down, refused]) {
+      const { response, body } = await get(running, '/services');
+
+      expect(response.status).toBe(200);
+      expect(body).toContain('role="alert"');
+      expect(body).toContain('The services didn&#x27;t load');
+    }
+  });
+
+  it('answers its twin with the lead, how to pay, the page and the next page', async () => {
+    const { response, body } = await get(full, '/services.md?page=1');
+    const viaAccept = await get(full, '/services', { headers: { accept: 'text/markdown' } });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(body).toContain('https://pay.example.com/<host>/<path>');
+    expect(body).toContain('Next page: https://anyfare.example.com/services.md?page=2');
+    expect(viaAccept.body).toBe(body.replace('page=1', 'page=1'));
+    expect(await (await get(down, '/services.md')).body).toContain('Not available right now.');
+  });
+});
+
+describe('the Service page', () => {
+  it('answers 200 with the head, the endpoints, the six numbers, the tables and the live calls', async () => {
+    const { response, body } = await get(full, '/services/api.example.com');
+    const page = pageText(body);
+
+    expect(response.status).toBe(200);
+    for (const text of ['4<!-- --> paid endpoint', 'Check an endpoint', 'Paths only. We never show query strings', 'Price now', 'Today', 'All time', 'Paid calls', 'Unique buyers', 'Came back', 'Answered 2xx', 'Median time', 'p95 816 ms', '6 failed calls, not charged', 'vs the 30 days before', 'Paid calls per day', 'By payment method', 'Avg. per buyer', 'Top 5 buyers', 'Together: 48.0% of paid calls', 'Live calls to api.example.com'])
+      expect(page).toContain(text);
+    expect(body).toContain('href="/check?url=api.example.com/v1/sample/quotes/latest"');
+    expect(body).toContain('href="/calls?service=api.example.com"');
+    expect(body).toContain('aria-label="Copy the pay link of /v1/sample/lookup"');
+    expect(body).toContain('title="0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"');
+    noBrokenValues(body);
+  });
+
+  it('shows a Credits buyer as a Credits account with no id', async () => {
+    const { body } = await get(full, '/services/api.example.com');
+    const row = body.slice(body.indexOf('A Credits account') - 80, body.indexOf('A Credits account') + 40);
+
+    expect(row).toContain('<span class="small muted">A Credits account</span>');
+    expect(row).not.toMatch(/title=/);
+  });
+
+  it('renders each period from the URL, and shows no change when there is no period before', async () => {
+    const week = await get(full, '/services/api.example.com?period=7d');
+    const all = await get(full, '/services/api.example.com?period=all');
+    const quiet = await get(full, '/services/maps.example.com');
+
+    expect(week.body).toContain('vs the 7 days before');
+    expect(all.body).not.toContain('vs the ');
+    expect(quiet.response.status).toBe(200);
+    expect(quiet.body).not.toContain('vs the 30 days before');
+    const paths = full.api!.requests.map(request => request.path);
+    expect(paths).toContain('/v1/services/api.example.com?period=7d');
+    expect(paths).toContain('/v1/services/api.example.com?period=all');
+  });
+
+  it('reads the last 5 calls of the host and opens its stream with the host', async () => {
+    const before = full.api!.requests.length;
+    const { body } = await get(full, '/services/data.example.com');
+
+    expect(full.api!.requests.slice(before).map(request => request.path)).toContain('/v1/calls?host=data.example.com&size=5');
+    expect(body).toContain('/v1/sample/');
+    expect(body).not.toContain('href="/calls/pay_sample0000"');
+  });
+
+  it('has its own title, description and Open Graph tags', async () => {
+    const { body } = await get(full, '/services/api.example.com');
+
+    expect(body).toContain('<title>api.example.com | Anyfare</title>');
+    expect(body).toContain('property="og:title" content="api.example.com | Anyfare"');
+    expect(body).toContain('rel="alternate" type="text/markdown" href="https://anyfare.example.com/services/api.example.com.md"');
+  });
+
+  it('is the 404 page with its text for an unknown host, with buttons to the services and the check', async () => {
+    const { response, body } = await get(full, '/services/nope.example.com');
+
+    expect(response.status).toBe(404);
+    expect(body).toContain('No paid call went to this service through Anyfare yet.');
+    expect(body).toContain('href="/services"');
+    expect(body).toContain('href="/check?url=nope.example.com"');
+    expect((await get(empty, '/services/api.example.com')).response.status).toBe(404);
+  });
+
+  it('is the 404 page for a bad host, and the API is never asked', async () => {
+    const before = full.api!.requests.length;
+    const results = await Promise.all(['/services/bad_host', '/services/localhost', '/services/a..com', `/services/${'a'.repeat(64)}.com`, '/services/a%3Fb.com'].map(path => get(full, path)));
+
+    for (const { response, body } of results) {
+      expect(response.status).toBe(404);
+      expect(body).toContain('No paid call went to this service through Anyfare yet.');
+    }
+    expect(full.api!.requests.slice(before).filter(request => request.path.startsWith('/v1/services/'))).toEqual([]);
+  });
+
+  it('gives the normal page to a client that sends the missing headers itself', async () => {
+    const forged = { headers: { 'x-missing-kind': 'service', 'x-missing-name': 'x' } };
+    const notFound = await get(full, '/no-such-page', forged);
+
+    expect(notFound.response.status).toBe(404);
+    expect(notFound.body).toContain('Page not found');
+    expect((await get(full, '/services/api.example.com', forged)).response.status).toBe(200);
+  });
+
+  it('answers 200 with the shared error state when the API is down or refuses the connection', async () => {
+    for (const running of [down, refused]) {
+      const { response, body } = await get(running, '/services/api.example.com');
+
+      expect(response.status).toBe(200);
+      expect(body).toContain('role="alert"');
+      expect(body).toContain('We couldn&#x27;t load this service&#x27;s numbers.');
+      expect(body).toContain('The last calls didn&#x27;t load');
+      expect(body).toContain('api.example.com');
+    }
+  });
+
+  it('answers its twin with the numbers, the methods and the endpoints, and 404 and 503 when it must', async () => {
+    const { response, body } = await get(full, '/services/api.example.com.md?period=7d');
+    const unknown = await get(full, '/services/nope.example.com.md');
+    const failed = await get(down, '/services/api.example.com.md');
+    const before = full.api!.requests.length;
+    const bad = await get(full, '/services/bad_host.md');
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(body).toMatch(/^# api.example.com\n/);
+    expect(body).toContain('Through Anyfare, the last 7 days');
+    expect(body).toContain('https://pay.example.com/api.example.com/v1/sample/lookup');
+    expect(body).toContain('A Credits account');
+    expect(unknown.response.status).toBe(404);
+    expect(failed.response.status).toBe(503);
+    expect(bad.response.status).toBe(404);
+    expect(full.api!.requests.slice(before)).toEqual([]);
   });
 });
 
