@@ -181,7 +181,8 @@ describe('the seed', () => {
     expect(await count(sql`select count(*) as n from balances b where not exists (select 1 from ledger_accounts a where a.id = b.ledger_account_id)`)).toBe(0);
     const stats = (await read('/v1/stats')).body;
     expect(stats.calls.all).toBe(0);
-    expect((await read('/v1/services')).body.services).toEqual([]);
+    // The API keeps the list 5 s
+    await expect.poll(async () => (await read('/v1/services')).body.services, { timeout: 15_000, interval: 500 }).toEqual([]);
     expect(await database.db.select().from(statsServices)).toEqual([]);
   }, slow);
 });

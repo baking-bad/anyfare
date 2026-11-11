@@ -274,9 +274,14 @@ export const registerInternalRoutes = (app: FastifyInstance, {
     return { host, path, feeBps };
   });
 
-  // Hosts the proxy refuses
+  // Hosts the proxy refuses to route to, by their exact name; the public lists and a check's listing leave out the
+  // host and every subdomain of it
   app.put<{ Params: { readonly host: string }; Body: { readonly reason: string } }>('/internal/v1/blocklist/:host', {
-    schema: { body: { type: 'object', required: ['reason'], additionalProperties: false, properties: { reason: { type: 'string', minLength: 1, maxLength: 500 } } } },
+    schema: {
+      description: 'Blocks a host: routing refuses its exact name, and the public lists and checks leave out the host and every subdomain of it. '
+        + 'An operator who enters a shared suffix, such as github.io, hides every host under it.',
+      body: { type: 'object', required: ['reason'], additionalProperties: false, properties: { reason: { type: 'string', minLength: 1, maxLength: 500 } } },
+    },
   }, async request => {
     const { host } = request.params;
     if (!hostPattern.test(host))

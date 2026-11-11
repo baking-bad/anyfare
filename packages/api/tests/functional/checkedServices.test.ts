@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createLogger } from '@anyfare/common';
@@ -79,7 +80,21 @@ beforeAll(async () => {
     countedAt: new Date('2026-11-12T11:00:00.000Z'),
     timeoutMs: 5_000,
   });
-  await stats.putAnswers({ answers: [{ key: 'services', answer: { services: 2, paidEndpoints: 3, calls30d: 15 } }], countedAt: new Date('2026-11-12T11:55:00.000Z'), timeoutMs: 5_000 });
+  await stats.putAnswers({
+    answers: [
+      { key: 'services', answer: { services: 2, paidEndpoints: 3, calls30d: 15 } },
+      {
+        key: 'top:30d',
+        answer: {
+          services: [{ host: 'alpha.example.com', calls: 10 }, { host: 'beta.example.org', calls: 5 }],
+          endpoints: [{ host: 'alpha.example.com', path: '/v1/paid', calls: 10 }, { host: 'beta.example.org', path: '/v1/b', calls: 5 }],
+          paidWith: [], topupTokens: [],
+        },
+      },
+    ],
+    countedAt: new Date('2026-11-12T11:55:00.000Z'),
+    timeoutMs: 5_000,
+  });
   await stats.markComplete({ kind: 'recent', countedAt: new Date('2026-11-12T11:55:00.000Z'), timeoutMs: 5_000 });
   const numbers = endpointNumbersOf({ calls: 10, volume: 100_000n, buyers: 3, free: 0, p50Ms: 100, p95Ms: 100, ways: [{ paidWith: 'base', calls: 10 }] });
   const endpoint: StoredEndpoint = {
@@ -128,13 +143,14 @@ describe('GET /v1/services with both kinds', () => {
       host: 'newer.example.net', status: 'checked', paidEndpoints: 2, priceFrom: '0.001', currency: 'USD', calls: 0, buyers: 0, volume: '0', successRate: null, p50Ms: null,
       trend: days(30).map(() => 0), listedAt: minutesAfter(20).toISOString(), checkedAt: minutesAfter(21).toISOString(),
     });
-    // A paid one's endpoints and prices with what checks listed of it, when it first joined and when a check last confirmed it
+    // A paid one's listed endpoints, its paid one and the one a check listed, each once, the lowest price among them, when
+    // it first joined and when a check last confirmed it
     expect(services[0]).toMatchObject({
-      paidEndpoints: 3, priceFrom: '0.0009', calls: 10, listedAt: minutesAfter(0).toISOString(), checkedAt: minutesAfter(31).toISOString(),
+      paidEndpoints: 2, priceFrom: '0.0009', calls: 10, listedAt: minutesAfter(0).toISOString(), checkedAt: minutesAfter(31).toISOString(),
     });
     expect(services[1]).toMatchObject({ paidEndpoints: 1, listedAt: minutesAfter(1).toISOString(), checkedAt: null });
-    // Every listed service; the paid ones the count counted; their endpoints, and the 4 listed only by checks
-    expect(answer.body['totals']).toEqual({ services: 4, paidServices: 2, paidEndpoints: 3 + 1 + 3, calls30d: 15 });
+    // Every listed service; the paid ones; their listed endpoints, of paid calls and of checks, each once; the count's calls
+    expect(answer.body['totals']).toEqual({ services: 4, paidServices: 2, paidEndpoints: 2 + 1 + 2 + 1, calls30d: 15 });
     expect(answer.body).toMatchObject({ total: 4, totalCapped: false, updatedAt: '2026-11-12T11:55:00.000Z' });
   });
 
@@ -156,6 +172,27 @@ describe('GET /v1/services with both kinds', () => {
     const after = await hostsOf('?q=KEPT&size=5');
 
     expect([first.hosts, cached.hosts, after.hosts]).toEqual([[], [], ['kept.cache-test.io']]);
+  });
+
+  it('answers 503 when the list\'s or a page\'s read can\'t finish in its 2 s, never kept by a cache, and reads again at the next request', async () => {
+    fresh();
+    // Another session holds the tables the reads need: each waits until its statement gives up
+    const stalled = await database.db.transaction(async tx => {
+      await tx.execute(sql`lock table paid_hosts in access exclusive mode`);
+      const started = performance.now();
+      const answers = [await get('/v1/services'), await get('/v1/services/newer.example.net')];
+
+      return { answers, tookMs: performance.now() - started };
+    });
+    const after = [await get('/v1/services'), await get('/v1/services/newer.example.net')];
+
+    for (const answer of stalled.answers) {
+      expect(answer).toMatchObject({ status: 503, body: { error: { code: 'stats_unavailable' } } });
+      expect(answer.headers.get('cache-control')).toBe('no-store');
+    }
+    expect(stalled.tookMs).toBeGreaterThanOrEqual(3_800);
+    expect(stalled.tookMs).toBeLessThan(8_000);
+    expect(after.map(answer => [answer.status, answer.headers.get('cache-control')])).toEqual([[200, 'public, max-age=55'], [200, 'public, max-age=3']]);
   });
 
   it('searches both kinds by a part of the host', async () => {
@@ -206,7 +243,8 @@ describe('GET /v1/services/{host} with both kinds', () => {
   it('answers a paid service with its paid endpoints, then those listed only by a check, each with when a check last confirmed it', async () => {
     const answer = await get('/v1/services/alpha.example.com');
 
-    expect(answer.body).toMatchObject({ host: 'alpha.example.com', status: 'paid', paidEndpoints: 1, listedAt: minutesAfter(0).toISOString(), checkedAt: minutesAfter(31).toISOString() });
+    // Its listed endpoints, as the list counts them
+    expect(answer.body).toMatchObject({ host: 'alpha.example.com', status: 'paid', paidEndpoints: 2, listedAt: minutesAfter(0).toISOString(), checkedAt: minutesAfter(31).toISOString() });
     expect(answer.body['endpoints']).toEqual([
       expect.objectContaining({ path: '/v1/paid', status: 'paid', calls: 10, checkedAt: minutesAfter(31).toISOString() }),
       {
@@ -281,58 +319,117 @@ describe('the list, a service\'s page and a check\'s listing', () => {
     });
     await database.db.insert(callDetails).values({ paymentId: id, method: 'GET', payer: '0x1111111111111111111111111111111111111111', arrivedAt: at });
   };
-  // A check as the proxy lists it: its client counted for a new host only when the host joins the checked pool
+  // A check as the proxy lists it: nothing of a host the blocklist names, nor a new endpoint at a cap; its client
+  // counted whenever the count doesn't store the host
   const listedByCheck = async (host: string, path: string): Promise<boolean> => {
     registered.set(clock.now());
     const state = await routing.endpointListing(host, path, { timeoutMs: 1_000 });
-    const result = await routing.registerEndpoint({ host, path, lastPrice: 1_100n, checked: { method: 'GET', mayAddHost: !state.stored && !state.checkedHost } });
+    if (state.blocked || (state.status === undefined && (state.checkedEndpoints >= 20 || state.paidCapped)))
+      return false;
+    const result = await routing.registerEndpoint({ host, path, lastPrice: 1_100n, checked: { method: 'GET', mayAddHost: !state.stored } });
 
     return result === 'created' || result === 'exists';
   };
-  const listedAs = async (host: string): Promise<string | undefined> =>
-    ((await get(`/v1/services?q=${host}`)).body['services'] as Listed[]).find(service => service.host === host)?.status;
-  const pageOf = async (host: string) => {
-    const page = await get(`/v1/services/${host}`);
-
-    return [page.status, page.body['status']];
+  const listedRow = async (host: string): Promise<Listed | undefined> =>
+    ((await get(`/v1/services?q=${host}`)).body['services'] as Listed[]).find(service => service.host === host);
+  // As the count stores a service: its row, its page of 30 days and its endpoints with calls
+  const counted = async (host: string, called: readonly { readonly path: string; readonly price: bigint }[]): Promise<void> => {
+    const stats = createStatsRepository({ db: database.db });
+    const numbers = endpointNumbersOf({ calls: 1, volume: 1_100n, buyers: 1, free: 0, p50Ms: 100, p95Ms: 100, ways: [{ paidWith: 'base', calls: 1 }] });
+    await stats.putServices({
+      rows: [{ hostHash: md5(host), host, paidEndpoints: called.length, priceFrom: 1_100n, calls: 1, buyers: 1, volume: 1_100n, successRate: 1, p50Ms: 100, trend: [] }],
+      countedAt: clock.now(), timeoutMs: 5_000,
+    });
+    await stats.putServicePages({
+      pages: [{ hostHash: md5(host), period: '30d', answer: { ...buildServicePage({ host, period: '30d', callsBefore: 0, daily: [], now: clock.now(), counts: undefined }), paidEndpoints: called.length } }],
+      countedAt: clock.now(), timeoutMs: 5_000,
+    });
+    await stats.putEndpoints({
+      hostHashes: [md5(host)], countedAt: clock.now(), timeoutMs: 5_000,
+      endpoints: called.map(({ path, price }) => ({
+        hostHash: md5(host), pathHash: md5(path), path, method: 'GET', price, recent: { today: numbers, '7d': numbers, '30d': numbers }, daily: [],
+      })),
+    });
   };
 
-  it('agree for a checked-only host, one paid today, one paid 40 days ago and checked now, and one paid 40 days ago and not checked since', async () => {
+  it('agree for every kind of host: checked only, paid today, paid 40 days ago and checked now or never since, paid with checked endpoints, at the paid cap, and paid with an endpoint idle for 30 days', async () => {
     const now = clock.now();
     const before = new Date(now.getTime() - 40 * dayMs);
     // Paid today, and stored by the count
     await paidCall('today.agree.dev', '/v1/x', now);
     await paidAt('today.agree.dev', '/v1/x', now);
-    await createStatsRepository({ db: database.db }).putServices({
-      rows: [{ hostHash: md5('today.agree.dev'), host: 'today.agree.dev', paidEndpoints: 1, priceFrom: 1_100n, calls: 1, buyers: 1, volume: 1_100n, successRate: 1, p50Ms: 100, trend: [] }],
-      countedAt: now, timeoutMs: 5_000,
-    });
-    // Paid 40 days ago, outside the count, the first checked now and the other not since
+    await counted('today.agree.dev', [{ path: '/v1/x', price: 1_100n }]);
+    // Paid 40 days ago, outside the count: the first checked now and the other never since
     for (const host of ['checked.old-paid.dev', 'unchecked.old-paid.dev']) {
       await paidCall(host, '/v1/x', before);
       await paidAt(host, '/v1/x', before);
     }
+    // Paid 40 days ago at a higher price, and checked now on another path
+    await paidCall('both.agree.dev', '/v1/paid', before, 2_000n);
+    await paidAt('both.agree.dev', '/v1/paid', before);
+    // At its 1,000 paid endpoints
+    await database.db.insert(routedEndpoints).values(Array.from({ length: 999 }, (_, index) => ({
+      host: 'capped.agree.dev', path: `/v1/item/${String(index).padStart(3, '0')}`, lastPrice: 1_000n, createdAt: new Date(before.getTime() - index * 1_000), status: 'paid' as const,
+    })));
+    await paidCall('capped.agree.dev', '/v1/item/999', before, 1_000n);
+    await paidAt('capped.agree.dev', '/v1/item/999', before);
+    // Stored by the count, with calls on one endpoint and none in 30 days on the other, which is cheaper
+    await paidCall('idle.agree.dev', '/v1/idle', before, 500n);
+    await paidAt('idle.agree.dev', '/v1/idle', before);
+    await paidCall('idle.agree.dev', '/v1/called', now, 1_000n);
+    await paidAt('idle.agree.dev', '/v1/called', now);
+    await counted('idle.agree.dev', [{ path: '/v1/called', price: 1_000n }]);
 
-    const listed = {
-      checkedOnly: await listedByCheck('only.agree.dev', '/v1/x'),
-      today: await listedByCheck('today.agree.dev', '/v1/x'),
-      oldChecked: await listedByCheck('checked.old-paid.dev', '/v1/x'),
+    const checks: Readonly<Record<string, { readonly path: string; readonly listed: boolean }>> = {
+      'only.agree.dev': { path: '/v1/x', listed: await listedByCheck('only.agree.dev', '/v1/x') },
+      'today.agree.dev': { path: '/v1/x', listed: await listedByCheck('today.agree.dev', '/v1/x') },
+      'checked.old-paid.dev': { path: '/v1/x', listed: await listedByCheck('checked.old-paid.dev', '/v1/x') },
+      'both.agree.dev': { path: '/v1/checked', listed: await listedByCheck('both.agree.dev', '/v1/checked') },
+      'capped.agree.dev': { path: '/v1/new', listed: await listedByCheck('capped.agree.dev', '/v1/new') },
+      'idle.agree.dev': { path: '/v1/called', listed: await listedByCheck('idle.agree.dev', '/v1/called') },
     };
     fresh();
 
-    expect(listed).toEqual({ checkedOnly: true, today: true, oldChecked: true });
-    expect(await listedAs('only.agree.dev')).toBe('checked');
-    expect(await pageOf('only.agree.dev')).toEqual([200, 'checked']);
-    expect(await listedAs('today.agree.dev')).toBe('paid');
-    expect(await pageOf('today.agree.dev')).toEqual([200, 'paid']);
-    // Outside the count, in the list as a paid service with no numbers for its 30 days
-    expect(((await get('/v1/services?q=checked.old-paid.dev')).body['services'] as Listed[])[0]).toMatchObject({
-      host: 'checked.old-paid.dev', status: 'paid', calls: 0, buyers: 0, volume: '0', checkedAt: expect.any(String),
+    // What each answer says: the check's `listed` (none: never checked), the list's row and the page
+    const cases = [
+      { host: 'only.agree.dev', listed: true, status: 'checked', paidEndpoints: 1, priceFrom: '0.0011', paths: ['/v1/x'] },
+      { host: 'today.agree.dev', listed: true, status: 'paid', paidEndpoints: 1, priceFrom: '0.0011', paths: ['/v1/x'] },
+      { host: 'checked.old-paid.dev', listed: true, status: 'paid', paidEndpoints: 1, priceFrom: '0.0011', paths: ['/v1/x'] },
+      { host: 'unchecked.old-paid.dev', listed: undefined, status: 'paid', paidEndpoints: 1, priceFrom: '0.0011', paths: ['/v1/x'] },
+      { host: 'both.agree.dev', listed: true, status: 'paid', paidEndpoints: 2, priceFrom: '0.0011', paths: ['/v1/paid', '/v1/checked'] },
+      { host: 'capped.agree.dev', listed: false, status: 'paid', paidEndpoints: 1_000, priceFrom: '0.001', paths: 100 },
+      { host: 'idle.agree.dev', listed: true, status: 'paid', paidEndpoints: 2, priceFrom: '0.0005', paths: ['/v1/called', '/v1/idle'] },
+    ] as const;
+    for (const expected of cases) {
+      const { host } = expected;
+      const row = await listedRow(host);
+      const page = await get(`/v1/services/${host}`);
+      const endpoints = (page.body['endpoints'] ?? []) as { path: string; priceNow: string | null; calls: number }[];
+      const lowest = endpoints.map(endpoint => endpoint.priceNow).filter(price => price !== null).sort((a, b) => Number(a) - Number(b))[0];
+
+      // Listed, and found
+      expect([row?.host, page.status], host).toEqual([host, 200]);
+      // The list and the page say the same: its kind, its listed endpoints each once, and the lowest price among them
+      expect({ status: page.body['status'], paidEndpoints: page.body['paidEndpoints'], priceFrom: lowest }, host).toEqual({
+        status: row?.status, paidEndpoints: row?.['paidEndpoints'], priceFrom: row?.['priceFrom'],
+      });
+      expect({ listed: checks[host]?.listed, status: row?.status, paidEndpoints: row?.['paidEndpoints'], priceFrom: row?.['priceFrom'] }, host).toEqual({
+        listed: expected.listed, status: expected.status, paidEndpoints: expected.paidEndpoints, priceFrom: expected.priceFrom,
+      });
+      if (typeof expected.paths === 'number')
+        expect(endpoints, host).toHaveLength(expected.paths);
+      else
+        expect(endpoints.map(endpoint => endpoint.path), host).toEqual(expected.paths);
+      // What a check listed is on the page, and what it couldn't list is not
+      const check = checks[host];
+      if (check)
+        expect(endpoints.some(endpoint => endpoint.path === check.path), host).toBe(check.listed);
+    }
+    // An endpoint with no call in 30 days is on its page with its pay link and no numbers
+    expect(((await get('/v1/services/idle.agree.dev')).body['endpoints'] as Record<string, unknown>[])[1]).toEqual({
+      path: '/v1/idle', method: null, priceNow: '0.0005', calls: 0, buyers: 0, volume: '0', successRate: null, p50Ms: null,
+      link: 'https://pay.anyfare.test/idle.agree.dev/v1/idle', status: 'paid', checkedAt: null,
     });
-    expect(await pageOf('checked.old-paid.dev')).toEqual([200, 'paid']);
-    // No paid call in 30 days and no check since: not in the list, as before checks; its page still answers
-    expect(await listedAs('unchecked.old-paid.dev')).toBeUndefined();
-    expect(await pageOf('unchecked.old-paid.dev')).toEqual([200, 'paid']);
   });
 
   it('hold each endpoint once on a page: a checked endpoint a paid call reached without becoming paid shows as paid, counted once', async () => {
@@ -390,6 +487,14 @@ describe('a host on the blocklist', () => {
     expect((await get('/v1/services')).body['totals']).toEqual({
       services: before['services']! - 4, paidServices: before['paidServices']! - 1, paidEndpoints: before['paidEndpoints']! - 4, calls30d: 10,
     });
+    // Nor does an endpoint's numbers show it, nor the top lists
+    for (const [host, path] of [['beta.example.org', '/v1/b'], ['b.a.evil-parent.net', '/v1/x']])
+      expect(await get(`/v1/endpoints/stats?host=${host}&path=${path}`), host).toMatchObject({ status: 404, body: { error: { code: 'not_found' } } });
+    expect((await get('/v1/endpoints/stats?host=alpha.example.com&path=/v1/paid')).status).toBe(200);
+    const top = (await get('/v1/stats/top?period=30d')).body;
+    expect([top['services'], top['endpoints']]).toEqual([
+      [{ host: 'alpha.example.com', calls: 10 }], [{ host: 'alpha.example.com', path: '/v1/paid', calls: 10 }],
+    ]);
     for (const host of ['blocked.example.net', 'beta.example.org', 'evil-parent.net'])
       await routing.unblock(host);
   });

@@ -9,8 +9,8 @@ const time = { type: 'string', format: 'date-time' } as const;
 const day = { type: 'string', format: 'date' } as const;
 const nullable = <TType extends string>(type: TType) => ({ type: [type, 'null'] }) as const;
 const nullableTime = { type: ['string', 'null'], format: 'date-time' } as const;
-const object = <TProperties extends Record<string, unknown>>(properties: TProperties) => ({
-  type: 'object', properties, required: Object.keys(properties), additionalProperties: false,
+const object = <TProperties extends Record<string, unknown>>(properties: TProperties, description?: string) => ({
+  type: 'object', properties, required: Object.keys(properties), additionalProperties: false, ...description === undefined ? {} : { description },
 }) as const;
 const list = <TItems>(items: TItems) => ({ type: 'array', items }) as const;
 const byPeriod = <TValue>(value: TValue) => object({ today: value, '7d': value, '30d': value, all: value });
@@ -108,10 +108,14 @@ export const servicesSchema = object({
   page: integer,
   size: integer,
   total: integer,
-  // More services had a paid call in 30 days than the list keeps: a search may miss some
+  // More services had a paid call in 30 days than the count keeps numbers of: a search may miss some
   totalCapped: { type: 'boolean' },
-  // `services`: every listed one; `paidServices`: those a paid call reached in 30 days
-  totals: object({ services: integer, paidServices: integer, paidEndpoints: integer, calls30d: integer }),
+  totals: object({
+    services: { ...integer, description: 'The services the list shows, paid or checked, each once' },
+    paidServices: { ...integer, description: 'The paid services the list shows, each once: those with an endpoint a paid call reached, whenever it did' },
+    paidEndpoints: { ...integer, description: 'The listed endpoints of the services the list shows, of paid calls and of checks, each once' },
+    calls30d: { ...integer, description: 'The paid calls of the last 30 days the count counted, to every service, without those of the counted ones the blocklist names' },
+  }, 'Over every service the list shows, whatever the search and the page'),
   updatedAt: nullableTime,
 });
 

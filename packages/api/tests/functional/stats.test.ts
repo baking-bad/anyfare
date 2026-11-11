@@ -200,9 +200,10 @@ describe('the stored public numbers', () => {
     const answer = await get('/v1/services');
     // A newly checked host shows within a minute: 5 s in the process, 55 in a cache in front
     expect(answer.headers.get('cache-control')).toBe('public, max-age=55');
-    // Five services had a paid call in 30 days and four are kept: a search may miss one
+    // Five services had a paid call in 30 days and four are kept: a search may miss one. The totals count what the
+    // list shows, each service once, and the calls of all five.
     expect(answer.body).toMatchObject({
-      page: 1, size: 20, total: 4, totalCapped: true, totals: { services: 5, paidServices: 5, paidEndpoints: 7, calls30d: 11 }, updatedAt: marked.toISOString(),
+      page: 1, size: 20, total: 4, totalCapped: true, totals: { services: 4, paidServices: 4, paidEndpoints: 6, calls30d: 11 }, updatedAt: marked.toISOString(),
     });
     expect((answer.body?.['services'] as unknown[])[0]).toEqual({
       host: 'one.example.com', status: 'paid', paidEndpoints: 1, priceFrom: '0.01', currency: 'USD', calls: 4, buyers: 1, volume: '0.04', successRate: 1, p50Ms: 100,

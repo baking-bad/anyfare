@@ -82,16 +82,24 @@ describe('routed endpoints and the blocklist on the internal API', () => {
     expect((await call('PUT', '/internal/v1/routed-endpoints', { host: 'a.example.com', path: '/v1', extra: 1 })).status).toBe(400);
   });
 
-  it('lists a check\'s endpoint as checked, with its method, unaudited; a second check updates its time, and a host only a counted check adds', async () => {
+  it('lists a check\'s endpoint as checked, with its method, unaudited; a second check updates its time, and a host of the pool only a counted check lists', async () => {
     clock.set(checkedNoon);
     const first = await call('PUT', '/internal/v1/routed-endpoints', { host: 'checked.example.com', path: '/v1/found', quote: '0.0011', kind: 'checked', method: 'POST', mayAddHost: true });
     clock.advance(60_000);
-    const again = await call('PUT', '/internal/v1/routed-endpoints', { host: 'checked.example.com', path: '/v1/found', quote: '0.0012', kind: 'checked', method: 'GET' });
+    const again = await call('PUT', '/internal/v1/routed-endpoints', {
+      host: 'checked.example.com', path: '/v1/found', quote: '0.0012', kind: 'checked', method: 'GET', mayAddHost: true,
+    });
     const uncounted = await call('PUT', '/internal/v1/routed-endpoints', { host: 'uncounted.example.com', path: '/v1/x', quote: '0.0011', kind: 'checked', method: 'GET' });
+    // In the pool already, its refresh is counted too
+    const refreshed = await call('PUT', '/internal/v1/routed-endpoints', { host: 'checked.example.com', path: '/v1/found', quote: '0.0013', kind: 'checked', method: 'GET' });
+    // A name of more than 8 labels is checked, never listed
+    const long = await call('PUT', '/internal/v1/routed-endpoints', { host: 'a.b.c.d.e.f.g.h.example.com', path: '/v1/x', kind: 'checked', method: 'GET', mayAddHost: true });
 
     expect(first).toEqual({ status: 201, body: { host: 'checked.example.com', path: '/v1/found', result: 'created' } });
     expect(again).toEqual({ status: 200, body: { host: 'checked.example.com', path: '/v1/found', result: 'exists' } });
     expect(uncounted).toEqual({ status: 200, body: { host: 'uncounted.example.com', path: '/v1/x', result: 'limited' } });
+    expect(refreshed).toEqual({ status: 200, body: { host: 'checked.example.com', path: '/v1/found', result: 'limited' } });
+    expect(long).toEqual({ status: 200, body: { host: 'a.b.c.d.e.f.g.h.example.com', path: '/v1/x', result: 'capped' } });
     expect(await database.db.select().from(routedEndpoints).where(eq(routedEndpoints.host, 'checked.example.com'))).toEqual([{
       host: 'checked.example.com', path: '/v1/found', feeBps: null, lastPrice: 1_200n, createdAt: new Date(checkedNoon), status: 'checked',
       checkedAt: new Date(Date.parse(checkedNoon) + 60_000), checkMethod: 'GET',

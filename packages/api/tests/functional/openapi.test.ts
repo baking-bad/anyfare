@@ -160,7 +160,8 @@ describe('the document\'s routes', () => {
     const documented = operations(document).map(({ method, path }) => `${method} ${path}`);
 
     expect(documented.sort()).toEqual([...new Set(expected)].sort());
-    expect(registered.filter(route => route.schema?.hide).map(route => `${route.methods.join(',')} ${route.url}`)).toEqual(['GET /_/ready']);
+    // Readiness, and the host's own robots.txt
+    expect(registered.filter(route => route.schema?.hide).map(route => `${route.methods.join(',')} ${route.url}`).sort()).toEqual(['GET /_/ready', 'GET /robots.txt']);
     expect(registered.filter(route => route.methods.includes('OPTIONS')).every(route => route.methods.includes('GET'))).toBe(true);
     // Exactly these: a route registered on the public listener by mistake fails here
     expect(documented.sort()).toEqual([

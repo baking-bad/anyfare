@@ -26,6 +26,7 @@ import { registerInternalRoutes } from './internal/routes.js';
 import { registerKeyRoutes } from './keys/routes.js';
 import { createPaymentKeyService } from './keys/service.js';
 import { registerLedgerRoutes } from './ledger/routes.js';
+import { createBlocklistCache } from './public/blocklist.js';
 import { registerOpenApiRoute } from './public/openapi.js';
 import { registerStatsRoutes } from './stats/routes.js';
 import { registerTopupRoutes } from './topups/routes.js';
@@ -63,8 +64,8 @@ export interface ApiDependencies {
   readonly callStreamTimings?: { readonly pollMs?: number; readonly pingMs?: number };
   // The calls a public number read when asked for counts at most. Default: 10,000.
   readonly statsReadCap?: number;
-  // The public numbers' own pool, so no public read holds a connection the other routes need, the internal
-  // ones above all. Default: `postgres`.
+  // The public numbers' and the catalog's own pool, so no public read holds a connection the other routes need, the
+  // internal ones and the paid path's above all. Default: `postgres`.
   readonly statsPostgres?: Postgres;
 }
 
@@ -97,6 +98,8 @@ const acceptEmptyJson = (app: FastifyInstance): void => {
 };
 
 /** The Platform API on api.anyfare.agents.bakingbad.dev. Readiness covers Postgres and Redis. */
+const robotsTxt = 'User-agent: *\nDisallow: /\n';
+
 export const createApp = ({
   config,
   logger,
@@ -159,7 +162,9 @@ export const createApp = ({
   registerLedgerRoutes(app, { db: postgres.db, clock, ids, authenticate });
   // Public documents share one limit per client IP
   const documentsLimit = createIpLimit({ limiter, limit: config.rateLimits.documents, name: 'documents' });
-  registerCatalogRoutes(app, { db: postgres.db, config, limit: documentsLimit, clock });
+  // The public reads of what routing listed, on the public reads' pool, with one read of the blocklist every few seconds
+  const blocklist = createBlocklistCache({ db: statsPostgres.db, clock });
+  registerCatalogRoutes(app, { db: statsPostgres.db, config, limit: documentsLimit, clock, blocklist });
   registerTopupRoutes(app, {
     topups: createTopupService({
       db: postgres.db,
@@ -182,9 +187,13 @@ export const createApp = ({
   registerCallRoutes(app, {
     db: postgres.db, config, limit: publicReadsLimit, clock, logger, ...callStreamTimings === undefined ? {} : { timings: callStreamTimings },
   });
-  registerStatsRoutes(app, { db: statsPostgres.db, config, limit: publicReadsLimit, clock, ...statsReadCap === undefined ? {} : { readCap: statsReadCap } });
+  registerStatsRoutes(app, {
+    db: statsPostgres.db, config, limit: publicReadsLimit, clock, blocklist, ...statsReadCap === undefined ? {} : { readCap: statsReadCap },
+  });
   // Of this listener's routes only, under the documents' limit
   registerOpenApiRoute(app, { config, limit: documentsLimit, logger });
+  // This host keeps crawlers out on its own: none of its answers is a page to index
+  app.get('/robots.txt', { schema: { hide: true } }, async (_request, reply) => reply.type('text/plain; charset=utf-8').send(robotsTxt));
 
   // The internal API on a listener of its own, with the same request IDs, logs, and error envelope
   const internal = createServer({ logger, errorStatuses, requestIds });

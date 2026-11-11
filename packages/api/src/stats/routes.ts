@@ -2,11 +2,10 @@ import { createHash } from 'node:crypto';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest, onRequestHookHandler } from 'fastify';
 
-import { formatUsd, type Clock } from '@anyfare/common';
+import type { Clock } from '@anyfare/common';
 import {
-  buildEndpointAnswer, buildLiveAnswer, buildServicePage, checkedEndpointEntry, composePlatformAnswer, createPaidWith, emptyTopAnswer, endpointDailyDays,
-  endpointListEntry, endpointNumbersOf, endpointsPerService, lastUtcDays, maxEndpointReadPathLength, minuteStart, periodBefore, periodStart, statsDailyDays,
-  storedPathBytesPerService, type EndpointAnswer, type EndpointListEntry, type ListedEndpointEntry, type ListedStatus, type LiveAnswer, type PlatformConfig,
+  buildEndpointAnswer, buildLiveAnswer, buildServicePage, composePlatformAnswer, createPaidWith, emptyTopAnswer, endpointDailyDays, endpointListEntry,
+  endpointNumbersOf, lastUtcDays, maxEndpointReadPathLength, minuteStart, periodBefore, periodStart, type EndpointAnswer, type LiveAnswer, type PlatformConfig,
   type ServiceAnswer, type StatsPeriod,
 } from '@anyfare/core';
 import {
@@ -15,8 +14,10 @@ import {
 
 import { errorSchema } from '../calls/schemas.js';
 import { NotFoundError, StatsUnavailableError } from '../errors.js';
+import { createBlocklistCache, type BlocklistCache } from '../public/blocklist.js';
 import { publicCors, publicReadMethods } from '../public/cors.js';
-import { createKeyedCache, createLiveCache } from './live.js';
+import { createShownServices, isUnlisted, listedPage, servicesPage, topWithoutBlocked } from './listed.js';
+import { createKeyedCache, createLiveCache, createSnapshotCache } from './live.js';
 import {
   endpointQuerySchema, endpointSchema, liveSchema, noQuerySchema, periodQuerySchema, platformSchema, serviceParamsSchema, serviceSchema, servicesQuerySchema,
   servicesSchema, topSchema,
@@ -30,6 +31,8 @@ export interface StatsRoutesOptions {
   readonly clock: Clock;
   // The calls a read when asked for counts at most. Default: 10,000.
   readonly readCap?: number;
+  // The blocklist as the public reads match it. Default: one read from `db`.
+  readonly blocklist?: BlocklistCache;
 }
 
 // The workers count again every few minutes: a minute in a cache adds little to that
@@ -51,15 +54,14 @@ const listingCacheBytes = 1024 * 1024;
 const listingCacheEntryBytes = 64 * 1024;
 const listingReadsAtOnce = 4;
 const listedCache = 'public, max-age=3';
-// The list of services, by its normalized query, kept 5 s in the process and 55 s in a cache in front: a newly
-// checked host shows within a minute. A page of 100 services is about 60 KB.
+// Every service the list may show, read in one statement giving up after 2 s, kept 5 s in the process, and each page
+// of it 55 s in a cache in front: a newly checked host shows within a minute. Each page is sorted and searched in
+// the process, from at most stats.maxServices stored services, as many paid ones not stored, and the pool's 1,000.
 export const servicesCacheMs = 5_000;
-const servicesCacheBytes = 2 * 1024 * 1024;
-const servicesCacheEntryBytes = 256 * 1024;
-const servicesReadsAtOnce = 4;
 const servicesCache = 'public, max-age=55';
+// Every public read of the listed services, their pages and what checks listed gives up after this
+export const publicReadTimeoutMs = 2_000;
 const unlisted = 'No paid call or payable check has listed this host';
-type ServicesAnswer = Record<string, unknown>;
 
 // The live numbers' read of the calls since the frequent count gives up after this
 const liveReadTimeoutMs = 2_000;
@@ -77,6 +79,7 @@ const readErrors = ['rate_limited', 'stats_unavailable'] as const;
 const lowercase = (host: string): string => host.toLowerCase();
 const iso = (time: Date | undefined): string | null => time?.toISOString() ?? null;
 const md5 = (text: string): string => createHash('md5').update(text).digest('hex');
+const unlistedHost = 'This host isn\'t listed';
 const later = (a: Date, b: Date | undefined): Date => (b !== undefined && b.getTime() > a.getTime() ? b : a);
 const earliest = (times: readonly Date[]): Date => new Date(Math.min(...times.map(time => time.getTime())));
 const kindOf = (period: StatsPeriod) => (period === 'all' ? 'all' : 'recent') as 'all' | 'recent';
@@ -109,11 +112,14 @@ const bounded = async <TValue>(read: () => Promise<TValue>): Promise<TValue> => 
  * Each reads what the workers' counts wrote, in one statement. A host or an endpoint they keep no row
  * for is read from its calls when asked for, bounded, and says whether its numbers are exact. The live
  * numbers add the calls since the last count, at most once per process every 10 seconds. None names a
- * Credits buyer. The services and a service's page add what payable checks listed, read when asked for by
- * the routed endpoints' and the checked hosts' indexes, with no numbers of their own, and leave out a host
- * on the blocklist.
+ * Credits buyer. The services and a service's page add the paid hosts the count doesn't store and what payable
+ * checks listed, read when asked for by the routed endpoints', the paid and the checked hosts' indexes, with no
+ * numbers of their own. None of them, nor the top lists or an endpoint's numbers, shows a host the blocklist names
+ * or names a parent domain of.
  */
-export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, clock, readCap = askedReadCap }: StatsRoutesOptions): void => {
+export const registerStatsRoutes = (app: FastifyInstance, {
+  db, config, limit, clock, readCap = askedReadCap, blocklist = createBlocklistCache({ db, clock }),
+}: StatsRoutesOptions): void => {
   const store = createStatsRepository({ db });
   const counter = createStatsCounter({ db, ways: createPaidWith(config).ways });
   const payUrl = config.urls.pay;
@@ -139,78 +145,21 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
   const endpoints = createKeyedCache<{ readonly answer: EndpointAnswer; readonly at: Date }>({
     clock, ttlMs: askedCacheMs, maxBytes: askedCacheBytes / 2, maxEntryBytes: askedCacheEntryBytes, maxReading: askedReadsAtOnce, sizeOf,
   });
-  const lists = createKeyedCache<ServicesAnswer>({
-    clock, ttlMs: servicesCacheMs, maxBytes: servicesCacheBytes, maxEntryBytes: servicesCacheEntryBytes, maxReading: servicesReadsAtOnce, sizeOf,
+  const maxPaid = config.stats.maxServices;
+  const shown = createSnapshotCache({
+    clock,
+    ttlMs: servicesCacheMs,
+    read: async () => {
+      const isBlocked = await blocklist.get();
+
+      return createShownServices(await store.listedServices({ maxPaid, timeoutMs: publicReadTimeoutMs }), isBlocked);
+    },
   });
   const listings = createKeyedCache<HostListing>({
     clock, ttlMs: listingCacheMs, maxBytes: listingCacheBytes, maxEntryBytes: listingCacheEntryBytes, maxReading: listingReadsAtOnce,
     sizeOf: listing => sizeOf({ ...listing, checkedTimes: [...listing.checkedTimes] }),
   });
   const read = { method: [...publicReadMethods], onRequest: [publicCors, noStore, limit] };
-
-  /**
-   * A service page's listed parts: its paid endpoints with when a check last confirmed each, then those listed
-   * only by a check, within the bounds of a stored service's endpoints: 100, and 24 KB of path text.
-   */
-  const listedPage = (host: string, paidEndpoints: number, paid: readonly EndpointListEntry[], listing: HostListing, status: ListedStatus) => {
-    const listed: ListedEndpointEntry[] = paid.map(entry => ({ ...entry, status: 'paid', checkedAt: iso(listing.checkedTimes.get(entry.path)) }));
-    let chars = listed.reduce((sum, entry) => sum + entry.path.length, 0);
-    for (const row of listing.checked) {
-      if (listed.length >= endpointsPerService)
-        break;
-      if (chars + row.path.length > storedPathBytesPerService)
-        continue;
-      chars += row.path.length;
-      listed.push(checkedEndpointEntry({ host, path: row.path, method: row.method, price: row.price, checkedAt: row.checkedAt, payUrl }));
-    }
-
-    return { status, listedAt: iso(listing.listedAt), checkedAt: iso(listing.checkedAt), paidEndpoints: paidEndpoints + listing.checkedCount, endpoints: listed };
-  };
-
-  /** A page of the listed services, of both kinds, with the totals. */
-  const listServices = async (q: string | undefined, sort: ServicesSort, page: number, size: number): Promise<ServicesAnswer> => {
-    const found = await store.services({ ...q === undefined ? {} : { q }, sort, offset: (page - 1) * size, limit: size });
-    const counted = found.totals?.answer ?? { services: 0, paidEndpoints: 0, calls30d: 0 };
-    const { listed } = found;
-    // The count's totals, without the stored services on the blocklist, and with what was listed since
-    const paidServices = Math.max(0, counted.services - listed.blocked.services) + listed.paidNotStored;
-    const totals = {
-      services: paidServices + listed.checked,
-      paidServices,
-      paidEndpoints: Math.max(0, counted.paidEndpoints - listed.blocked.paidEndpoints) + listed.addedEndpoints,
-      calls30d: Math.max(0, counted.calls30d - listed.blocked.calls),
-    };
-    // The oldest time of what the page shows: a service not stored is read now
-    const times = [
-      ...found.totals ? [found.totals.countedAt] : [],
-      ...found.rows.flatMap(row => (row.countedAt === undefined ? [] : [verified(row.countedAt, '30d', found.marks)])),
-    ];
-    const noTrend = lastUtcDays(clock.now(), statsDailyDays).map(() => 0);
-
-    return {
-      services: found.rows.map(row => ({
-        host: row.host,
-        status: row.status,
-        paidEndpoints: row.paidEndpoints,
-        priceFrom: row.priceFrom === undefined ? null : formatUsd(row.priceFrom),
-        currency: 'USD',
-        calls: row.calls,
-        buyers: row.buyers,
-        volume: formatUsd(row.volume),
-        successRate: row.successRate,
-        p50Ms: row.p50Ms,
-        trend: row.countedAt === undefined ? noTrend : row.trend,
-        listedAt: iso(row.listedAt),
-        checkedAt: iso(row.checkedAt),
-      })),
-      page,
-      size,
-      total: found.total,
-      totalCapped: counted.services > found.stored,
-      totals,
-      updatedAt: times.length === 0 ? null : earliest(times).toISOString(),
-    };
-  };
 
   /** A service with no page of its own: its newest calls, up to the cap, from what the page needs. Undefined: no paid call, ever. */
   const askService = async (host: string, period: StatsPeriod, now: Date): Promise<ServiceAnswer | undefined> => {
@@ -309,9 +258,10 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
     handler: async (request, reply) => {
       const { period } = request.query;
       const stored = await bounded(() => store.top(period));
+      const isBlocked = await bounded(() => blocklist.get());
       reply.header('cache-control', countedCache);
 
-      return { period, updatedAt: iso(stored?.countedAt), ...stored?.answer ?? emptyTopAnswer };
+      return { period, updatedAt: iso(stored?.countedAt), ...topWithoutBlocked(stored?.answer ?? emptyTopAnswer, isBlocked) };
     },
   });
 
@@ -320,7 +270,8 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
     url: '/v1/services',
     schema: {
       summary: 'The listed services, a page at a time, with their numbers over 30 days and the totals',
-      description: 'No key. Limited per address. A service is listed once a paid call reached it or a payable check found it.',
+      description: 'No key. Limited per address. A service is listed once a paid call reached it or a payable check found it. A paid one the count '
+        + 'keeps no numbers of shows with none, the most recently registered first. The totals count what the list shows, each service once.',
       tags: ['stats'],
       errors: readErrors,
       querystring: servicesQuerySchema,
@@ -330,10 +281,10 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
       const { sort, page, size } = request.query;
       // An empty search is none, and a search is without case
       const q = request.query.q === '' || request.query.q === undefined ? undefined : request.query.q.toLowerCase();
-      const answer = await bounded(() => lists.get(JSON.stringify([q ?? '', sort, page, size]), () => listServices(q, sort, page, size)));
+      const services = await bounded(() => shown.get());
       reply.header('cache-control', servicesCache);
 
-      return answer;
+      return servicesPage({ services, q, sort, page, size, now: clock.now() });
     },
   });
 
@@ -346,7 +297,8 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
     url: '/v1/services/*',
     schema: {
       summary: 'A service\'s page: its numbers over a period, and its endpoints',
-      description: 'No key. Limited per address. A host no paid call or payable check has listed answers 404.',
+      description: 'No key. Limited per address. A host the list doesn\'t show answers 404: no paid call or payable check listed it, or the blocklist '
+        + 'names it or a parent domain of it. Its endpoints are every listed one, paid first by calls, then those only a check listed, at most 100.',
       tags: ['stats'],
       errors: [...readErrors, 'not_found'],
       wildcard: 'host',
@@ -357,16 +309,16 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
     handler: async (request, reply) => {
       const host = lowercase(request.params['*']);
       const { period } = request.query;
-      const stored = await bounded(() => store.servicePage(host, period));
+      const stored = await bounded(() => store.servicePage(host, period, { timeoutMs: publicReadTimeoutMs, maxPaid }));
       const numbersOf = (row: StoredEndpointRow) => (period === 'all' ? row.all : row.recent[period]);
       if (stored) {
-        if (stored.listing.blocked)
+        if (isUnlisted(stored.listing, true, true))
           throw new NotFoundError(unlisted);
         const times = [
           verified(stored.page.countedAt, period, stored.marks),
           ...stored.endpoints.map(row => verified(period === 'all' ? row.allCountedAt ?? row.countedAt : row.countedAt, period, stored.marks)),
         ];
-        const entries = stored.endpoints.flatMap(row => {
+        const ranked = stored.endpoints.flatMap(row => {
           const numbers = numbersOf(row);
 
           return numbers === undefined ? [] : [endpointListEntry({ host, path: row.path, method: row.method, price: row.price, numbers, payUrl })];
@@ -374,13 +326,18 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
         reply.header('cache-control', listedCache);
 
         return {
-          ...stored.page.answer, ...listedPage(host, stored.page.answer.paidEndpoints, entries, stored.listing, 'paid'), exact: true, updatedAt: earliest(times).toISOString(),
+          ...stored.page.answer,
+          ...listedPage({ host, payUrl, ranked, countedEndpoints: stored.page.answer.paidEndpoints, listing: stored.listing, status: 'paid' }),
+          exact: true,
+          updatedAt: earliest(times).toISOString(),
         };
       }
 
       const now = clock.now();
       const ask = (key: string) => bounded(() => services.get(key, async () => ({ answer: await askService(host, period, now), at: now })));
-      const listingOf = (paths: readonly string[]) => bounded(() => listings.get(`${host} ${md5(paths.join('\n'))}`, () => store.hostListing(host, paths)));
+      const listingOf = (paths: readonly string[]) => bounded(() => listings.get(
+        `${host} ${md5(paths.join('\n'))}`, () => store.hostListing(host, paths, { timeoutMs: publicReadTimeoutMs, maxPaid }),
+      ));
       let asked = await ask(`${host} ${period}`);
       let listing = await listingOf(asked.answer?.endpoints.map(endpoint => endpoint.path) ?? []);
       // A paid call reached a checked host since it was asked: asked again, under a key of its own
@@ -389,18 +346,23 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
         if (asked.answer)
           listing = await listingOf(asked.answer.endpoints.map(endpoint => endpoint.path));
       }
-      if (listing.blocked || (!asked.answer && !listing.paid && listing.checkedCount === 0))
+      if (isUnlisted(listing, false, asked.answer !== undefined))
         throw new NotFoundError(unlisted);
       reply.header('cache-control', listedCache);
       if (asked.answer) {
         const { answer } = asked;
 
-        return { ...answer, ...listedPage(host, answer.paidEndpoints, answer.endpoints, listing, 'paid'), updatedAt: asked.at.toISOString() };
+        return {
+          ...answer, ...listedPage({ host, payUrl, ranked: answer.endpoints, countedEndpoints: answer.paidEndpoints, listing, status: 'paid' }), updatedAt: asked.at.toISOString(),
+        };
       }
       // Listed by checks, or reached by a paid call not finished yet: no numbers
       const empty = buildServicePage({ host, period, counts: undefined, callsBefore: period === 'all' ? undefined : 0, daily: [], now });
 
-      return { ...empty, ...listedPage(host, 0, [], listing, listing.paid ? 'paid' : 'checked'), exact: true, updatedAt: now.toISOString() };
+      return {
+        ...empty, ...listedPage({ host, payUrl, ranked: [], countedEndpoints: 0, listing, status: listing.paid ? 'paid' : 'checked' }), exact: true,
+        updatedAt: now.toISOString(),
+      };
     },
   });
 
@@ -409,15 +371,18 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
     url: '/v1/endpoints/stats',
     schema: {
       summary: 'An endpoint\'s numbers over a period, and its calls of the last 14 days',
+      description: 'No key. Limited per address. A host the blocklist names, or names a parent domain of, answers 404.',
       tags: ['stats'],
-      errors: readErrors,
+      errors: [...readErrors, 'not_found'],
       querystring: endpointQuerySchema,
-      response: { 200: endpointSchema, ...errors },
+      response: { 200: endpointSchema, ...serviceErrors },
     },
     handler: async (request, reply) => {
       const { path, period } = request.query;
       const host = lowercase(request.query.host);
-      const stored = await bounded(() => store.endpoint(host, path));
+      if ((await bounded(() => blocklist.get()))(host))
+        throw new NotFoundError(unlistedHost);
+      const stored = await bounded(() => store.endpoint(host, path, { timeoutMs: publicReadTimeoutMs }));
       const numbers = stored === undefined ? undefined : period === 'all' ? stored.row.all : stored.row.recent[period];
       if (stored && numbers) {
         const countedAt = period === 'all' ? stored.row.allCountedAt ?? stored.row.countedAt : stored.row.countedAt;

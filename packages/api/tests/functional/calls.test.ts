@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createLogger, Secret } from '@anyfare/common';
 import { hashApiKey, loadPlatformConfig, type PaymentStatus, type PlatformConfig, type RailName } from '@anyfare/core';
-import { createAccountRepository, createCallRepository, createPaymentKeyRepository, payments, targetPayments } from '@anyfare/db';
+import { createAccountRepository, createCallRepository, createPaymentKeyRepository, payments, targetPayments, type DatabaseExecutor } from '@anyfare/db';
 import { createFakeClock, createTestDatabase, createTestRedis, type FakeClock, type TestDatabase, type TestRedis } from '@anyfare/testing';
 
 import { createApp, type ApiServer } from '../../src/app.js';
@@ -52,12 +52,25 @@ interface Seed {
   readonly signed?: boolean;
 }
 
-/** A finished call as the proxy and the rails write it: its payment, our payment of the API, and its details. */
+/**
+ * A finished call as the proxy and the rails write it: its payment, our payment of the API, and its details. The
+ * proxy writes the details and our payment before the buyer's payment is final, so a read sees the call whole or not
+ * at all: here, in one transaction, so a stream's poll never finds the payment without the rest.
+ */
 const seed = async (row: Seed, details?: { readonly method: string; readonly payer?: string }): Promise<{ readonly createdAt: Date; readonly updatedAt: Date }> => {
   const createdAt = next();
   const updatedAt = new Date(createdAt.getTime() + 800);
   const chain = row.rail !== 'credits';
-  await database.db.insert(payments).values({
+  await database.db.transaction(tx => write(tx, row, details, { createdAt, updatedAt, chain }));
+
+  return { createdAt, updatedAt };
+};
+
+const write = async (
+  tx: DatabaseExecutor, row: Seed, details: { readonly method: string; readonly payer?: string } | undefined,
+  { createdAt, updatedAt, chain }: { readonly createdAt: Date; readonly updatedAt: Date; readonly chain: boolean },
+): Promise<void> => {
+  await tx.insert(payments).values({
     id: row.id, requestId: row.requestId ?? `req-${row.id}`, rail: row.rail, buyerAccountId: row.buyer?.accountId ?? null, keyId: row.buyer?.keyId ?? null,
     targetHost: row.host, targetPath: row.path ?? '/v1/pools', network: chain ? row.network ?? base : null, asset: chain ? 'base-usdc' : null,
     atomicAmount: chain ? 10_000n : null, amount: 10_000n, fee: row.status === 'settled' || row.status === 'captured' ? 0n : null, upstreamStatus: 200,
@@ -65,16 +78,14 @@ const seed = async (row: Seed, details?: { readonly method: string; readonly pay
     settlementRequest: row.settlementRequest ?? null, needsReview: false, createdAt, updatedAt,
   });
   if (row.signed !== false) {
-    await database.db.insert(targetPayments).values({
+    await tx.insert(targetPayments).values({
       paymentId: row.id, protocol: 'x402', network: base, asset: 'base-usdc', amount: 10_000n, atomicAmount: 10_000n, payTo: apiPayTo, signatureId: `sig-${row.id}`,
       status: 'settled', receipt: row.receipt ?? null, transactionHash: evmTransaction, buyerCharged: true, createdAt: new Date(createdAt.getTime() + 100),
       updatedAt,
     });
   }
   if (details)
-    await createCallRepository({ db: database.db }).recordDetails({ paymentId: row.id, method: details.method, payer: details.payer, arrivedAt: new Date(createdAt.getTime() - 50) });
-
-  return { createdAt, updatedAt };
+    await createCallRepository({ db: tx }).recordDetails({ paymentId: row.id, method: details.method, payer: details.payer, arrivedAt: new Date(createdAt.getTime() - 50) });
 };
 
 const buyer = async (accountId: string, keyId: string) => {

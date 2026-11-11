@@ -106,7 +106,8 @@ describe('the seed with services a check listed', () => {
 
     expect(await count('routed_endpoints')).toBe(0);
     expect(await database.db.select().from(checkedHosts)).toEqual([]);
-    expect((await read('/v1/services')).body.services).toEqual([]);
+    // The API keeps the list 5 s
+    await expect.poll(async () => (await read('/v1/services')).body.services, { timeout: 15_000, interval: 500 }).toEqual([]);
   }, slow);
 
   it('--checked-only seeds the checked services and no call', async () => {
@@ -115,14 +116,15 @@ describe('the seed with services a check listed', () => {
     expect(summary).toMatchObject({ calls: 0, accounts: 0, topups: 0, checkedServices: 6 });
     for (const table of ['payments', 'accounts', 'topups', 'ledger_transactions'])
       expect(await count(table), table).toBe(0);
-    // Another query than the first test's: the API keeps each list 5 s
+    // The API keeps the list 5 s
+    await expect.poll(async () => (await read('/v1/services?size=49')).body.services.map((item: { host: string }) => item.host).sort(), { timeout: 15_000, interval: 500 })
+      .toEqual(checkedServices.map(service => service.host).sort());
     const services = (await read('/v1/services?size=49')).body;
-    expect(services.services.map((item: { host: string }) => item.host).sort()).toEqual(checkedServices.map(service => service.host).sort());
     expect(new Set(services.services.map((item: { status: string }) => item.status))).toEqual(new Set(['checked']));
     expect((await read('/v1/calls')).body.total).toBe(0);
     expect((await read('/v1/stats')).body.calls).toEqual({ today: 0, '7d': 0, '30d': 0, all: 0 });
     await emptyLocal({ postgres: database.postgres, config });
-    expect((await read('/v1/services')).body.services).toEqual([]);
+    await expect.poll(async () => (await read('/v1/services')).body.services, { timeout: 15_000, interval: 500 }).toEqual([]);
   }, slow);
 });
 
@@ -149,9 +151,10 @@ describe('--empty', () => {
     expect(stats.calls).toEqual({ today: 1, '7d': 1, '30d': 1, all: 1 });
     // The API keeps the live numbers a few seconds
     await expect.poll(async () => (await read('/v1/stats/live')).body.today, { timeout: 15_000, interval: 500 }).toMatchObject({ calls: 1, buyers: 1 });
-    const services = (await read('/v1/services')).body.services;
-    expect(services).toHaveLength(1);
-    expect(services[0]).toMatchObject({ host: 'dev.example.com', calls: 1, status: 'paid' });
+    // The API keeps the list 5 s
+    await expect.poll(async () => (await read('/v1/services')).body.services, { timeout: 15_000, interval: 500 }).toEqual([
+      expect.objectContaining({ host: 'dev.example.com', calls: 1, status: 'paid' }),
+    ]);
     expect((await read('/v1/calls')).body.total).toBe(1);
   }, slow);
 });

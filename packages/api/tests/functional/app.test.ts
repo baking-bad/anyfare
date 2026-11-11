@@ -96,6 +96,18 @@ describe('health and readiness', () => {
     expect(await response.json()).toEqual({ status: 'ok' });
   });
 
+  it('keeps crawlers off with a robots.txt of its own, as the pay host does, outside its OpenAPI document', async () => {
+    const { url } = await start();
+
+    const robots = await fetch(`${url}/robots.txt`);
+    const document = await (await fetch(`${url}/openapi.json`)).json() as { paths: Record<string, unknown> };
+
+    expect(robots.status).toBe(200);
+    expect(robots.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+    expect(await robots.text()).toBe('User-agent: *\nDisallow: /\n');
+    expect(Object.keys(document.paths)).not.toContain('/robots.txt');
+  });
+
   it('answers /_/ready with 200 when Postgres and Redis are up', async () => {
     const { url } = await start();
 

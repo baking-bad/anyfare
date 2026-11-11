@@ -58,6 +58,39 @@ export const createLiveCache = <TValue>({ read, clock, ttlMs = liveCacheMs, retr
   };
 };
 
+/**
+ * One value read within the last `ttlMs`, else a new read, shared by every caller while it runs. A failed read is
+ * never kept: each caller of it sees its error, and the next caller reads again.
+ */
+export const createSnapshotCache = <TValue>({ read, clock, ttlMs }: {
+  readonly read: () => Promise<TValue>;
+  readonly clock: Clock;
+  readonly ttlMs: number;
+}): { get(): Promise<TValue> } => {
+  let kept: { readonly at: number; readonly value: TValue } | undefined;
+  let reading: Promise<TValue> | undefined;
+
+  return {
+    get: () => {
+      const now = clock.now().getTime();
+      if (kept && now - kept.at < ttlMs)
+        return Promise.resolve(kept.value);
+
+      return reading ??= (async () => {
+        try {
+          const value = await read();
+          kept = { at: now, value };
+
+          return value;
+        }
+        finally {
+          reading = undefined;
+        }
+      })();
+    },
+  };
+};
+
 export interface KeyedCache<TValue> {
   /**
    * The value read for `key` within the last `ttlMs`, else a new read, shared by every caller of the key
