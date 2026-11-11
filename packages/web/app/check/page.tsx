@@ -9,11 +9,11 @@ import { PageView } from '../../src/components/AgentView';
 import { readSettings } from '../../src/config';
 import { CheckForm } from '../../src/check/CheckForm';
 import { CheckEmpty, CheckOwnLink, CheckPayable, CheckRefused, CheckUnavailable } from '../../src/check/CheckView';
-import { checkAddress, checkDescription, defaultMethod, maxFieldLength, parseCheckParams, titleFor, unavailableLine, unavailableTitle } from '../../src/check/content';
+import { checkDescription, checkQuery, defaultMethod, maxFieldLength, parseCheckParams, titleFor, unavailableLine, unavailableTitle } from '../../src/check/content';
 import { checkJson, checkRequests, loadCheckData } from '../../src/check/data';
 import { checkMarkdown } from '../../src/markdown/check';
 import { socialTags } from '../../src/seo/social';
-import { markdownUrl } from '../../src/markdown/negotiate';
+import { twinHref } from '../../src/seo/twin';
 
 type Props = { readonly searchParams: Promise<Readonly<Record<string, string | string[] | undefined>>> };
 
@@ -27,7 +27,7 @@ export const generateMetadata = async ({ searchParams }: Props): Promise<Metadat
     description: checkDescription,
     // A check is for the one who pasted the link: the page is not for a search engine
     robots: { index: false, follow: false },
-    alternates: { canonical: `${siteUrl}/check${method === defaultMethod ? '' : `?method=${method}`}`, types: { 'text/markdown': `${siteUrl}${checkAddress({ url, method, tab: 'overview', period: '30d', page: 1 }, markdownUrl('/check'))}` } },
+    alternates: { canonical: `${siteUrl}/check${method === defaultMethod ? '' : `?method=${method}`}`, types: { 'text/markdown': `${siteUrl}${twinHref('/check', await searchParams)}` } },
     ...socialTags({ siteUrl, title: `${title} | Anyfare`, description: checkDescription }),
   };
 };
@@ -46,7 +46,7 @@ const Check = async ({ searchParams }: Props) => {
   const data = await loadCheckData(payReader(incoming, settings), serverReader(incoming, settings), params, hostOf(settings.payUrl));
   const { state } = data;
   const twin = checkMarkdown(settings, data);
-  const agentUrl = `${settings.siteUrl}${checkAddress({ url: params.url, method: params.method, tab: 'overview', period: '30d', page: 1 }, markdownUrl('/check'))}`;
+  const agentUrl = `${settings.siteUrl}${twinHref('/check', checkQuery(params))}`;
 
   return (
     <PageView
@@ -56,6 +56,8 @@ const Check = async ({ searchParams }: Props) => {
         json: checkJson(data),
         requests: checkRequests(settings, data),
         markdownUrl: agentUrl,
+        source: { kind: 'check', state },
+        readAt: Date.now(),
       }}
     >
       <section className="band">

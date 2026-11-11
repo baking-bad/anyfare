@@ -186,6 +186,16 @@ describe('the curl examples', () => {
   });
 });
 
+describe('the OpenAPI answers of the two hosts', () => {
+  const serversOf = (id: string): unknown => (endpoints.find(endpoint => endpoint.id === id)!.answer.json as { servers: { url: string }[] }).servers[0]!.url;
+
+  it('name their own host under servers: the pay host\'s file shows the pay host, not the API host', () => {
+    expect(serversOf('openapi-pay')).toBe('<pay host>');
+    expect(serversOf('openapi-api')).toBe('<API host>');
+    expect(files['llms-full.txt']).toContain(`"url": "${settings.payUrl}"`);
+  });
+});
+
 describe('the answers the text prints', () => {
   const printed = printedAnswers(files['llms-full.txt']);
   const examples = curlExamples(settings);

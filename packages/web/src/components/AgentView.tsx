@@ -1,11 +1,17 @@
 'use client';
 
-import { Fragment, type ReactNode } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 
+import { createReader } from '../api/reader';
+import { deriveAgent, twinKeyOf, type AgentSource } from './agentSource';
+import { Button } from './Button';
 import { CodeBlock } from './CodeBlock';
 import { CopyButton } from './CopyButton';
 import { Icon } from './Icon';
 import { highlightJson, jsonText } from './Json';
+import { useSettings } from './Settings';
+import { Skeleton } from './Skeleton';
 import { Tabs } from './Tabs';
 import { useView } from './view';
 
@@ -28,7 +34,16 @@ export interface AgentRequest {
  * - `markdown`: the page as Markdown.
  * - `json`: the page's data, any JSON value.
  * - `requests`: the requests behind the page. They are listed above the tabs, with a copy button each.
- * - `markdownUrl`: the full URL of the page's Markdown twin. It is listed first among the requests.
+ * - `markdownUrl`: the full URL of the page's Markdown twin, with the query of the page as the server read it.
+ *   It is listed first among the requests.
+ * - `source`: which page this is, for a page whose data follows its address (see agentSource.ts). Omitted for
+ *   a page that doesn't change with its query.
+ * - `readAt`: when the server read the data, in milliseconds. The view says when it was read.
+ *
+ * When the address changes in the browser (a filter, a page, a period or a sort), the Agent view reads the
+ * page's Markdown again from the site's own twin URL, and reads the data again from the public API to
+ * rebuild the JSON and the requests with the builders the server uses. While it reads it shows a loading
+ * state, and a failed read shows an error state; it never shows the data of another address.
  */
 export interface AgentViewProps {
   readonly title: string;
@@ -36,6 +51,8 @@ export interface AgentViewProps {
   readonly json: unknown;
   readonly requests: readonly AgentRequest[];
   readonly markdownUrl: string;
+  readonly source?: AgentSource;
+  readonly readAt?: number;
 }
 
 const methodClass = (method: string): string => ({ GET: 'get', POST: 'post', SSE: 'sse', DELETE: 'del' } as Record<string, string>)[method] ?? '';
@@ -59,15 +76,90 @@ const curlLines = (markdownUrl: string, requests: readonly AgentRequest[]): read
   ];
 };
 
+interface Reading {
+  // The twin's path and query this was read for
+  readonly key: string;
+  readonly markdown: string;
+  readonly json: unknown;
+  readonly requests: readonly AgentRequest[];
+  readonly readAt: number;
+}
+
+const clock = (at: number): string => new Date(at).toISOString().slice(11, 19);
+
 /** The page the way an agent reads it: the requests behind it, then its Markdown, JSON and curl, each with a copy button. */
-export const AgentView = ({ title, markdown, json, requests, markdownUrl }: AgentViewProps) => {
-  const text = jsonText(json);
-  const all: readonly AgentRequest[] = [{ method: 'GET', url: markdownUrl, note: 'This page as Markdown' }, ...requests];
-  const curl = curlLines(markdownUrl, requests);
+export const AgentView = ({ title, markdown, json, requests, markdownUrl, source = { kind: 'static' }, readAt }: AgentViewProps) => {
+  const { apiUrl, payUrl } = useSettings();
+  const params = useSearchParams();
+  const origin = useMemo(() => new URL(markdownUrl).origin, [markdownUrl]);
+  const initialKey = markdownUrl.slice(origin.length);
+  const key = source.kind === 'static' ? initialKey : twinKeyOf(source, initialKey, params);
+  const initial = useMemo<Reading>(() => ({ key: initialKey, markdown, json, requests, readAt: readAt ?? 0 }), [initialKey, markdown, json, requests, readAt]);
+
+  // What was read in the browser, and what failed, each for one address
+  const [read, setRead] = useState<Reading | undefined>(undefined);
+  const [failed, setFailed] = useState<string | undefined>(undefined);
+  const [again, setAgain] = useState(0);
+  const current = read?.key === key ? read : key === initialKey && again === 0 ? initial : undefined;
+  const failedHere = current === undefined && failed === `${key}#${again}`;
+
+  const needsRead = current === undefined && !failedHere;
+  useEffect(() => {
+    if (!needsRead)
+      return undefined;
+    let cancelled = false;
+    const reader = createReader({ apiUrl });
+    const search = new URLSearchParams(window.location.search);
+    void Promise.all([
+      fetch(key, { headers: { accept: 'text/markdown' } }).then(async response => {
+        if (!response.ok && response.status !== 404 && response.status !== 503)
+          throw new Error('The twin did not answer');
+
+        return response.text();
+      }),
+      deriveAgent(source, reader, { apiUrl, payUrl }, search),
+    ]).then(([text, derived]) => {
+      if (cancelled)
+        return;
+      setRead({ key, markdown: text, json: derived?.json ?? json, requests: derived?.requests ?? requests, readAt: Date.now() });
+    }).catch(() => {
+      if (!cancelled)
+        setFailed(`${key}#${again}`);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // `source`, `json` and `requests` are the server's and change only with a new page
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, again, needsRead]);
+
+  const readAgain = useCallback((): void => {
+    setRead(undefined);
+    setFailed(undefined);
+    setAgain(count => count + 1);
+  }, []);
+
+  const loading = needsRead;
+  const shown = current ?? initial;
+  const text = jsonText(shown.json);
+  const all: readonly AgentRequest[] = [{ method: 'GET', url: `${origin}${shown.key}`, note: 'This page as Markdown' }, ...shown.requests];
+  const curl = curlLines(`${origin}${shown.key}`, shown.requests);
+  const placeholder = <div className="stack" role="status" aria-label="Reading the page"><Skeleton shape="block" /><Skeleton shape="block" /></div>;
+  const problem = (
+    <div className="alert danger" role="alert">
+      <Icon name="alert" />
+      <div className="stack">
+        <span className="t">This didn&apos;t load</span>
+        <span>The page couldn&apos;t be read again. What was shown before is for another address, so it is hidden.</span>
+        <div className="mt-8"><Button variant="secondary" size="sm" onClick={readAgain}>Try again</Button></div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="band">
-      <div className="container ruled agent-view">
+      <div className="container ruled agent-view" aria-busy={loading}>
         <div className="stack-lg">
           <div className="stack">
             <span className="eyebrow row"><Icon name="bot" />This page, as an agent reads it</span>
@@ -79,7 +171,7 @@ export const AgentView = ({ title, markdown, json, requests, markdownUrl }: Agen
           <div className="t-wrap">
             <div className="well-title">Ways to read it</div>
             <div className="inner rows">
-              {all.map(request => (
+              {failedHere ? problem : loading ? placeholder : all.map(request => (
                 <div key={`${request.method} ${request.url}`} className="ep">
                   <span><span className={`method ${methodClass(request.method)}`.trim()}>{request.method}</span></span>
                   <span className="ep-url">
@@ -94,12 +186,12 @@ export const AgentView = ({ title, markdown, json, requests, markdownUrl }: Agen
           <Tabs
             label="How an agent reads this page"
             items={[
-              { id: 'markdown', label: 'Markdown', content: <CodeBlock code={markdown} wrap tall /> },
-              { id: 'json', label: 'JSON', content: <CodeBlock code={text} tall>{highlightJson(text)}</CodeBlock> },
+              { id: 'markdown', label: 'Markdown', content: failedHere ? problem : loading ? placeholder : <CodeBlock code={shown.markdown} wrap tall /> },
+              { id: 'json', label: 'JSON', content: failedHere ? problem : loading ? placeholder : <CodeBlock code={text} tall>{highlightJson(text)}</CodeBlock> },
               {
                 id: 'curl',
                 label: 'curl',
-                content: (
+                content: failedHere ? problem : loading ? placeholder : (
                   <CodeBlock code={curl.join('\n\n')} wrap>
                     {curl.map((line, index) => <Fragment key={line}><span className="p">$</span> {line}{index < curl.length - 1 ? '\n\n' : ''}</Fragment>)}
                   </CodeBlock>
@@ -107,7 +199,15 @@ export const AgentView = ({ title, markdown, json, requests, markdownUrl }: Agen
               },
             ]}
           />
-          <p className="small muted">Switch back with <b>Human</b> in the header. The switch is kept in this browser.</p>
+          <div className="row small muted">
+            <span>Switch back with <b>Human</b> in the header. The switch is kept in this browser.</span>
+            {shown.readAt > 0 && !loading && !failedHere ? (
+              <>
+                <span role="status">Read at {clock(shown.readAt)} UTC.</span>
+                {source.kind === 'static' ? null : <Button variant="ghost" size="sm" onClick={readAgain}>Read again</Button>}
+              </>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>

@@ -5,7 +5,7 @@ import { checkAddress, ownPayInner, parseCheckParams } from '../src/check/conten
 import { loadCheck, loadCheckData } from '../src/check/data';
 import { readSettings } from '../src/config';
 import { checkMarkdown } from '../src/markdown/check';
-import { isMissing, maxRechecks, recheckDelayMs, type MissingPage } from '../src/missing/pages';
+import { isMissing, maxRechecks, missingState, recheckIntervalMs, recheckWindowMs, type MissingPage } from '../src/missing/pages';
 
 const payHost = 'pay.example.com';
 
@@ -74,19 +74,23 @@ describe('a service a check has just listed', () => {
   };
   const read = {} as Reader;
 
-  it('waits 1.5 seconds and reads once more, when the first read says not listed and the marker is there', async () => {
-    const { page: service, reads } = page([false, true]);
+  it('reads about once a second for up to 5 seconds, and finds a service listed 3 seconds in', async () => {
+    // Listed from the fourth read on: the first read, then one a second at 1, 2 and 3 seconds
+    const { page: service, reads } = page([false, false, false, true]);
     const pauses: number[] = [];
-    expect(await isMissing(service, read, 'a.example.com', { afterCheck: true, pause: async ms => { pauses.push(ms); } })).toBe(false);
-    expect(pauses).toEqual([recheckDelayMs]);
-    expect(recheckDelayMs).toBe(1_500);
-    expect(reads()).toBe(2);
+    expect(await missingState(service, read, 'a.example.com', { afterCheck: true, pause: async ms => { pauses.push(ms); } })).toBe('found');
+    expect(pauses).toEqual([1_000, 1_000, 1_000]);
+    expect(recheckIntervalMs).toBe(1_000);
+    expect(recheckWindowMs).toBe(5_000);
+    expect(reads()).toBe(4);
   });
 
-  it('reads at most once more: a host still not listed is missing', async () => {
-    const { page: service, reads } = page([false, false, true]);
-    expect(await isMissing(service, read, 'a.example.com', { afterCheck: true, pause: async () => {} })).toBe(true);
-    expect(reads()).toBe(2);
+  it('gives up after 5 seconds of waiting: a service never listed is missing, after 5 reads once more', async () => {
+    const { page: service, reads } = page([false]);
+    let waited = 0;
+    expect(await isMissing(service, read, 'a.example.com', { afterCheck: true, pause: async ms => { waited += ms; } })).toBe(true);
+    expect(waited).toBe(5_000);
+    expect(reads()).toBe(6);
   });
 
   it('never waits without the marker, nor for a listed host, nor for a failure that is not a 404', async () => {
@@ -99,17 +103,19 @@ describe('a service a check has just listed', () => {
     expect(await isMissing(down, read, 'a.example.com', { afterCheck: true, pause: async () => { throw new Error('waited'); } })).toBe(false);
   });
 
-  it('lets only a bounded number of requests wait at once: the rest are decided at once', async () => {
+  it('lets only a bounded number of requests wait at once: the rest are told the service is being listed, not that it is missing', async () => {
     const release: (() => void)[] = [];
     const hold = (): Promise<void> => new Promise(resolve => { release.push(resolve); });
-    const waiting = Array.from({ length: maxRechecks }, () => isMissing(page([false, true]).page, read, 'a.example.com', { afterCheck: true, pause: hold }));
+    const waiting = Array.from({ length: maxRechecks }, () => missingState(page([false, true]).page, read, 'a.example.com', { afterCheck: true, pause: hold }));
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(release).toHaveLength(maxRechecks);
     const extra = page([false, true]);
-    expect(await isMissing(extra.page, read, 'a.example.com', { afterCheck: true, pause: hold })).toBe(true);
+    expect(await missingState(extra.page, read, 'a.example.com', { afterCheck: true, pause: hold })).toBe('listing');
     expect(extra.reads()).toBe(1);
+    // Without the marker the bound changes nothing
+    expect(await missingState(page([false]).page, read, 'a.example.com', {})).toBe('missing');
     for (const done of release)
       done();
-    expect(await Promise.all(waiting)).toEqual(Array(maxRechecks).fill(false));
+    expect(await Promise.all(waiting)).toEqual(Array(maxRechecks).fill('found'));
   });
 });

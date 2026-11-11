@@ -779,7 +779,7 @@ const json = (response: ServerResponse, status: number, body: unknown): void => 
 };
 
 /** Starts a fake API. `port` 0 picks a free one. */
-export const startFakeApi = async (mode: FakeApiMode, port = 0): Promise<FakeApi> => {
+export const startFakeApi = async (mode: FakeApiMode, port = 0, slowMs = 0): Promise<FakeApi> => {
   const requests: FakeApi['requests'][number][] = [];
   // Each open stream with the filters it was opened with
   const streams = new Map<ServerResponse, URLSearchParams>();
@@ -834,7 +834,8 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0): Promise<FakeApi
       return;
     }
     const found = answer(url, mode, Date.now(), request.headers, listed);
-    const delay = url.pathname === '/_/check' ? checkDelayMs(url.searchParams.get('url') ?? '') : 0;
+    // `slowMs` slows every read, to see a loading state in a browser
+    const delay = Math.max(slowMs, url.pathname === '/_/check' ? checkDelayMs(url.searchParams.get('url') ?? '') : 0);
     const send = (): void => {
       if (found === undefined)
         json(response, 404, { error: { code: 'not_found', message: 'Not found' } });
@@ -873,12 +874,12 @@ export const refusedUrl = async (): Promise<string> => {
   return `http://127.0.0.1:${port}`;
 };
 
-// Run by hand: node tests/support/fakeApi.ts [full|empty|down|capped|edge|checked] [port]
+// Run by hand: node tests/support/fakeApi.ts [full|empty|down|capped|edge|checked] [port] [milliseconds every read waits]
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const [mode = 'full', port = '4010'] = process.argv.slice(2);
+  const [mode = 'full', port = '4010', slow = '0'] = process.argv.slice(2);
   if (mode !== 'full' && mode !== 'empty' && mode !== 'down' && mode !== 'capped' && mode !== 'edge' && mode !== 'checked')
     throw new Error('The mode is full, empty, down, capped, edge or checked');
-  const api = await startFakeApi(mode, Number(port));
+  const api = await startFakeApi(mode, Number(port), Number(slow));
   process.stdout.write(`The fake API answers in ${mode} mode at ${api.url}\n`);
   process.on('SIGTERM', () => void api.close().then(() => process.exit(0)));
   process.on('SIGINT', () => void api.close().then(() => process.exit(0)));

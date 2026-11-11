@@ -58,6 +58,15 @@ export const CheckCalls = ({ host, path, params, calls: first, page: firstPage, 
     });
   }, [apiUrl, host, path]);
 
+  // The page mounts again after a visit to the Agent view: the address may hold a page the server's calls are not for
+  useEffect(() => {
+    const now = parseCheckParams(new URLSearchParams(window.location.search)).page;
+    if (now !== firstPage)
+      go(now);
+    // Only when the page mounts
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <DataTable
       label="Last calls"

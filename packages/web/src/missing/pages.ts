@@ -81,10 +81,13 @@ export const missingPageFor = (pathname: string): { readonly page: MissingPage; 
 
 export const missingPageOfKind = (kind: string | null): MissingPage | undefined => missingPages.find(page => page.kind === kind);
 
-/** How long a miss waits before the one more read, for a visitor who has just made the thing by a check. */
-export const recheckDelayMs = 1_500;
+/** How often the thing is read again, for a visitor who has just made it by a check. */
+export const recheckIntervalMs = 1_000;
 
-/** How many such waits may be going at once. Past it a miss is decided at once, so a flood of marked requests can't hold the server. */
+/** How long in all a miss waits for the thing to be listed, for a visitor who has just made it by a check. */
+export const recheckWindowMs = 5_000;
+
+/** How many such waits may be going at once. Past it the visitor is told the thing is being listed, and the wait is theirs. */
 export const maxRechecks = 20;
 
 let rechecking = 0;
@@ -99,26 +102,46 @@ export interface MissingOptions {
 }
 
 /**
- * Whether the thing is missing: it can't exist, or the API says it doesn't. Any other failure is not "missing".
- * For a page that allows it and a request that carries the check's marker, the first answer of "not listed"
- * is read once more after a pause of 1.5 seconds, and never more than once. At most 20 requests wait at a time.
+ * What the thing is: `found`, `missing` (it can't exist, or the API says it doesn't), or `listing` (it may be
+ * listed in a moment, and the wait for it is full). Any other failure is not "missing". For a page that allows
+ * it and a request that carries the check's marker, the first answer of "not listed" is read again about
+ * once a second, for 5 seconds in all, and the thing is `missing` only when the last read still says so.
+ * At most 20 requests wait at a time: past that the answer is `listing` at once, so a flood of marked requests
+ * can't hold the server.
  */
-export const isMissing = async (page: MissingPage, read: Reader, name: string, { afterCheck = false, pause = sleep }: MissingOptions = {}): Promise<boolean> => {
+export const missingState = async (page: MissingPage, read: Reader, name: string, { afterCheck = false, pause = sleep }: MissingOptions = {}): Promise<'found' | 'missing' | 'listing'> => {
   if (!page.valid(name))
-    return true;
+    return 'missing';
   const result = await page.exists(read, name);
   if (result.ok || result.error.status !== 404)
-    return false;
-  if (!afterCheck || page.afterCheck !== true || rechecking >= maxRechecks)
-    return true;
+    return 'found';
+  if (!afterCheck || page.afterCheck !== true)
+    return 'missing';
+  if (rechecking >= maxRechecks)
+    return 'listing';
   rechecking += 1;
   try {
-    await pause(recheckDelayMs);
+    for (let waited = 0; waited < recheckWindowMs; waited += recheckIntervalMs) {
+      await pause(recheckIntervalMs);
+      const again = await page.exists(read, name);
+      if (again.ok || again.error.status !== 404)
+        return 'found';
+    }
+
+    return 'missing';
   }
   finally {
     rechecking -= 1;
   }
-  const again = await page.exists(read, name);
-
-  return !again.ok && again.error.status === 404;
 };
+
+/** Whether the thing is missing (see `missingState`). A full wait counts as not missing: the page answers for it. */
+export const isMissing = async (page: MissingPage, read: Reader, name: string, options: MissingOptions = {}): Promise<boolean> =>
+  await missingState(page, read, name, options) === 'missing';
+
+/** The page the visitor gets when the wait for a just-checked thing is full: it says the thing is being listed. */
+export const listingPath = '/_/listing';
+
+/** What that page says. */
+export const listingTitle = 'This service is being listed';
+export const listingLine = 'This service is being listed. Reload in a moment.';

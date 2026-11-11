@@ -2,11 +2,12 @@
 
 import { Button } from '../src/components/Button';
 
-/** A page whose data didn't load, such as while the Platform API is down. No detail leaks. */
+/** A page whose data didn't load, such as while the Platform API is down. No detail leaks. It has its own title, and no Human / Agent switch (see components.css). */
 const PageError = ({ reset }: { readonly error: Error; readonly reset: () => void }) => (
   <>
+  <title>This page didn&apos;t load | Anyfare</title>
   <meta name="robots" content="noindex" />
-  <section className="band">
+  <section className="band no-agent-view">
     <div className="container ruled section">
       <div className="stack-lg">
         <span className="eyebrow">Something went wrong</span>

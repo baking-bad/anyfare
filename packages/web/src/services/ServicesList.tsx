@@ -24,6 +24,8 @@ import { apiServicesQuery, parseServicesFilters, servicesHref, sortChoices, with
 export interface ServicesListProps {
   // The page of the list the server read for the URL
   readonly first: ApiResult<ServicesPage>;
+  // The address (path and query) the page was read for. When the page mounts at another address, such as after a move through the Agent view, the list is read again.
+  readonly firstKey: string;
   // The server's clock when it rendered: "Checked today" counts from it, so the first render matches in the browser
   readonly now: number;
 }
@@ -50,7 +52,7 @@ const Cards = ({ totals }: { readonly totals: Totals | null }) => (
  * live in the URL: the grid reads the list for the URL, and the browser's back and forward move through
  * what it set. The server renders the first page for the URL, so the same URL shows the same page.
  */
-export const ServicesList = ({ first, now }: ServicesListProps) => {
+export const ServicesList = ({ first, firstKey, now }: ServicesListProps) => {
   const { apiUrl } = useSettings();
   const reader = useMemo(() => createReader({ apiUrl }), [apiUrl]);
   const params = useSearchParams();
@@ -59,11 +61,11 @@ export const ServicesList = ({ first, now }: ServicesListProps) => {
 
   const [result, setResult] = useState<ApiResult<ServicesPage>>(first);
   const [totals, setTotals] = useState<Totals | null>(first.ok ? first.value.totals : null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(key !== firstKey);
   const [reload, setReload] = useState(0);
   const [searchText, setSearchText] = useState(filters.q ?? '');
 
-  const loaded = useRef({ key, reload });
+  const loaded = useRef({ key: firstKey, reload });
   const request = useRef(0);
   const latest = useRef(filters);
   useEffect(() => {

@@ -8,7 +8,8 @@ import { readSettings, type SiteSettings } from './src/config';
 import { consolePageRoute, hiddenRoute, passHeader, passSecret, surfaceFromHeader, surfaceHeader, surfaceOf, verdictFor, type Surface } from './src/hosts';
 import { hasMarkdown, markdownRoute, pageForMarkdownUrl, prefersMarkdown } from './src/markdown/negotiate';
 import { fromCheckName, fromCheckValue } from './src/services/content';
-import { isMissing, maxMissingName, missingKindHeader, missingNameHeader, missingPageFor, missingPageOfKind, missingPath } from './src/missing/pages';
+import { asksMissingMarkdown, missingMarkdown } from './src/missing/routes';
+import { listingPath, maxMissingName, missingKindHeader, missingNameHeader, missingPageFor, missingPageOfKind, missingPath, missingState } from './src/missing/pages';
 import { linkHeader } from './src/seo/links';
 import { contentSecurityPolicy, createNonce, securityHeaders } from './src/security/csp';
 
@@ -27,8 +28,18 @@ const missingResponse = async (request: NextRequest, requestHeaders: Headers, se
     return undefined;
   const { page, name } = entry;
   const read = createReader({ apiUrl: settings.apiInternalUrl, forwardedFor: visitorAddress(request.headers), timeoutMs: existenceTimeoutMs, onFailure: logApiFailure() });
-  if (!await isMissing(page, read, name, { afterCheck: request.nextUrl.searchParams.get(fromCheckName) === fromCheckValue }))
+  const state = await missingState(page, read, name, { afterCheck: request.nextUrl.searchParams.get(fromCheckName) === fromCheckValue });
+  if (state === 'found')
     return undefined;
+  if (state === 'listing') {
+    // Too many are waiting for a just-checked service: the page says it is being listed, with a 200 that no search engine keeps
+    const waiting = request.nextUrl.clone();
+    waiting.pathname = listingPath;
+    waiting.search = '';
+    waiting.searchParams.set('name', name.slice(0, maxMissingName));
+
+    return NextResponse.rewrite(waiting, { request: { headers: requestHeaders } });
+  }
   // Built from the request's own address with only the path changed: no host of the request is a target
   const target = request.nextUrl.clone();
   target.pathname = `${missingPath}/${page.kind}`;
@@ -92,6 +103,15 @@ export const proxy = async (request: NextRequest): Promise<NextResponse> => {
     return response;
   }
 
+  // A path with no page, asked as Markdown: a Markdown 404, not the HTML page
+  if (!onConsole && verdict === 'public' && asksMissingMarkdown(pathname, prefersMarkdown(request.headers.get('accept')))) {
+    const response = new NextResponse(missingMarkdown(siteUrl), { status: 404, headers: { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'no-store', vary: 'Accept' } });
+    for (const [name, value] of Object.entries(securityHeaders))
+      response.headers.set(name, value);
+
+    return response;
+  }
+
   const nonce = createNonce();
   const policy = contentSecurityPolicy({ nonce, apiUrl, payUrl, development: process.env.NODE_ENV === 'development', console: onConsole });
   const requestHeaders = new Headers(request.headers);
@@ -117,7 +137,7 @@ export const proxy = async (request: NextRequest): Promise<NextResponse> => {
   response.headers.set('content-security-policy', policy);
   if (onConsole)
     response.headers.set('x-robots-tag', 'noindex, nofollow');
-  const links = onConsole ? undefined : linkHeader({ siteUrl, apiUrl }, pathname);
+  const links = onConsole ? undefined : linkHeader({ siteUrl, apiUrl }, pathname, request.nextUrl.searchParams);
   if (links !== undefined) {
     response.headers.set('vary', 'Accept');
     // Appended: Next.js adds its own preload hints to this header

@@ -174,7 +174,7 @@ export const endpoints: readonly Endpoint[] = [
   },
   {
     id: 'openapi-pay', group: 'pay', method: 'GET', host: 'pay', path: '/openapi.json', summary: 'The OpenAPI document of the pay host\'s public routes', who: 'No key', example: 'openapi-pay',
-    answer: { status: 200, json: { openapi: '3.1.0', info: { title: 'Anyfare pay host', version: '1.0.0' }, servers: [{ url: '<API host>' }], paths: {}, components: {} } },
+    answer: { status: 200, json: { openapi: '3.1.0', info: { title: 'Anyfare pay host', version: '1.0.0' }, servers: [{ url: '<pay host>' }], paths: {}, components: {} } },
     errors: [...publicErrors],
     notes: ['An OpenAPI 3.1 document of the public routes of this host. Limited per address.'],
     source: { package: 'proxy', method: 'GET', path: '/openapi.json' },

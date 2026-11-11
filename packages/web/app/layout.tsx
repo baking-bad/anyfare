@@ -5,8 +5,9 @@ import './globals.css';
 import './components.css';
 
 import type { Metadata, Viewport } from 'next';
-import type { ReactNode } from 'react';
+import { Suspense, type ReactNode } from 'react';
 
+import { NavigationProgress } from '../src/components/NavigationProgress';
 import { SettingsProvider } from '../src/components/Settings';
 import { SiteFooter } from '../src/components/SiteFooter';
 import { SiteHeader } from '../src/components/SiteHeader';
@@ -51,6 +52,7 @@ const RootLayout = async ({ children }: { readonly children: ReactNode }) => {
       </head>
       <body>
         <SettingsProvider value={{ apiUrl, payUrl, consoleUrl }}>
+          <Suspense fallback={null}><NavigationProgress /></Suspense>
           <a className="skip-link" href="#main">Skip to the content</a>
           <SiteHeader consoleHref={consoleHref} {...onConsole ? { siteUrl } : {}} />
           <main id="main">{children}</main>

@@ -60,7 +60,7 @@ export const MobileMenu = ({ base = '', showView = true }: { readonly base?: str
               }}
               />
             </nav>
-            {showView ? <div className="menu-view only-sm"><ViewSwitch /></div> : null}
+            {showView ? <div className="menu-view view-switch only-sm"><ViewSwitch /></div> : null}
           </div>
         </div>
       ) : null}

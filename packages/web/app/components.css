@@ -106,6 +106,8 @@ table.t tbody tr.click { cursor: pointer; }
 /* A state in a table (an error, an empty list) wraps inside its box: it takes the table's width from no one */
 table.t td.state-cell { white-space: normal; }
 table.t th.r, table.t td.r { text-align: right; font-variant-numeric: tabular-nums; }
+/* The widest grids (Calls, Services) fit a 1024 px window without a scroll: tighter cells (Calls also shortens its service link) */
+@media (min-width: 761px) and (max-width: 1100px) { table.t th, table.t td { padding-left: 10px; padding-right: 10px; } }
 .t-wrap { background: var(--surface-well); border-radius: var(--radius-2xl); padding: 0 4px 4px; }
 .t-wrap .inner { background: var(--surface-card); border-radius: 14px; outline: 1px solid var(--border); outline-offset: -1px; overflow: hidden; }
 .t-wrap table.t thead tr { background: transparent; }
@@ -177,6 +179,8 @@ table.t th.r, table.t td.r { text-align: right; font-variant-numeric: tabular-nu
 .code-block { position: relative; }
 .code-block .copy { position: absolute; top: 8px; right: 8px; z-index: 1; }
 .code-block .code { padding-right: 56px; }
+/* On a phone the button has its own line above the code, so it never covers the first line, and "Copied" fits */
+@media (max-width: 520px) { .code-block .code { padding-top: 52px; padding-right: 16px; } }
 .code .k { color: var(--text); } .code .s { color: var(--brand-text); } .code .n { color: var(--info-text); } .code .b { color: var(--warning-text); }
 .code .p, .code .c { color: var(--text-secondary); }
 .code .ok { color: var(--success-text); } .code .warn { color: var(--warning-text); } .code .err { color: var(--danger-text); }
@@ -410,3 +414,18 @@ table.t tr.fresh td { animation: enter 900ms var(--ease-out); }
 .method-select:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 /* On a dark band the ring is white */
 .seg.on-dark :focus-visible, .inverse-band :focus-visible, .site-footer :focus-visible, .dark-panel :focus-visible { outline-color: var(--white); }
+
+/* The progress bar of a move inside the site, and numbers that are being replaced */
+.progress { position: fixed; inset: 0 0 auto 0; height: 3px; z-index: 200; overflow: hidden; pointer-events: none; background: transparent; }
+.progress[hidden] { display: none; }
+.progress > span { display: block; height: 100%; width: 35%; background: var(--brand); border-radius: 0 3px 3px 0; animation: progress-run 1.2s var(--ease) infinite; }
+@keyframes progress-run { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+@media (prefers-reduced-motion: reduce) {
+  /* No motion: a steady bar the width of the page, a little faded */
+  .progress > span { width: 100%; opacity: 0.7; animation: none !important; transform: none; }
+}
+.pending-scope { display: contents; }
+.pending-scope[aria-busy="true"] > * { opacity: 0.5; transition: opacity 0.15s; cursor: progress; }
+
+/* A page with no Agent view (the 404 and error pages) hides the Human / Agent switch: a visible switch there would do nothing */
+html:has(.no-agent-view) .view-switch { display: none; }

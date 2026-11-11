@@ -2557,19 +2557,21 @@ describe('a link to the pay host itself', () => {
 });
 
 describe('a service opened right after a check', () => {
-  it('waits once for the listing with the check\'s marker: a host listed 1 second after the first read answers 200', async () => {
+  it('waits for the listing with the check\'s marker: a host listed 3 seconds after the first read answers its page', async () => {
     const host = 'listed-late.example.net';
-    setTimeout(() => listing.api!.listChecked(host), 1_000);
+    setTimeout(() => listing.api!.listChecked(host), 3_000);
     const started = Date.now();
     const marked = await get(listing, `/services/${host}?from=check`);
 
     expect(marked.response.status).toBe(200);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1_000);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(3_000);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(marked.body).toContain(`<h1 class="page-title svc-host-title">${host}</h1>`);
     // Never shown, and not in the canonical link
     expect(marked.body).toContain(`<link rel="canonical" href="${site}/services/${host}"/>`);
   });
 
-  it('answers a plain unknown host at once, with the marker or without it when nothing lists it, and reads once more only with it', async () => {
+  it('answers a plain unknown host at once, with the marker or without it when nothing lists it, and reads again for 5 seconds only with it', { timeout: 30_000 }, async () => {
     const host = 'never-listed.example.net';
     const count = (): number => listing.api!.requests.filter(request => request.path.startsWith(`/v1/services/${host}`)).length;
     const startedPlain = Date.now();
@@ -2578,8 +2580,9 @@ describe('a service opened right after a check', () => {
     const plain = count();
     const startedMarked = Date.now();
     expect((await get(listing, `/services/${host}?from=check`)).response.status).toBe(404);
-    expect(Date.now() - startedMarked).toBeGreaterThanOrEqual(1_400);
-    expect(count() - plain).toBe(2);
+    expect(Date.now() - startedMarked).toBeGreaterThanOrEqual(4_900);
+    expect(Date.now() - startedMarked).toBeLessThan(8_000);
+    expect(count() - plain).toBe(6);
   });
 
   it('puts the marker on the check page\'s Service button', async () => {
@@ -2587,4 +2590,208 @@ describe('a service opened right after a check', () => {
 
     expect(body).toMatch(/href="\/services\/api\.example\.com\?from=check"/);
   });
+});
+
+describe('the Markdown twin of a page with state in its address', () => {
+  const sample = 'api.example.com%2Fv1%2Fsample%2Fquotes%2Flatest';
+
+  it('answers the filtered page: Calls with a filter and page 2', async () => {
+    const { response, body } = await get(full, '/calls.md?paidWith=near&status=paid&page=2');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('- Paid with: USDC on NEAR');
+    expect(body).toContain('- Status: Paid');
+    expect(body).toMatch(/Page 2, calls 21/);
+    expect(body).toContain('/v1/calls?paidWith=near&status=paid&page=2&size=20');
+    // Not the unfiltered page
+    expect((await get(full, '/calls.md')).body).not.toContain('- Paid with: USDC on NEAR');
+  });
+
+  it('answers the searched, sorted Services page', async () => {
+    const { body } = await get(full, '/services.md?q=quote&sort=newest');
+
+    expect(body).toContain('Search: quote');
+    expect(body).toContain('quotes.example.com');
+    expect(body).not.toContain('maps.example.com');
+    expect(body).toContain('/v1/services?q=quote&sort=newest&page=1&size=20');
+  });
+
+  it('answers the Service page for its period', async () => {
+    expect((await get(full, '/services/api.example.com.md?period=7d')).body).toContain('## Through Anyfare, the last 7 days');
+    expect((await get(full, '/services/api.example.com.md?period=today')).body).toContain('## Through Anyfare, today');
+    expect((await get(full, '/services/api.example.com.md')).body).toContain('## Through Anyfare, the last 30 days');
+  });
+
+  it('answers the check with its method, period and page', async () => {
+    const { response, body } = await get(full, `/check.md?url=${sample}&method=POST&period=7d&page=2`);
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('# POST api.example.com/v1/sample/quotes/latest');
+    expect(body).toContain('Checked with POST');
+    expect(body).toContain('## Through Anyfare, 7 days');
+  });
+
+  it('is the twin the page\'s own Link header and link tag name, on every page with a query', async () => {
+    const paths = [
+      '/calls?paidWith=near&page=2',
+      '/calls?page=2&paidWith=near&bogus=1',
+      '/services?q=quote&sort=newest',
+      '/services/api.example.com?period=7d',
+      `/check?url=${sample}`,
+      `/check?url=${sample}&method=POST&period=7d&page=2&tab=json`,
+      '/',
+      '/agents',
+    ];
+    for (const path of paths) {
+      const { response, body } = await get(full, path);
+      const fromHeader = /<([^>]+)>; rel="alternate"; type="text\/markdown"/.exec(response.headers.get('link')!)?.[1];
+      const fromTag = /<link rel="alternate" type="text\/markdown" href="([^"]+)"\/>/.exec(body)?.[1]?.replaceAll('&amp;', '&');
+
+      expect(fromHeader, path).toBeDefined();
+      expect(fromTag, path).toBe(fromHeader);
+      // And that twin answers
+      expect((await get(full, fromHeader!.slice(site.length))).response.status, path).toBe(200);
+    }
+    expect(/<([^>]+)>; rel="alternate"; type="text\/markdown"/.exec((await get(full, '/calls?paidWith=near&page=2')).response.headers.get('link')!)![1]).toBe(`${site}/calls.md?paidWith=near&page=2`);
+    expect(/<([^>]+)>; rel="alternate"; type="text\/markdown"/.exec((await get(full, `/check?url=${sample}`)).response.headers.get('link')!)![1]).toBe(`${site}/check.md?url=${sample}`);
+  });
+
+  it('is the address the Agent view of a server-rendered page lists first', async () => {
+    const { body } = await get(full, '/calls?paidWith=near&page=2');
+
+    expect(body).toContain('/calls.md?paidWith=near&amp;page=2');
+  });
+});
+
+describe('the theme script in every page\'s head', () => {
+  const pages = [...publicPages, '/services?q=quote&sort=newest', '/nothing', '/calls/pay_nosuchcall', '/services/nothing-here.example.net'];
+
+  it.each(pages)('is inline, with the request\'s nonce, before any stylesheet or the body, on %s', async path => {
+    const { response, body } = await get(full, path);
+    const nonce = /'nonce-([^']+)'/.exec(response.headers.get('content-security-policy')!)![1]!;
+    const head = body.slice(body.indexOf('<head>'), body.indexOf('</head>'));
+    const script = new RegExp(`<script nonce="${nonce.replace(/[+/=]/g, '\\$&')}"[^>]*>([^<]*)</script>`).exec(head);
+
+    expect(script, path).not.toBeNull();
+    expect(script![1]).toContain('anyfare-theme');
+    expect(script![1]).toContain('classList.add');
+    const at = head.indexOf(script![0]);
+    expect(at, path).toBeGreaterThan(-1);
+    // React puts a page's stylesheet links first in <head>, ahead of anything a layout writes. They block the first paint, and the
+    // script runs before the body is read, so the class is on <html> before anything is drawn. What must not come before it:
+    // a script that runs at once (the async ones only download), and any of the body.
+    expect(head.slice(0, at), path).not.toMatch(/<script(?![^>]*\basync\b)[^>]*\bsrc=/);
+    expect(head.slice(0, at), path).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/);
+    expect(body.slice(0, body.indexOf('<head>')), path).not.toMatch(/<(?:body|script|link|style)/);
+    expect(body.indexOf('<body'), path).toBeGreaterThan(body.indexOf(script![0]));
+  });
+
+  it('is the one the unit test runs: the same text on every page', async () => {
+    const { themeScript } = await import('../../src/theme-script');
+    const { body } = await get(full, '/agents');
+
+    expect(body).toContain(themeScript);
+  });
+});
+
+describe('a missing path asked as Markdown', () => {
+  it.each(['/nothing.md', '/a/b/c.md', '/services/unknown.example.com/x.md'])('answers 404 in Markdown for %s', async path => {
+    const { response, body } = await get(full, path);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get('content-type')).toContain('text/markdown');
+    expect(body.startsWith('# Not found\n')).toBe(true);
+    expect(body).toContain(`${site}/index.md`);
+    expect(body).toContain(`${site}/llms.txt`);
+    expect(body).not.toContain('<html');
+  });
+
+  it('answers 404 in Markdown for a missing path with Accept: text/markdown, and in HTML without it', async () => {
+    const markdown = await get(full, '/nothing-here', { headers: { accept: 'text/markdown' } });
+    const html = await get(full, '/nothing-here', { headers: { accept: 'text/html' } });
+
+    expect(markdown.response.status).toBe(404);
+    expect(markdown.response.headers.get('content-type')).toContain('text/markdown');
+    expect(markdown.body.startsWith('# Not found\n')).toBe(true);
+    expect(html.response.status).toBe(404);
+    expect(html.response.headers.get('content-type')).toContain('text/html');
+  });
+
+  it('still answers the pages, the files and the skill as Markdown', async () => {
+    expect((await get(full, '/calls', { headers: { accept: 'text/markdown' } })).response.status).toBe(200);
+    expect((await get(full, '/llms.txt', { headers: { accept: 'text/markdown' } })).response.status).toBe(200);
+    expect((await get(full, '/skills/anyfare-buyer/SKILL.md')).response.status).toBe(200);
+    expect((await get(full, '/index.md')).response.status).toBe(200);
+  });
+});
+
+describe('the 404 page has no Human / Agent switch to press', () => {
+  it('marks the page that has no Agent view, so the header hides the switch', async () => {
+    for (const path of ['/nothing', '/calls/pay_nosuchcall', '/services/nothing-here.example.net']) {
+      const { body } = await get(full, path);
+
+      expect(body, path).toContain('<section class="band no-agent-view">');
+      expect(body, path).toContain('view-switch');
+    }
+    // A page that has an Agent view doesn't carry the marker (the framework's data holds the 404 page's text, so the element is what counts)
+    expect((await get(full, '/calls')).body).not.toContain('<section class="band no-agent-view">');
+  });
+});
+
+describe('the copy buttons', () => {
+  // Every block of code a visitor may run or paste sits in a `code-block`, which has a Copy button
+  const preCount = (html: string): number => (html.match(/<pre\b/g) ?? []).length;
+  const blockCount = (html: string): number => (html.match(/class="code-block"/g) ?? []).length;
+
+  it('are on both samples of Home, each named for what it copies', async () => {
+    const { body } = await get(full, '/');
+
+    expect(preCount(body)).toBe(blockCount(body));
+    expect(body.match(/aria-label="Copy the commands of this sample"/g)).toHaveLength(2);
+  });
+
+  it('are on each of the four requests of For agents, which copy the command and not the answer', async () => {
+    const { body } = await get(full, '/agents');
+
+    expect(preCount(body)).toBe(blockCount(body));
+    for (const number of [1, 2, 3, 4])
+      expect(body).toContain(`aria-label="Copy the command of step ${number}"`);
+  });
+
+  it('are on the Console page\'s cards', async () => {
+    const { body } = await getAs(full, 'console.example.com', '/').then(reply => ({ body: reply.body }));
+
+    expect(preCount(body)).toBeGreaterThan(0);
+    expect(preCount(body)).toBe(blockCount(body));
+  });
+
+  it('are on every block of the check page, and the JSON tab has its own Copy JSON', async () => {
+    const { body } = await get(full, '/check?url=api.example.com%2Fv1%2Fsample%2Fquotes%2Flatest');
+    const withoutBlock = preCount(body) - blockCount(body);
+
+    expect(withoutBlock).toBe(1);
+    expect(body).toContain('Copy JSON');
+  });
+});
+
+describe('a service opened right after a check, when many are waiting', () => {
+  it('waits at most 20 at a time: past that the page says it is being listed, with 200 and noindex, and never a 404', async () => {
+    const hosts = Array.from({ length: 24 }, (_value, index) => `crowd${index}.example.net`);
+    const started = Date.now();
+    const replies = await Promise.all(hosts.map(async host => ({ host, ...await get(listing, `/services/${host}?from=check`), at: Date.now() - started })));
+    const listingPage = replies.filter(reply => reply.response.status === 200);
+    const missing = replies.filter(reply => reply.response.status === 404);
+
+    expect(listingPage.length + missing.length).toBe(24);
+    expect(listingPage.length).toBeGreaterThanOrEqual(1);
+    expect(missing.length).toBeLessThanOrEqual(20);
+    for (const reply of listingPage) {
+      expect(textOf(reply.body)).toContain('This service is being listed. Reload in a moment.');
+      expect(reply.body).toMatch(/<meta name="robots" content="noindex/);
+      expect(reply.body).toContain('<section class="band no-agent-view">');
+    }
+    // The ones that waited waited the whole window
+    for (const reply of missing)
+      expect(reply.at).toBeGreaterThanOrEqual(4_900);
+  }, 30_000);
 });

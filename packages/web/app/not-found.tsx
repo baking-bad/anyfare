@@ -30,7 +30,8 @@ const NotFound = async () => {
   const actions = missing?.actions(name) ?? [{ label: 'Go to the home page', href: '/' }];
 
   return (
-    <section className="band">
+    // The Human / Agent switch has nothing to switch here (see components.css), so the header hides it
+    <section className="band no-agent-view">
       <div className="container ruled section">
         <div className="stack-lg">
           <span className="eyebrow">404</span>

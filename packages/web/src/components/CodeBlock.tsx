@@ -7,15 +7,17 @@ import { CopyButton } from './CopyButton';
  * (the same text, or spans with the classes `k s n b p c ok warn err` for color). `wrap` breaks long lines,
  * `tall` scrolls past 520 px. The box scrolls sideways by keyboard too.
  */
-export const CodeBlock = ({ code, children, wrap = false, tall = false, copyLabel = 'Copy' }: {
+export const CodeBlock = ({ code, children, wrap = false, tall = false, copyLabel = 'Copy', copyName }: {
   readonly code: string;
   readonly children?: ReactNode;
   readonly wrap?: boolean;
   readonly tall?: boolean;
   readonly copyLabel?: string;
+  // The accessible name of the button, when "Copy" alone doesn't say what it copies
+  readonly copyName?: string;
 }) => (
   <div className="code-block">
-    <div className="copy"><CopyButton text={code} label={copyLabel} /></div>
+    <div className="copy"><CopyButton text={code} label={copyLabel} {...copyName === undefined ? {} : { name: copyName }} /></div>
     <pre className={['code', wrap ? 'wrap' : '', tall ? 'tall' : ''].filter(Boolean).join(' ')} tabIndex={0}>{children ?? code}</pre>
   </div>
 );

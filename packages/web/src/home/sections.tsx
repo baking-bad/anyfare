@@ -8,6 +8,7 @@ import { DataTable } from '../components/DataTable';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import { Icon } from '../components/Icon';
+import { LinkPending } from '../check/LinkPending';
 import { MethodSelect } from '../check/MethodSelect';
 import { agentPrompt, agentsText, hero, nearIntentsUrl, questions, topText, tryHref, tryLinks, ways } from '../content/home';
 import { count, usdOf } from '../format';
@@ -35,7 +36,7 @@ export const Hero = ({ consoleUrl }: { readonly consoleUrl: string }) => (
             <div className="row small muted">
               <span>Try:</span>
               {tryLinks.map(link => (
-                <Link key={link.url} className="chip" href={tryHref(link)}>{link.label} <span className="muted">{link.note}</span></Link>
+                <Link key={link.url} className="chip" href={tryHref(link)}>{link.label} <span className="muted">{link.note}</span><LinkPending /></Link>
               ))}
             </div>
             <span className="small muted">{hero.freeCredits}</span>
@@ -45,6 +46,14 @@ export const Hero = ({ consoleUrl }: { readonly consoleUrl: string }) => (
     </div>
   </section>
 );
+
+// What the Copy buttons of the two samples copy: the commands, without the prompt and the answers
+const walletCopy = (pay: string): string => `curl ${pay}/<api host>/<path>\nx402 pay --network near:mainnet …`;
+const keyCopy = (pay: string, api: string): string => [
+  `curl ${api}/v1/topups -d '{"network":"<network>","token":"<token>","amount":"<amount>"}'`,
+  `curl ${api}/v1/keys -d '{"dailyBudget":"<USD per day>","maxPrice":"<USD per call>"}'`,
+  `curl ${pay}/<api host>/<path> -H "Authorization: Bearer af_live_…"`,
+].join('\n');
 
 // A host without its scheme, such as pay.example.com
 const hostOf = (url: string): string => new URL(url).host;
@@ -64,14 +73,14 @@ export const TwoWays = ({ payUrl, apiUrl, consoleUrl }: { readonly payUrl: strin
         <div className="grid g2">
           <div className="card pad-lg way-card">
             <div className="row way-head"><span className="tile brand"><Icon name="wallet" /></span><div><h3 className="h4">{ways.wallet.title}</h3><p className="small muted">{ways.wallet.text}</p></div></div>
-            <pre className="code" tabIndex={0}>
+            <CodeBlock code={walletCopy(pay)} copyName="Copy the commands of this sample">
               <span className="p">$</span> curl {pay}/<b>&lt;api host&gt;</b>/&lt;path&gt;{'\n'}
               <span className="warn">402 Payment Required</span>{'\n'}
               {'  '}accepts: <span className="s">NEAR</span> · Base · Solana · Tempo · key{'\n'}
               {'  '}price:   <span className="n">&lt;price&gt;</span> USD, the same on every chain{'\n\n'}
               <span className="p">$</span> x402 pay --network near:mainnet …{'\n'}
               <span className="ok">200 OK</span>  Anyfare-Receipt: id=&quot;pay_…&quot;
-            </pre>
+            </CodeBlock>
             <ul className="small muted stack way-notes">
               <li>Your payment settles only after the API answers <code>2xx</code>.</li>
               <li>{ways.wallet.notes[1]}</li>
@@ -79,14 +88,14 @@ export const TwoWays = ({ payUrl, apiUrl, consoleUrl }: { readonly payUrl: strin
           </div>
           <div className="card pad-lg way-card">
             <div className="row way-head"><span className="tile brand"><Icon name="key" /></span><div><h3 className="h4">{ways.key.title}</h3><p className="small muted">{ways.key.text}</p></div></div>
-            <pre className="code" tabIndex={0}>
+            <CodeBlock code={keyCopy(pay, api)} copyName="Copy the commands of this sample">
               <span className="p">$</span> curl {api}/v1/topups -d &apos;{'{'}&quot;network&quot;:&quot;&lt;network&gt;&quot;,&quot;token&quot;:&quot;&lt;token&gt;&quot;,&quot;amount&quot;:&quot;&lt;amount&gt;&quot;{'}'}&apos;{'\n'}
               {'  '}send at least &lt;amount&gt; to <span className="s">&lt;deposit address&gt;</span>, by &lt;time&gt;{'\n\n'}
               <span className="p">$</span> curl {api}/v1/keys -d &apos;{'{'}&quot;dailyBudget&quot;:&quot;&lt;USD per day&gt;&quot;,&quot;maxPrice&quot;:&quot;&lt;USD per call&gt;&quot;{'}'}&apos;{'\n'}
               {'  '}key: <span className="s">af_live_…</span>   shown once{'\n\n'}
               <span className="p">$</span> curl {pay}/&lt;api host&gt;/&lt;path&gt; -H &quot;Authorization: Bearer af_live_…&quot;{'\n'}
               <span className="ok">200 OK</span>  no transaction per call
-            </pre>
+            </CodeBlock>
             <div className="row"><Button href={`${consoleUrl}/topup`}>Top up</Button><Button variant="secondary" href={`${consoleUrl}/keys`}>Make a key</Button></div>
           </div>
         </div>

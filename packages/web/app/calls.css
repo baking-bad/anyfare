@@ -17,6 +17,7 @@
 .grid-bar .filter-label { white-space: nowrap; }
 .filter-field { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .call-link { display: flex; flex-direction: column; gap: 2px; text-decoration: none; color: inherit; max-width: 260px; }
+@media (min-width: 761px) and (max-width: 1100px) { .call-link { max-width: 220px; } }
 .call-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
 .call-service, .call-endpoint { display: block; }
 .buyer { font-size: 12px; }

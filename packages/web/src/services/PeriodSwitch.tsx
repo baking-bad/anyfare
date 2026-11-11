@@ -4,6 +4,8 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState, useTransition } from 'react';
 
 import type { Period } from '../api/types';
+import { startNavigation } from '../components/NavigationProgress';
+import { usePending } from '../components/PendingScope';
 import { Segmented } from '../components/Segmented';
 import { periodChoices, serviceHref } from './content';
 
@@ -14,7 +16,9 @@ import { periodChoices, serviceHref } from './content';
 export const PeriodSwitch = ({ host, period }: { readonly host: string; readonly period: Period }) => {
   const router = useRouter();
   const [chosen, setChosen] = useState(period);
-  const [, startTransition] = useTransition();
+  const [pending, startTransition] = useTransition();
+  // The numbers around the switch dim, with `aria-busy`, until the server's answer for the new period is in
+  usePending(pending);
   useEffect(() => setChosen(period), [period]);
 
   return (
@@ -24,6 +28,7 @@ export const PeriodSwitch = ({ host, period }: { readonly host: string; readonly
       value={chosen}
       onChange={next => {
         setChosen(next);
+        startNavigation();
         startTransition(() => router.push(serviceHref(host, next), { scroll: false }));
       }}
     />

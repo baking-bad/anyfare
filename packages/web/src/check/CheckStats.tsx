@@ -71,6 +71,15 @@ export const CheckStats = ({ host, path, params, period: first, stats: firstStat
     });
   }, [apiUrl, host, path]);
 
+  // The page mounts again after a visit to the Agent view: the address may hold a period the server's numbers are not for
+  useEffect(() => {
+    const now = parseCheckParams(new URLSearchParams(window.location.search)).period;
+    if (now !== first)
+      choose(now);
+    // Only when the page mounts
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const link = (value: Period): string => checkAddress({ ...params, period: value });
   // The API's read failed but the check carries its 30-day numbers: show those, and say which period they are
   const fallen = !loading && !stats.ok && fallback !== null;

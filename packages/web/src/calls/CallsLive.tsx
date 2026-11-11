@@ -32,6 +32,8 @@ export interface CallsLiveProps {
   readonly calls: ApiResult<CallsPage>;
   // Hosts the service field suggests
   readonly suggestions: readonly string[];
+  // The address (path and query) the first page of the list was read for. When the page mounts at another address, such as after a move through the Agent view, the list is read again.
+  readonly firstKey: string;
   // The server's clock when it rendered: the "when" of each row counts from it until the browser takes over
   readonly now: number;
 }
@@ -67,7 +69,7 @@ const skeletonRows = [0, 1, 2, 3, 4, 5, 6, 7];
  * URL, and the browser's back and forward move through the filters it set. The stream, opened with the
  * same filters, puts a new call on top of page 1 and counts it on any other page, or while paused.
  */
-export const CallsLive = ({ live, calls: firstCalls, suggestions, now: serverNow }: CallsLiveProps) => {
+export const CallsLive = ({ live, calls: firstCalls, suggestions, firstKey, now: serverNow }: CallsLiveProps) => {
   const { apiUrl } = useSettings();
   const reader = useMemo(() => createReader({ apiUrl }), [apiUrl]);
   const now = useNow(serverNow);
@@ -77,7 +79,7 @@ export const CallsLive = ({ live, calls: firstCalls, suggestions, now: serverNow
   const filtered = isFiltered(filters);
 
   const [shown, setShown] = useState<{ readonly result: ApiResult<CallsPage> }>({ result: firstCalls });
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(key !== firstKey);
   const [reload, setReload] = useState(0);
   const [paused, setPaused] = useState(false);
   const [waiting, setWaiting] = useState(0);
@@ -85,7 +87,7 @@ export const CallsLive = ({ live, calls: firstCalls, suggestions, now: serverNow
   const [today, setToday] = useState<Today | null>(live === null ? null : todayOf(live));
   const [serviceText, setServiceText] = useState(filters.service ?? '');
 
-  const loaded = useRef({ key, reload });
+  const loaded = useRef({ key: firstKey, reload });
   const request = useRef(0);
   const seen = useRef(new Set<string>());
   const counted = useRef(new Set<string>());
