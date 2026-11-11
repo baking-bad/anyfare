@@ -423,6 +423,196 @@ describe.each([['the API answers 500', () => down], ['the connection is refused'
   });
 });
 
+describe('the receipt page with a full database', () => {
+  it('answers 200 with the head, the three boxes, the details and the steps of a call paid on a chain', async () => {
+    const { response, body } = await get(full, '/calls/pay_sample0000');
+
+    expect(response.status).toBe(200);
+    for (const text of ['Receipt', 'Paid · API answered 200', 'The buyer paid', 'We paid the API', 'Details', 'Steps', 'Overview', 'JSON', 'Copy link', 'Receipt id', 'The buyer asked, with a payment', 'We checked the buyer&#x27;s payment', 'x402 on NEAR. Not settled yet', 'From our Base hot wallet', 'The answer went to the buyer as it came', 'Only now: a failed call is never settled', 'We signed 0.001 USDC on Base for the API', 'The API answered 200 in 120 ms', 'The buyer&#x27;s payment settled on NEAR', 'sample.near', 'GET /v1/sample/quotes/latest', 'Fee <!-- -->$0.00'])
+      expect(body, text).toContain(text);
+    expect(body).toContain('$0.001');
+    expect(body).toContain('0.001 USDC on NEAR');
+    expect(body).toContain('0.001 USDC on Base');
+    expect(body).toContain('href="https://nearblocks.io/txns/NearSample0000Tx9"');
+    expect(body).toContain('NearBlocks');
+    expect(body).toContain('Basescan');
+    expect(body).toMatch(/<a [^>]*href="https:\/\/basescan\.org\/tx\/0x[0-9a-f]+"[^>]*rel="noopener noreferrer"/);
+    expect(body).toContain('href="/services/api.example.com"');
+    expect(body).toContain('href="/calls"');
+    expect(body).toMatch(/<a [^>]*aria-current="page"[^>]*>Calls<\/a>/);
+    expect(body).not.toMatch(/ style="/);
+    noBrokenValues(body);
+  });
+
+  it('has its own title, description, Open Graph tags, noindex and a link to its twin', async () => {
+    const { response, body } = await get(full, '/calls/pay_sample0000');
+
+    expect(body).toContain('<title>Receipt pay_sample0000 | Anyfare</title>');
+    expect(body).toMatch(/<meta name="description" content="The receipt of one call paid through Anyfare/);
+    expect(body).toContain('<meta property="og:title" content="Receipt pay_sample0000 | Anyfare"/>');
+    expect(body).toContain(`<meta property="og:url" content="${site}/calls/pay_sample0000"/>`);
+    expect(body).toMatch(/<meta name="robots" content="noindex, follow"\/>/);
+    expect(body).toContain(`<link rel="alternate" type="text/markdown" href="${site}/calls/pay_sample0000.md"/>`);
+    expect(response.headers.get('link')).toContain(`<${site}/calls/pay_sample0000.md>; rel="alternate"; type="text/markdown"`);
+  });
+
+  it('reads the call for the proxy and for the page, and forwards the visitor\'s address to both', async () => {
+    const before = full.api!.requests.length;
+    await get(full, '/calls/pay_sample0003', { headers: { 'x-forwarded-for': '203.0.113.9' } });
+    const reads = full.api!.requests.slice(before).filter(request => request.path.startsWith('/v1/calls/pay_sample0003'));
+
+    expect(reads).toHaveLength(2);
+    for (const read of reads)
+      expect(read.headers['x-forwarded-for']).toBe('203.0.113.9');
+  });
+
+  it('reads no call for any other page', async () => {
+    const before = full.api!.requests.length;
+    await get(full, '/');
+    await get(full, '/calls');
+    await get(full, '/calls?page=2');
+    await get(full, '/no-such-page');
+    const reads = full.api!.requests.slice(before).filter(request => /^\/v1\/calls\/(?!stream)/.test(request.path));
+
+    expect(reads).toEqual([]);
+  });
+
+  it('gives the normal page to a client that sends the missing-receipt header itself', async () => {
+    const forged = { headers: { 'x-receipt-missing': '1' } };
+    const home = await get(full, '/', forged);
+    const receipt = await get(full, '/calls/pay_sample0000', forged);
+
+    expect(home.response.status).toBe(200);
+    expect(home.body).toContain('Pay any paid API from the chain you are on.');
+    expect(receipt.response.status).toBe(200);
+    expect(receipt.body).toContain('The buyer paid');
+    const notFound = await get(full, '/no-such-page', forged);
+    expect(notFound.response.status).toBe(404);
+    expect(notFound.body).toContain('Page not found');
+    expect(notFound.body).not.toContain('No call with this id.');
+  });
+
+  it('shows a Credits receipt with no payer, no account and no transaction', async () => {
+    const { response, body } = await get(full, '/calls/pay_creditspaid');
+    // The page's own text: the JSON tab holds the API's answer as it came
+    const page = body.slice(0, body.indexOf('class="code'));
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('0.010 in Credits');
+    expect(body).toContain('Paid from a balance. No transaction per call.');
+    expect(body).toContain('We held $0.010 on the buyer&#x27;s balance');
+    expect(body).toContain('The hold was taken from the balance');
+    expect(page).not.toMatch(/account/i);
+    expect(page.match(/Transaction /g)).toHaveLength(1);
+    expect(page).not.toContain('nearblocks.io');
+    expect(page).not.toContain('0xab12');
+    expect(page).not.toContain('sample.near');
+  });
+
+  it('shows a free call as not charged, and says the API was not paid when it was not', async () => {
+    const { response, body } = await get(full, '/calls/pay_freenoapi');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('>$0<');
+    expect(body).toContain('Not charged');
+    expect(body).not.toContain('Paid · ');
+    expect(body).toContain('We did not pay the API for this call.');
+    expect(body).toContain('The buyer was not charged');
+    expect(body).not.toContain('Transaction ');
+    // The JSON tab holds the API's answer as it came, with its nulls
+    noBrokenValues(body.slice(0, body.indexOf('class="code-block"')));
+  });
+
+  it('shows a transaction with no explorer URL as its short hash, with no link', async () => {
+    const { response, body } = await get(full, '/calls/pay_notxlink');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('Transaction 0x6c69…1f1f');
+    expect(body).not.toContain('<a class="link small break"');
+    expect(body).toContain('MPP on Tempo. Not settled yet');
+  });
+
+  it('shows the code of a step it does not know', async () => {
+    const { body } = await get(full, '/calls/pay_unknownstep');
+
+    expect(body).toContain('mystery_step');
+  });
+
+  it('is the 404 page for an unknown id', async () => {
+    const { response, body } = await get(full, '/calls/pay_nosuchcall');
+
+    expect(response.status).toBe(404);
+    expect(body).toContain('No call with this id. A call appears here once it is finished.');
+    expect(body).toContain('href="/calls"');
+    expect(body).toMatch(/noindex/);
+  });
+
+  it('is the 404 page for a bad id, and the API is never asked', async () => {
+    const before = full.api!.requests.length;
+    const results = await Promise.all(['/calls/bad%20id', `/calls/${'a'.repeat(65)}`, '/calls/a.b', '/calls/a%3Fb'].map(path => get(full, path)));
+
+    for (const { response, body } of results) {
+      expect(response.status).toBe(404);
+      expect(body).toContain('No call with this id.');
+    }
+    expect(full.api!.requests.slice(before).filter(request => request.path.startsWith('/v1/calls/'))).toEqual([]);
+  });
+
+  it('is the 404 page with an empty database', async () => {
+    expect((await get(empty, '/calls/pay_sample0000')).response.status).toBe(404);
+  });
+
+  it('answers 200 with the shared error state when the API is down or refuses the connection', async () => {
+    for (const running of [down, refused]) {
+      const { response, body } = await get(running, '/calls/pay_sample0000');
+
+      expect(response.status).toBe(200);
+      expect(body).toContain('role="alert"');
+      expect(body).toContain('We couldn&#x27;t load this receipt.');
+      expect(body).toContain('Try again.');
+      expect(body).toContain('href="/calls"');
+      expect(body).not.toContain('No call with this id.');
+    }
+  });
+});
+
+describe('the Markdown twin of a receipt', () => {
+  it.each([
+    ['at /calls/<id>.md', '/calls/pay_sample0000.md', undefined],
+    ['by Accept: text/markdown', '/calls/pay_sample0000', { headers: { accept: 'text/markdown' } }],
+  ])('answers %s with the same facts as the page', async (_name, path, init) => {
+    const { response, body } = await get(full, path, init);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(body).toMatch(/^# Receipt pay_sample0000\n/);
+    expect(body).toContain('- Paid: $0.001. The API answered 200 in 120 ms.');
+    expect(body).toContain('- Buyer: sample.near paid 0.001 USDC on NEAR, tx NearSample0000Tx9 on [NearBlocks](https://nearblocks.io/txns/NearSample0000Tx9)');
+    expect(body).toContain('We signed 0.001 USDC on Base for the API');
+    expect(body).toContain('`GET https://api.example.com/v1/calls/pay_sample0000`');
+    expect(body).not.toMatch(/undefined|NaN|\bnull\b/);
+  });
+
+  it('answers 404 in Markdown for an unknown id, and 503 when the API is down', async () => {
+    const unknown = await get(full, '/calls/pay_nosuchcall.md');
+    const failed = await get(down, '/calls/pay_sample0000.md');
+
+    expect(unknown.response.status).toBe(404);
+    expect(unknown.response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(unknown.body).toContain('No call with this id. A call appears here once it is finished.');
+    expect(failed.response.status).toBe(503);
+    expect(failed.response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(failed.body).toContain('We couldn\'t load this receipt. Try again.');
+  });
+
+  it('answers 404 for a bad id\'s twin, and the API is never asked', async () => {
+    const before = full.api!.requests.length;
+
+    expect((await get(full, '/calls/bad$id.md')).response.status).toBe(404);
+    expect(full.api!.requests.length).toBe(before);
+  });
+});
+
 describe('the pages that are not built yet', () => {
   it('answers 404 for a page with no route, and 200 for /_/health', async () => {
     expect((await get(full, '/no-such-page')).response.status).toBe(404);

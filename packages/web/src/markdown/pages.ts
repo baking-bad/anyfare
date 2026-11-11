@@ -4,7 +4,10 @@ import { loadCalls } from '../calls/data';
 import { parseFilters } from '../calls/filters';
 import { loadHome } from '../home/data';
 import { callsMarkdown } from './calls';
+import { notFoundLine } from '../receipt/content';
+import { loadReceipt } from '../receipt/data';
 import { homeMarkdown } from './home';
+import { receiptMarkdown, receiptUnavailableMarkdown } from './receipt';
 
 // Every public page has a Markdown twin: its URL with `.md`, or its own URL asked for with
 // `Accept: text/markdown`. This list is the only place that knows which pages have one.
@@ -22,9 +25,15 @@ export interface MarkdownContext {
   readonly search: URLSearchParams;
 }
 
+/** A twin that answers with a status of its own, such as 404 for an unknown call. */
+export interface MarkdownAnswer {
+  readonly status: number;
+  readonly body: string;
+}
+
 export interface MarkdownPage {
   readonly pattern: RegExp;
-  readonly render: (context: MarkdownContext) => Promise<string>;
+  readonly render: (context: MarkdownContext) => Promise<string | MarkdownAnswer>;
 }
 
 export const markdownPages: readonly MarkdownPage[] = [
@@ -35,6 +44,19 @@ export const markdownPages: readonly MarkdownPage[] = [
       const filters = parseFilters(search);
 
       return callsMarkdown(settings, await loadCalls(read, filters), filters);
+    },
+  },
+  {
+    pattern: /^\/calls\/[A-Za-z0-9_-]{1,64}$/,
+    render: async ({ settings, read, path }) => {
+      const id = path.slice('/calls/'.length);
+      const result = await loadReceipt(read, id);
+      if (result.ok)
+        return receiptMarkdown(settings, result.value);
+
+      return result.error.status === 404
+        ? { status: 404, body: `# Not found\n\n${notFoundLine}\n` }
+        : { status: 503, body: receiptUnavailableMarkdown() };
     },
   },
 ];

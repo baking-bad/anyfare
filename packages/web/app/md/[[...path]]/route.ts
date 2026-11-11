@@ -19,7 +19,9 @@ export const GET = async (request: Request, { params }: { readonly params: Promi
     return notFound();
 
   const settings = readSettings();
-  const body = await page.render({ settings, read: serverReader(request.headers, settings), path, search: new URL(request.url).searchParams });
+  const answer = await page.render({ settings, read: serverReader(request.headers, settings), path, search: new URL(request.url).searchParams });
+  if (typeof answer !== 'string')
+    return new Response(answer.body, { status: answer.status, headers: { ...headers, 'cache-control': 'no-store', vary: 'Accept' } });
 
-  return new Response(body, { headers: { ...headers, 'cache-control': 'public, max-age=30', vary: 'Accept' } });
+  return new Response(answer, { headers: { ...headers, 'cache-control': 'public, max-age=30', vary: 'Accept' } });
 };

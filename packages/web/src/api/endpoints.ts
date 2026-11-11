@@ -1,5 +1,5 @@
 import type { ApiResult, Reader } from './reader';
-import type { CallsPage, CallsQuery, LiveStats, Period, ServicesPage, ServicesQuery, Stats, TopStats } from './types';
+import type { CallsPage, CallsQuery, LiveStats, Period, Receipt, ServicesPage, ServicesQuery, Stats, TopStats } from './types';
 
 // The public read API's endpoints a page reads. `paths` builds each path once: the page reads it, and
 // the Agent view and the Markdown twin list it.
@@ -23,6 +23,7 @@ export const paths = {
   topStats: (period: Period): string => `/v1/stats/top${query({ period })}`,
   services: (q: ServicesQuery = {}): string => `/v1/services${query({ q: q.q, sort: q.sort, page: q.page, size: q.size })}`,
   calls: (q: CallsQuery = {}): string => `/v1/calls${query({ paidWith: q.paidWith, service: q.service, endpoint: q.endpoint, status: q.status, page: q.page, size: q.size })}`,
+  call: (id: string): string => `/v1/calls/${encodeURIComponent(id)}`,
   // The stream takes the list's filters, and no page or size
   callStream: (q: Omit<CallsQuery, 'page' | 'size'> = {}): string => `/v1/calls/stream${query({ paidWith: q.paidWith, service: q.service, endpoint: q.endpoint, status: q.status })}`,
 } as const;
@@ -41,6 +42,9 @@ const isServicesPage = (value: unknown): value is ServicesPage => isRecord(value
 
 const isCallsPage = (value: unknown): value is CallsPage => isRecord(value) && Array.isArray(value['calls']);
 
+export const isReceipt = (value: unknown): value is Receipt =>
+  isRecord(value) && typeof value['id'] === 'string' && typeof value['at'] === 'string' && isRecord(value['buyer']) && isRecord(value['ms']) && Array.isArray(value['steps']);
+
 export const getStats = (read: Reader): Promise<ApiResult<Stats>> => read(paths.stats, isStats);
 
 export const getLiveStats = (read: Reader): Promise<ApiResult<LiveStats>> => read(paths.liveStats, isLiveStats);
@@ -50,3 +54,5 @@ export const listServices = (read: Reader, q: ServicesQuery = {}): Promise<ApiRe
 export const listCalls = (read: Reader, q: CallsQuery = {}): Promise<ApiResult<CallsPage>> => read(paths.calls(q), isCallsPage);
 
 export const getTopStats = (read: Reader, period: Period): Promise<ApiResult<TopStats>> => read(paths.topStats(period), isTopStats);
+
+export const getReceipt = (read: Reader, id: string): Promise<ApiResult<Receipt>> => read(paths.call(id), isReceipt);

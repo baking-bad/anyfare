@@ -59,15 +59,22 @@ export interface CallsPage {
   readonly totalCapped: boolean;
 }
 
+/** One side of a receipt: the buyer's payment, or Anyfare's payment to the API. */
 export interface ReceiptSide {
   readonly paidWith: PaidWith;
+  // null for Credits
   readonly network: string | null;
-  readonly asset: string;
+  // A display name: USDC, USDC.e or Credits
+  readonly asset: string | null;
   readonly amount: string;
   readonly transaction: string | null;
+  // null when the network has no explorer Anyfare knows
   readonly explorerUrl: string | null;
 }
 
+export type ReceiptStepName = 'received' | 'authorized' | 'api_signed' | 'api_answered' | 'settled' | 'released';
+
+/** `GET /v1/calls/:id`: the public receipt of one finished call. */
 export interface Receipt {
   readonly id: string;
   readonly at: string;
@@ -76,13 +83,17 @@ export interface Receipt {
   readonly service: string;
   readonly method: string | null;
   readonly path: string;
+  // For Credits: no network, payer, transaction or explorer, and the asset is "Credits"
   readonly buyer: ReceiptSide & { readonly payer: string | null; readonly settledAt: string | null };
   // null when Anyfare never signed for the API
-  readonly api: (ReceiptSide & { readonly payTo: string; readonly status: string }) | null;
-  readonly apiPrice: string;
-  readonly fee: string;
+  readonly api: (ReceiptSide & { readonly asset: string; readonly network: string; readonly payTo: string; readonly status: string }) | null;
+  // null when `api` is null
+  readonly apiPrice: string | null;
+  // null while the payment is still settling
+  readonly fee: string | null;
   readonly ms: { readonly api: number | null; readonly total: number | null };
-  readonly steps: readonly { readonly step: 'authorized' | 'api_signed' | 'api_answered' | 'settled' | 'released'; readonly at: string }[];
+  // Only steps whose time was kept. A name the page doesn't know is shown as its code.
+  readonly steps: readonly { readonly step: ReceiptStepName | (string & {}); readonly at: string }[];
 }
 
 /** A figure for each period. */

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
-import type { Call, CallsPage, DailyPoint, LiveStats, PaidWith, Period, ServiceRow, ServicesPage, Stats, TopStats } from '../../src/api/types';
+import type { Call, CallsPage, DailyPoint, LiveStats, PaidWith, Period, Receipt, ServiceRow, ServicesPage, Stats, TopStats } from '../../src/api/types';
 
 // A small HTTP server that answers the public read API's endpoints with sample data, for the website's
 // tests and for looking at the site by hand. The data is sample data: hosts are example.com, the payer
@@ -122,6 +122,79 @@ export const matchesCall = (call: Call, params: URLSearchParams): boolean => {
     && (status === null || status === call.status);
 };
 
+// How each rail's payments read on an explorer. Tempo has none the site knows.
+const explorerOf = (paidWith: PaidWith, hash: string): string | null => ({
+  near: `https://nearblocks.io/txns/${hash}`,
+  base: `https://basescan.org/tx/${hash}`,
+  solana: `https://solscan.io/tx/${hash}`,
+} as Partial<Record<PaidWith, string>>)[paidWith] ?? null;
+
+const assetOf = (paidWith: PaidWith): string => paidWith === 'credits' ? 'Credits' : paidWith === 'tempo' ? 'USDC.e' : 'USDC';
+const networkOf = (paidWith: PaidWith): string | null => ({ near: 'near:mainnet', base: 'eip155:8453', solana: 'solana:mainnet', tempo: 'tempo:mainnet' } as Partial<Record<PaidWith, string>>)[paidWith] ?? null;
+const hashOf = (paidWith: PaidWith, seed: string): string => paidWith === 'near' ? `NearSample${seed}Tx9` : `0x${Buffer.from(seed).toString('hex').padEnd(64, '1f').slice(0, 64)}`;
+
+/**
+ * The receipt of a sample call, steps and times as the API keeps them. The ids the fake knows: a sample
+ * call's own id (`pay_sample0000`), and four named cases: `pay_creditspaid`, `pay_freenoapi`,
+ * `pay_notxlink` (a transaction with no explorer URL) and `pay_unknownstep`. Any other id is unknown.
+ */
+export const sampleReceipt = (id: string, now: number): Receipt | undefined => {
+  const named: Readonly<Record<string, Call>> = {
+    pay_creditspaid: { ...sampleCall(3, now, 20), id: 'pay_creditspaid', paidWith: 'credits', payer: null, status: 'paid', apiStatus: 200, apiPaidWith: 'base', amount: '0.01', ms: 340 },
+    pay_freenoapi: { ...sampleCall(2, now, 40), id: 'pay_freenoapi', status: 'free', apiStatus: null, apiPaidWith: null, ms: null, paidWith: 'base' },
+    pay_notxlink: { ...sampleCall(1, now, 60), id: 'pay_notxlink', paidWith: 'tempo', apiPaidWith: 'tempo', payer: 'sample.near', status: 'paid', apiStatus: 200 },
+    pay_unknownstep: { ...sampleCall(0, now, 80), id: 'pay_unknownstep' },
+  };
+  const index = /^pay_sample(\d{4})$/.exec(id)?.[1];
+  const call = named[id] ?? (index === undefined || Number(index) >= 60 ? undefined : sampleCall(Number(index), now));
+  if (call === undefined)
+    return undefined;
+
+  const start = Date.parse(call.at);
+  const at = (offset: number): string => new Date(start + offset).toISOString();
+  const credits = call.paidWith === 'credits';
+  const paid = call.status === 'paid';
+  const hasApi = call.apiPaidWith !== null;
+  const apiAsset = call.apiPaidWith === null ? 'USDC' : assetOf(call.apiPaidWith);
+  const buyerHash = credits || !paid ? null : hashOf(call.paidWith, id.slice(-4));
+  const apiHash = call.apiPaidWith === null ? null : hashOf(call.apiPaidWith, `api${id.slice(-3)}`);
+  const steps: { step: string; at: string }[] = [
+    { step: 'received', at: at(0) },
+    { step: 'authorized', at: at(120) },
+    ...hasApi ? [{ step: 'api_signed', at: at(250) }] : [],
+    ...call.apiStatus === null ? [] : [{ step: 'api_answered', at: at(250 + (call.ms ?? 0)) }],
+    ...id === 'pay_unknownstep' ? [{ step: 'mystery_step', at: at(900) }] : [],
+    { step: paid ? 'settled' : 'released', at: at(900) },
+  ];
+
+  return {
+    id: call.id,
+    at: call.at,
+    status: call.status,
+    apiStatus: call.apiStatus,
+    service: call.service,
+    method: call.method,
+    path: call.path,
+    buyer: {
+      paidWith: call.paidWith,
+      network: networkOf(call.paidWith),
+      asset: assetOf(call.paidWith),
+      amount: call.amount,
+      payer: call.payer,
+      transaction: buyerHash,
+      explorerUrl: buyerHash === null ? null : explorerOf(call.paidWith, buyerHash),
+      settledAt: paid ? at(900) : null,
+    },
+    api: hasApi && call.apiPaidWith !== null
+      ? { paidWith: call.apiPaidWith, network: networkOf(call.apiPaidWith) ?? call.apiPaidWith, asset: apiAsset, amount: call.amount, payTo: 'sample-pay-to', transaction: apiHash, explorerUrl: apiHash === null ? null : explorerOf(call.apiPaidWith, apiHash), status: 'settled' }
+      : null,
+    apiPrice: hasApi ? call.amount : null,
+    fee: '0',
+    ms: { api: call.ms, total: call.ms === null ? null : call.ms + 576 },
+    steps,
+  };
+};
+
 const topScale: Readonly<Record<Period, number>> = { today: 0.11, '7d': 0.72, '30d': 1, all: 1.1 };
 
 const sampleTop = (period: Period, now: number, empty: boolean): TopStats => {
@@ -163,6 +236,13 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
     const body: CallsPage = { calls: all.slice((page - 1) * size, page * size), page, size, total: all.length, totalCapped: false };
 
     return { status: 200, body };
+  }
+  if (pathname.startsWith('/v1/calls/') && pathname !== '/v1/calls/stream') {
+    const receipt = empty ? undefined : sampleReceipt(decodeURIComponent(pathname.slice('/v1/calls/'.length)), now);
+
+    return receipt === undefined
+      ? { status: 404, body: { error: { code: 'not_found', message: 'No such call' } } }
+      : { status: 200, body: receipt };
   }
   if (pathname === '/v1/services') {
     const size = intParam(searchParams.get('size'), 20, 100);
