@@ -1,8 +1,9 @@
 import { PassThrough, Writable } from 'node:stream';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { HANDLERS, HELP_TEXT, parseCommand, runCli } from '../src/cli.ts';
+import { HANDLERS, HELP_TEXT, parseCommand, printFailure, runCli } from '../src/cli.ts';
 import type { Handlers, Io } from '../src/cli.ts';
-import { NotSupported, UsageError } from '../src/util.ts';
+import { createContext } from '../src/context.ts';
+import { NotSupported, Stop, UsageError } from '../src/util.ts';
 import { startFakeNearRpc } from './fakeNearRpc.ts';
 import type { FakeNearRpc } from './fakeNearRpc.ts';
 
@@ -121,12 +122,26 @@ describe('runCli', () => {
     expect(err()).toBe('✘ The URL must start with https://\n');
   });
 
-  it('returns 1 with one line from each stub', async () => {
-    for (const argv of [[], [URL_OK]]) {
-      const { io, err } = fakeIo();
-      expect(await runCli(argv, io)).toBe(1);
-      expect(err()).toBe('✘ Not built yet\n');
-    }
+  it('returns 1 with one line from the interactive stub', async () => {
+    const { io, err } = fakeIo();
+    expect(await runCli([], io)).toBe(1);
+    expect(err()).toBe('✘ Not built yet\n');
+  });
+
+  it('sends a request through the request handler, to the fetch of the Io only', async () => {
+    const urls: string[] = [];
+    const { io, out, err } = fakeIo();
+    const answering: Io = {
+      ...io,
+      fetch: (async (input: string | URL | Request) => {
+        urls.push(String(input));
+        return new Response('{"made":"up"}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch,
+    };
+    expect(await runCli([URL_OK], answering)).toBe(0);
+    expect(urls).toEqual([URL_OK]);
+    expect(out()).toContain('✔ Free: nothing paid.');
+    expect(err()).toBe('');
   });
 
   it('returns 3 for NotSupported, and 1 for another error', async () => {
@@ -141,6 +156,37 @@ describe('runCli', () => {
     const second = fakeIo();
     expect(await runCli([], second.io, handlers)).toBe(1);
     expect(second.err()).toBe('✘ Made up\n');
+  });
+});
+
+describe('printFailure', () => {
+  const failing = (error: unknown, env: Record<string, string> = {}) => {
+    const { io, out, err } = fakeIo(env);
+    const ctx = createContext(io);
+    const code = printFailure(ctx, error);
+    return { code, out: out(), err: err() };
+  };
+
+  it('prints a hint after the line, on stdout', () => {
+    const result = failing(new NotSupported('Not supported: made up. Nothing paid.', ['  Through Anyfare it takes NEAR:', '  https://pay.example.test/x']));
+    expect(result).toEqual({
+      code: 3,
+      out: '  Through Anyfare it takes NEAR:\n  https://pay.example.test/x\n',
+      err: '✘ Not supported: made up. Nothing paid.\n',
+    });
+  });
+
+  it('adds Not charged when it is known, and gives each failure its exit code', () => {
+    expect(failing(new Stop('It failed.', { notCharged: true }))).toMatchObject({ code: 1, err: '✘ It failed. Not charged.\n' });
+    expect(failing(new UsageError('Bad.'))).toMatchObject({ code: 2, err: '✘ Bad.\n' });
+  });
+
+  it('never prints a key, in any line', () => {
+    const key = `ed25519:${'3'.repeat(64)}`;
+    const result = failing(new NotSupported(`Made up ${key}`, [`  hint ${key}`]), { NEAR_PRIVATE_KEY: key });
+    expect(`${result.out}${result.err}`).not.toContain('3333');
+    const own = failing(new TypeError(`Made up\nwith ${'4'.repeat(70)} in it`), { NEAR_PRIVATE_KEY: `ed25519:${'4'.repeat(70)}` });
+    expect(own.err).toBe('✘ Made up with … in it\n');
   });
 });
 

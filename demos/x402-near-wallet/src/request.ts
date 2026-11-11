@@ -133,7 +133,12 @@ export function parseRequest(given: readonly string[]): HttpRequest {
       if (OWN_HEADERS.includes(headerName.toLowerCase())) {
         throw new UsageError(`The app sets ${headerName.toUpperCase()} itself. Remove that header`);
       }
-      headers.push([headerName, text.slice(colon + 1).trim()]);
+      const headerValue = text.slice(colon + 1).trim();
+      // An MPP credential: a second payment next to the app's own
+      if (headerName.toLowerCase() === 'authorization' && /^payment(?:[ \t]|$)/i.test(headerValue)) {
+        throw new UsageError('The app pays with x402 itself. Remove the Authorization: Payment header');
+      }
+      headers.push([headerName, headerValue]);
     } else if (kind === 'json') {
       if (text.startsWith('@')) throw fileRefused(name);
       json.push(text);

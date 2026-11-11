@@ -169,6 +169,16 @@ describe('parseRequest', () => {
     expect(refused(`-H 'x-payment: x' ${URL_OK}`)).toBe('The app sets X-PAYMENT itself. Remove that header');
   });
 
+  it('refuses an MPP credential, Authorization: Payment, in any case, and takes any other Authorization', () => {
+    const line = 'The app pays with x402 itself. Remove the Authorization: Payment header';
+    expect(refused(`-H 'Authorization: Payment eyJtYWRlIjoidXAifQ' ${URL_OK}`)).toBe(line);
+    expect(refused(`-H 'authorization:payment' ${URL_OK}`)).toBe(line);
+    expect(refused(`-H 'AUTHORIZATION:  PAYMENT\tx' ${URL_OK}`)).toBe(line);
+    expect(parse(`-H 'Authorization: Bearer made-up' ${URL_OK}`).headers).toEqual([['Authorization', 'Bearer made-up']]);
+    expect(parse(`-H 'Authorization: Paymentish x' ${URL_OK}`).headers).toEqual([['Authorization', 'Paymentish x']]);
+    expect(parse(`-H 'X-Note: Payment x' ${URL_OK}`).headers).toEqual([['X-Note', 'Payment x']]);
+  });
+
   it('names any other option', () => {
     expect(refused(`-F a=b ${URL_OK}`)).toBe(
       '-F is not supported. This app takes -X, -H, -d, --data, --data-raw, --json, -s and -S',

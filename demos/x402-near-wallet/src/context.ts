@@ -6,6 +6,7 @@ import type { Prompter } from './prompt.ts';
 import { createStyle } from './style.ts';
 import type { Style } from './style.ts';
 import { Stop, UsageError } from './util.ts';
+import { withoutKey } from './wallet.ts';
 
 export interface Context {
   readonly io: Io;
@@ -48,10 +49,10 @@ export function createContext(io: Io): Context {
     style,
     print(lines) {
       const all = typeof lines === 'string' ? [lines] : lines;
-      if (all.length > 0) io.stdout.write(`${all.join('\n')}\n`);
+      if (all.length > 0) io.stdout.write(`${withoutKey(all.join('\n'), io.env)}\n`);
     },
     warn(line) {
-      io.stderr.write(`${warnStyle.styles.warn(line)}\n`);
+      io.stderr.write(`${warnStyle.styles.warn(withoutKey(line, io.env))}\n`);
     },
     requireAnswerable,
     async approve({ yes, question, noTerminal, declined }) {

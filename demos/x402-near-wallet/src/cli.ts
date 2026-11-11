@@ -5,12 +5,14 @@ import { readNearBalance, walletBlock } from './balances.ts';
 import { loadConfig } from './config.ts';
 import { createContext } from './context.ts';
 import type { Context } from './context.ts';
+import { clip, hideKeys } from './errors.ts';
 import type { Fetch } from './http.ts';
+import { payRequest } from './pay.ts';
 import { parseRequest } from './request.ts';
 import type { HttpRequest } from './request.ts';
 import { createStyle } from './style.ts';
 import { NotSupported, Stop, UsageError } from './util.ts';
-import { readNearAccount } from './wallet.ts';
+import { readNearAccount, withoutKey } from './wallet.ts';
 
 export interface Io {
   readonly stdout: Writable;
@@ -129,6 +131,13 @@ async function balanceCommand(_command: { readonly kind: 'balance' }, ctx: Conte
   return 0;
 }
 
+/** A request: sent unpaid, and paid in USDC on NEAR when it asks for it. */
+function requestCommand(command: Extract<Command, { kind: 'request' }>, ctx: Context): Promise<number> {
+  const { maxUsd } = command.options;
+  const config = loadConfig(ctx.env, maxUsd === undefined ? {} : { maxUsd });
+  return payRequest(ctx, config, command.request, command.options);
+}
+
 const notBuilt = (): Promise<number> => Promise.reject(new Stop('Not built yet'));
 
 export const HANDLERS: Handlers = {
@@ -138,23 +147,39 @@ export const HANDLERS: Handlers = {
   },
   interactive: notBuilt,
   balance: balanceCommand,
-  request: notBuilt,
+  request: requestCommand,
 };
+
+/** One line printed for a failure: no key in it, in whole or in part. */
+const safeLine = (ctx: Context, text: string): string => withoutKey(hideKeys(text), ctx.env);
+
+/**
+ * Prints a failure: one ✘ line on stderr, then a `NotSupported`'s hint on stdout. Another error than
+ * a `Stop` is not the app's own: its text is cut to one short line. The hint is the request itself,
+ * to paste back: only the wallet's own key is taken out of it, never a part that merely looks like a
+ * key, such as a transaction hash in its URL. Returns the exit code: 1 failed, 2 bad usage, 3 not
+ * supported.
+ */
+export function printFailure(ctx: Context, error: unknown): number {
+  const style = createStyle(ctx.io.stderr);
+  const line = error instanceof Stop ? error.line() : clip(error instanceof Error ? error.message : String(error));
+  ctx.io.stderr.write(`${style.fail(safeLine(ctx, line))}\n`);
+  // `print` takes NEAR_PRIVATE_KEY out of every line
+  if (error instanceof NotSupported && error.hint.length > 0) ctx.print(error.hint);
+  if (error instanceof UsageError) return 2;
+  if (error instanceof NotSupported) return 3;
+  return 1;
+}
 
 /** Runs the app and returns the exit code: 0 answered, 1 failed, 2 bad usage, 3 not supported. */
 export async function runCli(argv: readonly string[], io: Io, handlers: Handlers = HANDLERS): Promise<number> {
-  const style = createStyle(io.stderr);
   const ctx = createContext(io);
   try {
     const command = parseCommand(argv);
     const handler = handlers[command.kind] as (command: Command, ctx: Context) => Promise<number>;
     return await handler(command, ctx);
   } catch (error) {
-    const message = error instanceof Stop ? error.line() : error instanceof Error ? error.message : String(error);
-    io.stderr.write(`${style.fail(message)}\n`);
-    if (error instanceof UsageError) return 2;
-    if (error instanceof NotSupported) return 3;
-    return 1;
+    return printFailure(ctx, error);
   } finally {
     ctx.close();
   }
