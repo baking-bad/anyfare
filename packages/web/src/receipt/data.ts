@@ -15,6 +15,3 @@ export const loadReceipt = (read: Reader, id: string): Promise<ApiResult<Receipt
 export const receiptRequests = ({ apiUrl }: Pick<SiteSettings, 'apiUrl'>, id: string): readonly AgentRequest[] => [
   { method: 'GET', url: `${apiUrl}${paths.call(id)}`, note: 'The receipt as JSON. 404 for an unknown call or one still in flight' },
 ];
-
-/** The header that tells the 404 page the visitor asked for a call that doesn't exist. */
-export const missingHeader = 'x-receipt-missing';

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
-import type { Call, CallsPage, DailyPoint, LiveStats, PaidWith, Period, Receipt, ServiceRow, ServicesPage, Stats, TopStats } from '../../src/api/types';
+import type { Call, CallsPage, DailyPoint, LiveStats, PaidWith, Period, Receipt, ServiceDetail, ServiceRow, ServicesPage, Stats, TopStats } from '../../src/api/types';
 
 // A small HTTP server that answers the public read API's endpoints with sample data, for the website's
 // tests and for looking at the site by hand. The data is sample data: hosts are example.com, the payer
@@ -88,7 +88,11 @@ const sampleLive = (now: number, empty: boolean): LiveStats => ({
   perMinute: Array.from({ length: 30 }, (_, index) => ({ minute: new Date(Math.floor(now / 60_000) * 60_000 - (29 - index) * 60_000).toISOString(), calls: empty ? 0 : index % 7 })),
 });
 
-const serviceRows = (empty: boolean): readonly ServiceRow[] => empty ? [] : hosts.map((host, index) => ({
+// 27 services: the five the calls are made to, then 22 more, so the list has a second page
+const moreHosts = Array.from({ length: 22 }, (_, index) => `${['feed', 'geo', 'tts', 'ocr', 'rpc', 'pdf'][index % 6]}${String(index + 1).padStart(2, '0')}.example.org`);
+export const serviceHosts: readonly string[] = [...hosts, ...moreHosts];
+
+const serviceRow = (host: string, index: number): ServiceRow => index < hosts.length ? {
   host,
   paidEndpoints: 4 - index % 3,
   priceFrom: money(0.001 * (1 + index)),
@@ -99,7 +103,21 @@ const serviceRows = (empty: boolean): readonly ServiceRow[] => empty ? [] : host
   successRate: 0.99 - index * 0.01,
   p50Ms: 340 + index * 40,
   trend: Array.from({ length: 30 }, (_, step) => (step * 3 + index * 5) % 17),
-}));
+} : {
+  host,
+  paidEndpoints: 1 + index % 4,
+  priceFrom: money(0.001 * (1 + index % 7)),
+  currency: 'USD',
+  calls: 190 - (index - hosts.length) * 7,
+  buyers: Math.max(1, 15 - (index - hosts.length)),
+  volume: money((190 - (index - hosts.length) * 7) * 0.0099),
+  // Some have no rate and no time yet
+  successRate: index % 6 === 0 ? null : 0.97,
+  p50Ms: index % 6 === 0 ? null : 400 + index * 5,
+  trend: Array.from({ length: 30 }, (_, step) => (step * 2 + index) % 9),
+};
+
+const serviceRows = (empty: boolean): readonly ServiceRow[] => empty ? [] : serviceHosts.map(serviceRow);
 
 const callsOf = (now: number, empty: boolean): readonly Call[] => empty ? [] : Array.from({ length: 60 }, (_, index) => sampleCall(index, now));
 
@@ -109,15 +127,17 @@ const intParam = (value: string | null, fallback: number, max: number): number =
   return Number.isInteger(parsed) && parsed >= 1 ? Math.min(parsed, max) : fallback;
 };
 
-/** Whether a call passes the filters of a list or a stream: `paidWith`, `service` (a part of the host), `endpoint` and `status`. */
+/** Whether a call passes the filters of a list or a stream: `paidWith`, `service` (a part of the host), `host` (the exact host), `endpoint` and `status`. */
 export const matchesCall = (call: Call, params: URLSearchParams): boolean => {
   const paidWith = params.get('paidWith');
   const service = params.get('service');
+  const host = params.get('host');
   const endpoint = params.get('endpoint');
   const status = params.get('status');
 
   return (paidWith === null || paidWith === call.paidWith)
     && (service === null || call.service.toLowerCase().includes(service.toLowerCase()))
+    && (host === null || host === call.service)
     && (endpoint === null || endpoint === call.path)
     && (status === null || status === call.status);
 };
@@ -214,6 +234,73 @@ const sampleTop = (period: Period, now: number, empty: boolean): TopStats => {
   };
 };
 
+const servicePaths = ['/v1/sample/quotes/latest', '/v1/sample/lookup', '/v1/sample/history', '/v1/sample/search'] as const;
+const pathShares = [0.65, 0.2, 0.1, 0.05] as const;
+const waysShare: Readonly<Record<string, number>> = { near: 0.36, base: 0.22, solana: 0.1, tempo: 0.05, credits: 0.27 };
+
+/**
+ * One service for a period, or undefined for a host the fake doesn't know (the hosts of `serviceHosts`).
+ * `maps.example.com` has no call in the period before, so it has no change to show. The top buyers hold
+ * a Credits buyer with no payer.
+ */
+export const sampleService = (host: string, period: Period, now: number, payUrl = 'https://pay.example.com'): ServiceDetail | undefined => {
+  const index = serviceHosts.indexOf(host);
+  if (index < 0)
+    return undefined;
+  const row = serviceRow(host, index);
+  const scale = topScale[period];
+  const calls = Math.round(row.calls * scale);
+  const buyers = Math.max(1, Math.round(row.buyers * Math.min(1, scale)));
+  const volume = (value: number): string => money(value * 0.0099);
+
+  return {
+    host,
+    period,
+    updatedAt: new Date(now - 60_000).toISOString(),
+    paidEndpoints: row.paidEndpoints,
+    stats: {
+      calls,
+      callsBefore: period === 'all' ? null : host === 'maps.example.com' ? 0 : Math.round(calls * 0.85),
+      volume: volume(calls),
+      buyers,
+      returningShare: 0.63,
+      successRate: row.successRate,
+      failedCalls: row.successRate === null ? 0 : Math.round(calls * (1 - row.successRate)),
+      p50Ms: row.p50Ms,
+      p95Ms: row.p50Ms === null ? null : Math.round(row.p50Ms * 2.4),
+    },
+    endpoints: servicePaths.slice(0, row.paidEndpoints).map((path, step) => ({
+      path,
+      method: step === row.paidEndpoints - 1 && row.paidEndpoints > 2 ? null : step === 1 ? 'POST' : 'GET',
+      priceNow: money(Number(row.priceFrom) * (1 + step)),
+      calls: Math.round(calls * pathShares[step]!),
+      buyers: Math.max(1, Math.round(buyers * pathShares[step]!)),
+      volume: volume(Math.round(calls * pathShares[step]!)),
+      successRate: row.successRate,
+      p50Ms: row.p50Ms,
+      link: `${payUrl}/${host}${path}`,
+    })),
+    daily: dailySeries(now, false).map(point => ({ day: point.day, calls: Math.round(point.calls * row.calls / 600), volume: volume(Math.round(point.calls * row.calls / 600)), buyers: Math.round(point.calls * row.calls / 6000) })),
+    byPaidWith: rails.map(paidWith => ({
+      paidWith,
+      calls: Math.round(calls * waysShare[paidWith]!),
+      share: waysShare[paidWith]!,
+      buyers: Math.max(1, Math.round(buyers * waysShare[paidWith]!)),
+      volume: volume(Math.round(calls * waysShare[paidWith]!)),
+    })),
+    topBuyers: {
+      share: 0.48,
+      buyers: [
+        { payer: 'sample.near', paidWith: 'near', calls: Math.round(calls * 0.2), spent: volume(Math.round(calls * 0.2)), lastCallAt: new Date(now - 120_000).toISOString() },
+        { payer: `0x${'ab12'.repeat(10)}`, paidWith: 'base', calls: Math.round(calls * 0.12), spent: volume(Math.round(calls * 0.12)), lastCallAt: new Date(now - 540_000).toISOString() },
+        { payer: null, paidWith: 'credits', calls: Math.round(calls * 0.08), spent: volume(Math.round(calls * 0.08)), lastCallAt: new Date(now - 3_600_000).toISOString() },
+        { payer: 'SampleSolanaAddress1111111111111111111111111', paidWith: 'solana', calls: Math.round(calls * 0.05), spent: volume(Math.round(calls * 0.05)), lastCallAt: new Date(now - 10_800_000).toISOString() },
+        { payer: `0x${'cd34'.repeat(10)}`, paidWith: 'tempo', calls: Math.round(calls * 0.03), spent: volume(Math.round(calls * 0.03)), lastCallAt: new Date(now - 129_600_000).toISOString() },
+      ],
+    },
+  };
+};
+
 /** The answer to a read: its status and body. Undefined for a path the fake doesn't know. */
 export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number): { readonly status: number; readonly body: unknown } | undefined => {
   const empty = mode === 'empty';
@@ -247,24 +334,39 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
   if (pathname === '/v1/services') {
     const size = intParam(searchParams.get('size'), 20, 100);
     const page = intParam(searchParams.get('page'), 1, 1000);
-    const rows = [...serviceRows(empty)];
+    const all = [...serviceRows(empty)];
+    const q = searchParams.get('q')?.toLowerCase();
+    const rows = all.filter(row => q === undefined || row.host.toLowerCase().includes(q));
     const sort = searchParams.get('sort') ?? 'calls';
-    if (sort === 'buyers')
-      rows.sort((a, b) => b.buyers - a.buyers);
-    else if (sort === 'price')
-      rows.sort((a, b) => Number(a.priceFrom) - Number(b.priceFrom));
-    else
-      rows.sort((a, b) => b.calls - a.calls);
+    if (!['calls', 'buyers', 'volume', 'endpoints', 'price'].includes(sort))
+      return { status: 400, body: { error: { code: 'invalid_request', message: 'Unknown sort' } } };
+    rows.sort((a, b) => (
+      sort === 'buyers' ? b.buyers - a.buyers
+        : sort === 'volume' ? Number(b.volume) - Number(a.volume)
+          : sort === 'endpoints' ? b.paidEndpoints - a.paidEndpoints
+            : sort === 'price' ? Number(a.priceFrom) - Number(b.priceFrom)
+              : 0
+    ) || b.calls - a.calls);
     const body: ServicesPage = {
       services: rows.slice((page - 1) * size, page * size),
       page,
       size,
       total: rows.length,
-      totals: { services: rows.length, paidEndpoints: rows.reduce((sum, row) => sum + row.paidEndpoints, 0), calls30d: rows.reduce((sum, row) => sum + row.calls, 0) },
+      totals: { services: all.length, paidEndpoints: all.reduce((sum, row) => sum + row.paidEndpoints, 0), calls30d: all.reduce((sum, row) => sum + row.calls, 0) },
       updatedAt: empty ? null : new Date(now - 60_000).toISOString(),
     };
 
     return { status: 200, body };
+  }
+  if (pathname.startsWith('/v1/services/')) {
+    const period = searchParams.get('period') ?? '30d';
+    if (!periods.includes(period as Period))
+      return { status: 400, body: { error: { code: 'invalid_request', message: 'Unknown period' } } };
+    const service = empty ? undefined : sampleService(decodeURIComponent(pathname.slice('/v1/services/'.length)), period as Period, now);
+
+    return service === undefined
+      ? { status: 404, body: { error: { code: 'not_found', message: 'No paid call went to this service' } } }
+      : { status: 200, body: service };
   }
 
   return undefined;

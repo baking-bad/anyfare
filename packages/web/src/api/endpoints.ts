@@ -1,5 +1,5 @@
 import type { ApiResult, Reader } from './reader';
-import type { CallsPage, CallsQuery, LiveStats, Period, Receipt, ServicesPage, ServicesQuery, Stats, TopStats } from './types';
+import type { CallsPage, CallsQuery, LiveStats, Period, Receipt, ServiceDetail, ServicesPage, ServicesQuery, Stats, TopStats } from './types';
 
 // The public read API's endpoints a page reads. `paths` builds each path once: the page reads it, and
 // the Agent view and the Markdown twin list it.
@@ -22,10 +22,11 @@ export const paths = {
   liveStats: '/v1/stats/live',
   topStats: (period: Period): string => `/v1/stats/top${query({ period })}`,
   services: (q: ServicesQuery = {}): string => `/v1/services${query({ q: q.q, sort: q.sort, page: q.page, size: q.size })}`,
-  calls: (q: CallsQuery = {}): string => `/v1/calls${query({ paidWith: q.paidWith, service: q.service, endpoint: q.endpoint, status: q.status, page: q.page, size: q.size })}`,
+  service: (host: string, period?: Period): string => `/v1/services/${encodeURIComponent(host)}${query({ period })}`,
+  calls: (q: CallsQuery = {}): string => `/v1/calls${query({ paidWith: q.paidWith, service: q.service, host: q.host, endpoint: q.endpoint, status: q.status, page: q.page, size: q.size })}`,
   call: (id: string): string => `/v1/calls/${encodeURIComponent(id)}`,
   // The stream takes the list's filters, and no page or size
-  callStream: (q: Omit<CallsQuery, 'page' | 'size'> = {}): string => `/v1/calls/stream${query({ paidWith: q.paidWith, service: q.service, endpoint: q.endpoint, status: q.status })}`,
+  callStream: (q: Omit<CallsQuery, 'page' | 'size'> = {}): string => `/v1/calls/stream${query({ paidWith: q.paidWith, service: q.service, host: q.host, endpoint: q.endpoint, status: q.status })}`,
 } as const;
 
 const isStats = (value: unknown): value is Stats =>
@@ -40,6 +41,10 @@ const isTopStats = (value: unknown): value is TopStats =>
 
 const isServicesPage = (value: unknown): value is ServicesPage => isRecord(value) && Array.isArray(value['services']);
 
+const isServiceDetail = (value: unknown): value is ServiceDetail =>
+  isRecord(value) && typeof value['host'] === 'string' && isRecord(value['stats']) && Array.isArray(value['endpoints']) && Array.isArray(value['daily'])
+  && Array.isArray(value['byPaidWith']) && isRecord(value['topBuyers']) && Array.isArray(value['topBuyers']['buyers']);
+
 const isCallsPage = (value: unknown): value is CallsPage => isRecord(value) && Array.isArray(value['calls']);
 
 export const isReceipt = (value: unknown): value is Receipt =>
@@ -50,6 +55,8 @@ export const getStats = (read: Reader): Promise<ApiResult<Stats>> => read(paths.
 export const getLiveStats = (read: Reader): Promise<ApiResult<LiveStats>> => read(paths.liveStats, isLiveStats);
 
 export const listServices = (read: Reader, q: ServicesQuery = {}): Promise<ApiResult<ServicesPage>> => read(paths.services(q), isServicesPage);
+
+export const getService = (read: Reader, host: string, period?: Period): Promise<ApiResult<ServiceDetail>> => read(paths.service(host, period), isServiceDetail);
 
 export const listCalls = (read: Reader, q: CallsQuery = {}): Promise<ApiResult<CallsPage>> => read(paths.calls(q), isCallsPage);
 

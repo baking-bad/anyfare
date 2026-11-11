@@ -33,9 +33,16 @@ const copyText = async (text: string): Promise<boolean> => {
 
 /**
  * Copies `text` when pressed, by mouse, touch or keyboard, and says "Copied" for a moment. With
- * `iconOnly` it is a square icon button and `label` is its accessible name.
+ * `iconOnly` it is a square icon button and `label` is its accessible name. `name` is the accessible name of
+ * a button that shows text, when the text alone doesn't say what is copied. `withIcon` puts the copy icon
+ * before the text.
  */
-export const CopyButton = ({ text, label = 'Copy', variant = 'secondary', size = 'sm', iconOnly = false, className }: { readonly text: string; readonly label?: string } & ButtonStyle) => {
+export const CopyButton = ({ text, label = 'Copy', name, withIcon = false, variant = 'secondary', size = 'sm', iconOnly = false, className }: {
+  readonly text: string;
+  readonly label?: string;
+  readonly name?: string;
+  readonly withIcon?: boolean;
+} & ButtonStyle) => {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -49,8 +56,9 @@ export const CopyButton = ({ text, label = 'Copy', variant = 'secondary', size =
   };
 
   return (
-    <Button variant={variant} size={size} iconOnly={iconOnly} {...className ? { className } : {}} aria-label={iconOnly ? label : undefined} onClick={() => void press()}>
-      {iconOnly ? <Icon name={copied ? 'check' : 'copy'} /> : copied ? 'Copied' : label}
+    <Button variant={variant} size={size} iconOnly={iconOnly} {...className ? { className } : {}} aria-label={iconOnly ? label : name} onClick={() => void press()}>
+      {iconOnly || withIcon ? <Icon name={copied ? 'check' : 'copy'} /> : null}
+      {iconOnly ? null : copied ? 'Copied' : label}
       <span className="sr-only" role="status">{copied ? 'Copied' : ''}</span>
     </Button>
   );

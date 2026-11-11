@@ -1,21 +1,34 @@
 import { headers } from 'next/headers';
 
 import { Button } from '../src/components/Button';
-import { missingHeader } from '../src/receipt/data';
-import { notFoundLine } from '../src/receipt/content';
+import { missingKindHeader, missingNameHeader, missingPageOfKind } from '../src/missing/pages';
 
-/** A path with no page. A receipt that doesn't exist is told apart by the header proxy.ts sets. */
+const decoded = (value: string | null): string => {
+  try {
+    return decodeURIComponent(value ?? '');
+  }
+  catch {
+    return '';
+  }
+};
+
+/** A path with no page. A thing that doesn't exist, such as a call or a service, is told apart by the headers proxy.ts sets. */
 const NotFound = async () => {
-  const receipt = (await headers()).get(missingHeader) === '1';
+  const incoming = await headers();
+  const missing = missingPageOfKind(incoming.get(missingKindHeader));
+  const name = decoded(incoming.get(missingNameHeader));
+  const actions = missing?.actions(name) ?? [{ label: 'Go to the home page', href: '/' }];
 
   return (
     <section className="band">
       <div className="container ruled section">
         <div className="stack-lg">
           <span className="eyebrow">404</span>
-          <h1 className="h2">{receipt ? 'Receipt not found' : 'Page not found'}</h1>
-          <p className="lead">{receipt ? notFoundLine : 'There is no page at this address.'}</p>
-          <div className="row"><Button size="lg" href={receipt ? '/calls' : '/'}>{receipt ? 'See the calls' : 'Go to the home page'}</Button></div>
+          <h1 className="h2">{missing?.title ?? 'Page not found'}</h1>
+          <p className="lead">{missing?.line ?? 'There is no page at this address.'}</p>
+          <div className="row">
+            {actions.map(action => <Button key={action.href} size="lg" href={action.href} {...action.outline ? { variant: 'outline' as const } : {}}>{action.label}</Button>)}
+          </div>
         </div>
       </div>
     </section>

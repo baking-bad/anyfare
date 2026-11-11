@@ -39,6 +39,8 @@ export interface CallsQuery {
   readonly paidWith?: PaidWith;
   // A part of the host
   readonly service?: string;
+  // The exact host. It is read by an index, so the service pages use it and not `service`.
+  readonly host?: string;
   // The exact path
   readonly endpoint?: string;
   readonly status?: CallStatus;
