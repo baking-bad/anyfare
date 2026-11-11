@@ -7,6 +7,7 @@ import { formatTokenAmount } from '@anyfare/topups';
 
 import { authenticatedAccount } from '../accounts/auth.js';
 import { errorStatuses } from '../errors.js';
+import { publicCors, publicReadMethods } from '../public/cors.js';
 import { TopupMismatchError, TopupsUnavailableError, type TopupService } from './service.js';
 
 export interface TopupRoutesOptions {
@@ -87,7 +88,7 @@ const toTopupBody = (topup: Topup) => ({
 });
 
 /**
- * `GET /v1/topups/options` without a key, limited per client IP, and behind the master key,
+ * `GET /v1/topups/options` without a key, limited per client IP and readable from any origin, and behind the master key,
  * `POST /v1/topups` and `GET /v1/topups/{id}`. While top-ups are off, each answers
  * `503 topups_unavailable`.
  */
@@ -105,7 +106,7 @@ export const registerTopupRoutes = (app: FastifyInstance, { topups, enabled, aut
     throw new RateLimitedError(retryAfterSeconds);
   };
 
-  app.get('/v1/topups/options', { onRequest: [whenEnabled, documentsLimit] }, async (request, reply) => {
+  const options = async (request: FastifyRequest, reply: FastifyReply) => {
     const networks = await topups.options(request.log);
     const listed = networks.every(({ tokens }) => tokens !== undefined);
     // Without the token list the answer is only good until 1Click answers again
@@ -121,7 +122,9 @@ export const registerTopupRoutes = (app: FastifyInstance, { topups, enabled, aut
           : { tokens: tokens.map(token => ({ symbol: token.symbol, ...token.contractAddress === undefined ? {} : { address: token.contractAddress }, decimals: token.decimals })) },
       })),
     };
-  });
+  };
+  // Keyless, so any origin may read it
+  app.route({ method: [...publicReadMethods], url: '/v1/topups/options', onRequest: [publicCors, whenEnabled, documentsLimit], handler: options });
 
   app.register(async scope => {
     scope.addHook('onRequest', authenticate);

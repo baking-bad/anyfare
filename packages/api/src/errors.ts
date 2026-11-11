@@ -24,6 +24,8 @@ export const errorStatuses = {
   // 1Click's quote wasn't for what we asked, so its address was never given out
   topup_mismatch: 502,
   amount_too_small: 400,
+  // The server is shutting down, so a new stream of calls goes to another one
+  shutting_down: 503,
 } as const satisfies ErrorStatusTable;
 
 /** A request the route can't take: the message says what's wrong, never quoting a value it carried. */

@@ -19,6 +19,7 @@ import { createFreeCredits, createFreeCreditsCounter } from './accounts/freeCred
 import { registerAccountRoutes } from './accounts/routes.js';
 import { createAccountService } from './accounts/service.js';
 import { createIpLimit, createSignupLimit } from './accounts/signupLimit.js';
+import { registerCallRoutes } from './calls/routes.js';
 import { registerCatalogRoutes } from './catalog/routes.js';
 import { errorStatuses } from './errors.js';
 import { registerInternalRoutes } from './internal/routes.js';
@@ -56,6 +57,8 @@ export interface ApiDependencies {
   readonly oneClick?: OneClickClient;
   // The tokens 1Click takes. Default: a catalog over `oneClick`.
   readonly tokenCatalog?: TokenCatalog;
+  // How often the stream of calls reads finished calls, and pings its clients. Defaults: 1 s and 15 s.
+  readonly callStreamTimings?: { readonly pollMs?: number; readonly pingMs?: number };
 }
 
 export interface ApiListenOptions extends ListenOptions {
@@ -107,6 +110,7 @@ export const createApp = ({
     clock,
     onStale: ({ error, ageMs }) => logger.warn({ error, ageMs }, 'The 1Click token list could not be refreshed, so top-ups use the older list'),
   }),
+  callStreamTimings,
 }: ApiDependencies): ApiServer => {
   const server = createServer({
     logger,
@@ -163,6 +167,11 @@ export const createApp = ({
     documentsLimit,
     limiter,
     limit: config.rateLimits.topups,
+  });
+  // Public reads of calls and numbers share one limit per client IP
+  const publicReadsLimit = createIpLimit({ limiter, limit: config.rateLimits.publicReads, name: 'publicReads' });
+  registerCallRoutes(app, {
+    db: postgres.db, config, limit: publicReadsLimit, clock, logger, ...callStreamTimings === undefined ? {} : { timings: callStreamTimings },
   });
 
   // The internal API on a listener of its own, with the same request IDs, logs, and error envelope

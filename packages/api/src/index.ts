@@ -20,6 +20,9 @@ export type { LedgerRoutesOptions } from './ledger/routes.js';
 export { createInternalAuth, internalCallerHeader, internalSecretHeader, registerInternalRoutes } from './internal/routes.js';
 export type { InternalRoutesOptions } from './internal/routes.js';
 export { internalSecretVariable, minimumInternalSecretLength, readInternalSecret } from './internal/secret.js';
+export { registerCallRoutes } from './calls/routes.js';
+export type { CallRoutesOptions } from './calls/routes.js';
+export { publicCors, publicReadMethods } from './public/cors.js';
 export { registerTopupRoutes } from './topups/routes.js';
 export type { TopupRoutesOptions } from './topups/routes.js';
 export {

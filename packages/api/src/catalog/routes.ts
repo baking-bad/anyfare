@@ -1,10 +1,11 @@
-import type { FastifyInstance, onRequestHookHandler } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest, onRequestHookHandler } from 'fastify';
 
 import { formatUsd, parseUsd, usdAmountPattern, type MicroUsd } from '@anyfare/common';
 import { paymentMethodsFor, type PlatformConfig } from '@anyfare/core';
 import { createCatalogRepository, type Database } from '@anyfare/db';
 
 import { InvalidRequestError } from '../errors.js';
+import { publicCors, publicReadMethods } from '../public/cors.js';
 
 const defaultLimit = 20;
 
@@ -28,8 +29,8 @@ interface ListQuery {
 }
 
 /**
- * `GET /v1/catalog`: the routed endpoints, oldest first, without a key and limited per client IP.
- * They are unverified: their owners haven't registered them.
+ * `GET /v1/catalog`: the routed endpoints, oldest first, without a key, limited per client IP, and
+ * readable from any origin. They are unverified: their owners haven't registered them.
  */
 export const registerCatalogRoutes = (app: FastifyInstance, { db, config, limit }: {
   readonly db: Database;
@@ -39,7 +40,7 @@ export const registerCatalogRoutes = (app: FastifyInstance, { db, config, limit 
   const catalog = createCatalogRepository({ db });
   const pay = config.urls.pay.replace(/\/+$/, '');
 
-  app.get<{ Querystring: ListQuery }>('/v1/catalog', { onRequest: limit, schema: { querystring: listQuerySchema } }, async (request, reply) => {
+  const list = async (request: FastifyRequest<{ Querystring: ListQuery }>, reply: FastifyReply) => {
     const { q, limit: pageSize = defaultLimit } = request.query;
     let maxPrice: MicroUsd | undefined;
     try {
@@ -70,5 +71,9 @@ export const registerCatalogRoutes = (app: FastifyInstance, { db, config, limit 
     reply.header('cache-control', 'public, max-age=60');
 
     return { endpoints, next: endpoints.length > 0 && offset + endpoints.length < routed.total ? String(offset + endpoints.length) : null };
+  };
+  // Any origin may read it
+  app.route<{ Querystring: ListQuery }>({
+    method: [...publicReadMethods], url: '/v1/catalog', onRequest: [publicCors, limit], schema: { querystring: listQuerySchema }, handler: list,
   });
 };
