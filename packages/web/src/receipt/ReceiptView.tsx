@@ -89,8 +89,10 @@ const ApiBox = ({ receipt }: { readonly receipt: Receipt }) => {
   );
 };
 
-const Detail = ({ label, wide = false, children }: { readonly label: string; readonly wide?: boolean; readonly children: ReactNode }) => (
-  <div className={wide ? 'wide' : undefined}>
+const Detail = ({ label, wide = false, full = false, children }: {
+  readonly label: string; readonly wide?: boolean; readonly full?: boolean; readonly children: ReactNode;
+}) => (
+  <div className={full ? 'full' : wide ? 'wide' : undefined}>
     <span className="small muted">{label}</span>
     <div>{children}</div>
   </div>
@@ -105,7 +107,7 @@ const Details = ({ receipt }: { readonly receipt: Receipt }) => (
     <Detail label="Our fee"><span className="num">{receipt.fee === null ? dash : usdOf(receipt.fee)}</span></Detail>
     <Detail label="API time"><span className="num">{receipt.ms.api === null ? dash : ms(receipt.ms.api)}</span></Detail>
     <Detail label="End to end"><span className="num">{receipt.ms.total === null ? dash : seconds(receipt.ms.total)}</span></Detail>
-    <Detail label="Receipt id"><div className="mono small break">{receipt.id}</div></Detail>
+    <Detail label="Receipt id" full><div className="mono small receipt-id">{receipt.id}</div></Detail>
   </div>
 );
 

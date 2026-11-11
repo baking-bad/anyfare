@@ -30,6 +30,9 @@
 
 .detail-grid { display: grid; gap: 16px 24px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 .detail-grid .wide { grid-column: span 2; }
+/* The receipt id has a row of its own and stays on one line; a very narrow screen scrolls it inside its box */
+.detail-grid .full { grid-column: 1 / -1; }
+.detail-grid .receipt-id { white-space: nowrap; overflow-x: auto; }
 @media (max-width: 640px) { .detail-grid .wide { grid-column: auto; } }
 .detail-grid > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .divider-line { height: 1px; background: var(--divider); }
