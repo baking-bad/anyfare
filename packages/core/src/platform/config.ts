@@ -94,6 +94,13 @@ export interface PlatformConfig {
     readonly probeIp: RateLimit;
     // Top-ups each account may ask for
     readonly topups: RateLimit;
+    // Public reads per client IP, such as calls and their receipts. A stream counts once, when it opens.
+    readonly publicReads: RateLimit;
+  };
+  // Open streams of calls on each API process. Over a cap, a new stream gets 429.
+  readonly callStream: {
+    readonly maxPerIp: number;
+    readonly maxTotal: number;
   };
   readonly timeouts: {
     readonly connectMs: number;

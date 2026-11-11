@@ -19,6 +19,10 @@ export const platformDefaults = {
   probeIpRateLimit: { requests: 600, windowSeconds: 60 },
   // Top-ups, per account: each one asks 1Click for a deposit address
   topupsRateLimit: { requests: 20, windowSeconds: 3_600 },
+  // Public reads of calls and numbers, per client IP. A stream counts once, when it opens.
+  publicReadsRateLimit: { requests: 120, windowSeconds: 60 },
+  // Open streams of calls on each API process: per client IP, and in all
+  callStream: { maxPerIp: 20, maxTotal: 1_000 },
   // Free Credits on sign-up: off unless the deployment turns them on, then $0.10 for each of the first
   // three new accounts a day from one client IP. No daily cap unless set.
   freeCredits: { enabled: false, amount: '0.1', perIp: { requests: 3, windowSeconds: 86_400 } },

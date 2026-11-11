@@ -75,9 +75,10 @@ export const platformConfigSchema: SchemaObject = {
     }, ['name', 'url', 'networks']), { minItems: 1 }),
     mpp: object({ network: networkId, recipient: addressText, enabled: boolean, rpcUrl: httpsUrl }, ['network']),
     rateLimits: object(
-      { paymentKey: rateLimit, unpaidIp: rateLimit, signup: rateLimit, documents: rateLimit, probeIp: rateLimit, topups: rateLimit },
+      { paymentKey: rateLimit, unpaidIp: rateLimit, signup: rateLimit, documents: rateLimit, probeIp: rateLimit, topups: rateLimit, publicReads: rateLimit },
       ['paymentKey', 'unpaidIp', 'signup'],
     ),
+    callStream: object({ maxPerIp: positive, maxTotal: positive }),
     timeouts: object({ connectMs: positive, requestMs: positive, settleMs: positive }),
     sizeLimits: object({ requestBodyBytes: positive, bufferedResponseBytes: positive }),
     signer: object({

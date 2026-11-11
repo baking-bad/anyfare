@@ -89,6 +89,12 @@ rateLimits:
   # documents: { requests: 120, windowSeconds: 60 }   # Optional. Public documents per client IP. Default: 120 a minute
   # probeIp: { requests: 600, windowSeconds: 60 }   # Optional. Probes of routed targets per client IP, paid calls too. Default: 600 a minute
   # topups: { requests: 20, windowSeconds: 3600 }   # Optional. Top-ups each account may ask for. Default: 20 an hour
+  # publicReads: { requests: 120, windowSeconds: 60 }   # Optional. Public reads of calls per client IP; a stream counts when it opens. Default: 120 a minute
+
+# Optional. Open streams of calls on each API process. Over a cap, a new stream gets 429. The values are the defaults
+# callStream:
+#   maxPerIp: 20                # Per client IP
+#   maxTotal: 1000              # In all
 
 # Optional. Free Credits for each new account, so a visitor can try the service without a wallet. The values are the
 # defaults, except maxPerDay, which has none

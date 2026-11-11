@@ -84,6 +84,13 @@ rateLimits:
   signup: { requests: 200, windowSeconds: 3600 }
   # The website's server reads the public documents for every visitor, from one IP
   documents: { requests: 600, windowSeconds: 60 }
+  # Public reads of calls and numbers count each visitor: the website's server forwards the visitor's
+  # address, and the API takes it from the stack's network. A page reads several at once.
+  publicReads: { requests: 300, windowSeconds: 60 }
+
+# A hackathon venue shares one IP, and each visitor's browser opens its own stream of calls
+callStream:
+  maxPerIp: 200
 
 # Free Credits for each new account: off until the operator turns the gift on
 freeCredits:

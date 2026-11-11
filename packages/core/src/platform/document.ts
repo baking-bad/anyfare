@@ -73,6 +73,14 @@ export interface RateLimitsDocument {
   readonly documents?: RateLimitDocument;
   readonly probeIp?: RateLimitDocument;
   readonly topups?: RateLimitDocument;
+  readonly publicReads?: RateLimitDocument;
+}
+
+export interface CallStreamDocument {
+  // Open streams of calls per client IP on each API process. Default: 20.
+  readonly maxPerIp?: number;
+  // Open streams of calls on each API process. Default: 1000.
+  readonly maxTotal?: number;
 }
 
 export interface TimeoutsDocument {
@@ -154,6 +162,7 @@ export interface PlatformConfigDocument {
   readonly facilitators: readonly FacilitatorDocument[];
   readonly mpp: MppDocument;
   readonly rateLimits: RateLimitsDocument;
+  readonly callStream?: CallStreamDocument;
   readonly timeouts?: TimeoutsDocument;
   readonly sizeLimits?: SizeLimitsDocument;
   readonly signer?: SignerLimitsDocument;

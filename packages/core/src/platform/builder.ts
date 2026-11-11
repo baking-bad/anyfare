@@ -253,7 +253,9 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
       documents: { ...document.rateLimits.documents ?? platformDefaults.documentsRateLimit },
       probeIp: { ...document.rateLimits.probeIp ?? platformDefaults.probeIpRateLimit },
       topups: { ...document.rateLimits.topups ?? platformDefaults.topupsRateLimit },
+      publicReads: { ...document.rateLimits.publicReads ?? platformDefaults.publicReadsRateLimit },
     },
+    callStream: { ...platformDefaults.callStream, ...document.callStream },
     timeouts: { ...timeouts, ...document.timeouts },
     sizeLimits: { ...sizeLimits, ...document.sizeLimits },
     signer: {

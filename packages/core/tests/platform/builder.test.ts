@@ -29,7 +29,8 @@ const issues = (build: () => unknown): readonly { readonly path: string; readonl
 
 const minimalOptionalFields = {
   logger: undefined, ownHosts: undefined, paymentKeyDefaults: undefined, timeouts: undefined,
-  sizeLimits: undefined, signer: undefined, rateLimits: { documents: undefined, probeIp: undefined, topups: undefined }, freeCredits: undefined, topups: undefined,
+  sizeLimits: undefined, signer: undefined, rateLimits: { documents: undefined, probeIp: undefined, topups: undefined, publicReads: undefined }, callStream: undefined, freeCredits: undefined,
+  topups: undefined,
 };
 
 type MutableDocument = { facilitators: Record<string, unknown>[] };
@@ -80,6 +81,8 @@ describe('buildPlatformConfig', () => {
     expect(config.rateLimits.documents).toEqual({ requests: 120, windowSeconds: 60 });
     expect(config.rateLimits.probeIp).toEqual({ requests: 600, windowSeconds: 60 });
     expect(config.rateLimits.topups).toEqual({ requests: 20, windowSeconds: 3_600 });
+    expect(config.rateLimits.publicReads).toEqual({ requests: 120, windowSeconds: 60 });
+    expect(config.callStream).toEqual({ maxPerIp: 20, maxTotal: 1_000 });
     expect(config.signer).toEqual({
       maxPerCall: 1_000_000n, maxPerNetworkPerHour: undefined, maxPerNetworkPerDay: 100_000_000n,
       wallets: { base: undefined, tempo: undefined, solana: undefined, near: undefined },
@@ -90,7 +93,11 @@ describe('buildPlatformConfig', () => {
 
   it('takes the limits from the document when it sets them', () => {
     const config = buildPlatformConfig(document({
-      rateLimits: { documents: { requests: 5, windowSeconds: 10 }, probeIp: { requests: 50, windowSeconds: 30 }, topups: { requests: 3, windowSeconds: 60 } },
+      rateLimits: {
+        documents: { requests: 5, windowSeconds: 10 }, probeIp: { requests: 50, windowSeconds: 30 }, topups: { requests: 3, windowSeconds: 60 },
+        publicReads: { requests: 7, windowSeconds: 20 },
+      },
+      callStream: { maxPerIp: 2 },
       sizeLimits: { requestBodyBytes: 100 },
       signer: { maxPerCall: '0.1', maxPerNetworkPerHour: '5', maxPerNetworkPerDay: '20' },
     }));
@@ -98,6 +105,8 @@ describe('buildPlatformConfig', () => {
     expect(config.rateLimits.documents).toEqual({ requests: 5, windowSeconds: 10 });
     expect(config.rateLimits.probeIp).toEqual({ requests: 50, windowSeconds: 30 });
     expect(config.rateLimits.topups).toEqual({ requests: 3, windowSeconds: 60 });
+    expect(config.rateLimits.publicReads).toEqual({ requests: 7, windowSeconds: 20 });
+    expect(config.callStream).toEqual({ maxPerIp: 2, maxTotal: 1_000 });
     expect(config.rateLimits.paymentKey).toEqual({ requests: 600, windowSeconds: 60 });
     expect(config.sizeLimits).toEqual({ requestBodyBytes: 100, bufferedResponseBytes: 10_485_760 });
     expect(config.signer).toMatchObject({ maxPerCall: 100_000n, maxPerNetworkPerHour: 5_000_000n, maxPerNetworkPerDay: 20_000_000n });
