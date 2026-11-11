@@ -132,4 +132,80 @@ describe('the fake 1Click', () => {
 
     await expect(fetch(`${oneClick.url}/v0/tokens`)).rejects.toThrow();
   });
+
+  describe('the control', () => {
+    const post = async (body: unknown, raw = false) => {
+      const response = await fetch(`${oneClick!.url}/_test/status`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: raw ? String(body) : JSON.stringify(body) });
+
+      return { status: response.status, body: await response.json() as Record<string, any> };
+    };
+    const statusOf = async (address: string) => (await call(`/v0/status?depositAddress=${address}`)).body as Record<string, any>;
+
+    it('is off by default: both paths answer as any unknown path does, and are recorded', async () => {
+      oneClick = await startFakeOneClick();
+      const unknown = await call('/_test/other');
+      const quotes = await call('/_test/quotes');
+      const moved = await fetch(`${oneClick.url}/_test/status`, { method: 'POST', body: '{}' });
+
+      expect(quotes).toEqual({ status: 404, body: { ...unknown.body, message: 'Cannot GET /_test/quotes' } });
+      expect(moved.status).toBe(404);
+      expect(oneClick.requests.map(request => request.path)).toEqual(['/_test/other', '/_test/quotes', '/_test/status']);
+    });
+
+    it('lists the remembered quotes, newest last, and leaves the requests alone', async () => {
+      oneClick = await startFakeOneClick({ controls: true });
+      const first = (await call('/v0/quote', quoteRequest())).body['quote'] as Record<string, string>;
+      await call('/v0/quote', quoteRequest({ dry: true }));
+      const second = (await call('/v0/quote', quoteRequest())).body['quote'] as Record<string, string>;
+      oneClick.setStatus(first['depositAddress']!, 'PROCESSING');
+      const seen = oneClick.requests.length;
+
+      expect(await call('/_test/quotes')).toEqual({
+        status: 200,
+        body: [{ depositAddress: first['depositAddress'], status: 'PROCESSING' }, { depositAddress: second['depositAddress'], status: 'PENDING_DEPOSIT' }],
+      });
+      expect(oneClick.requests).toHaveLength(seen);
+    });
+
+    it.each([
+      ['INCOMPLETE_DEPOSIT', { depositedAmount: '990000', nearTxHashes: [expect.any(String)] }],
+      ['PROCESSING', { depositedAmount: '2000000', amountOut: null }],
+      ['SUCCESS', { depositedAmount: '2000000', amountOut: '1998760', refundedAmount: '0' }],
+      ['REFUNDED', { refundedAmount: '2000000', amountOut: null }],
+      ['FAILED', { depositedAmount: '2000000', amountOut: null }],
+    ])('moves a swap to %s with the details its quote gives', async (status, details) => {
+      oneClick = await startFakeOneClick({ controls: true });
+      const address = ((await call('/v0/quote', quoteRequest())).body['quote'] as Record<string, string>)['depositAddress']!;
+      const seen = oneClick.requests.length;
+
+      expect(await post({ depositAddress: address, status })).toEqual({ status: 200, body: { depositAddress: address, status } });
+      expect(await statusOf(address)).toMatchObject({ status, swapDetails: details });
+      expect((await call('/_test/quotes')).body).toEqual([{ depositAddress: address, status }]);
+      // Only the status read above is recorded
+      expect(oneClick.requests).toHaveLength(seen + 1);
+    });
+
+    it('lets swapDetails override the fill', async () => {
+      oneClick = await startFakeOneClick({ controls: true });
+      const address = ((await call('/v0/quote', quoteRequest())).body['quote'] as Record<string, string>)['depositAddress']!;
+
+      await post({ depositAddress: address, status: 'INCOMPLETE_DEPOSIT', swapDetails: { depositedAmount: '5' } });
+
+      expect(await statusOf(address)).toMatchObject({ status: 'INCOMPLETE_DEPOSIT', swapDetails: { depositedAmount: '5' } });
+    });
+
+    it('answers 404 for an address it does not remember, and 400 for a bad status or body', async () => {
+      oneClick = await startFakeOneClick({ controls: true });
+      const address = ((await call('/v0/quote', quoteRequest())).body['quote'] as Record<string, string>)['depositAddress']!;
+
+      expect((await post({ depositAddress: '0xabc', status: 'SUCCESS' })).status).toBe(404);
+      expect((await post({ depositAddress: address, status: 'DONE' })).status).toBe(400);
+      expect((await post({ depositAddress: address })).status).toBe(400);
+      expect((await post({ status: 'SUCCESS' })).status).toBe(400);
+      expect((await post({ depositAddress: address, status: 'SUCCESS', swapDetails: 'x' })).status).toBe(400);
+      expect((await post('not json', true)).status).toBe(400);
+      expect((await post([], true)).status).toBe(400);
+      expect((await statusOf(address))['status']).toBe('PENDING_DEPOSIT');
+    });
+  });
 });

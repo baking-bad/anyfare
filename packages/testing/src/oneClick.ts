@@ -94,6 +94,10 @@ export interface FakeOneClickOptions {
   readonly now?: () => Date;
   // The port to listen on. Default: a free one.
   readonly port?: number;
+  // Turns on POST /_test/status and GET /_test/quotes, which move a remembered quote's swap to a status from
+  // outside the process, and list the quotes. Neither is a 1Click path, and neither is added to `requests`.
+  // Default: false, and both paths answer as any unknown path does.
+  readonly controls?: boolean;
 }
 
 const priceUpdatedAt = '2026-11-09T01:23:00.857Z';
@@ -211,7 +215,7 @@ const pendingDetails = (): Readonly<Record<string, unknown>> => ({
  * origin chain's form and is remembered, with its status at PENDING_DEPOSIT until `setStatus` moves it.
  * A dry quote has no address and is forgotten.
  */
-export const startFakeOneClick = async ({ tokens = defaultOneClickTokens, minAmount = 150_000n, now = () => new Date(), port: listenPort = 0 }: FakeOneClickOptions = {}): Promise<FakeOneClick> => {
+export const startFakeOneClick = async ({ tokens = defaultOneClickTokens, minAmount = 150_000n, now = () => new Date(), port: listenPort = 0, controls = false }: FakeOneClickOptions = {}): Promise<FakeOneClick> => {
   const requests: FakeOneClickRequest[] = [];
   const remembered = new Map<string, Remembered>();
   let scripts: Partial<Record<FakeOneClickPath, FakeOneClickScript>> = {};
@@ -386,6 +390,31 @@ export const startFakeOneClick = async ({ tokens = defaultOneClickTokens, minAmo
     response.end(payload);
   };
 
+  // The control: POST /_test/status moves a swap, GET /_test/quotes lists the remembered quotes
+  const control = (method: string, path: string, body: unknown): FakeOneClickAnswer | undefined => {
+    if (method === 'GET' && path === '/_test/quotes')
+      return { status: 200, body: [...remembered.entries()].map(([depositAddress, entry]) => ({ depositAddress, status: entry.status })) };
+    if (method !== 'POST' || path !== '/_test/status')
+      return undefined;
+    if (!isRecord(body))
+      return validationError('The body must be a JSON object');
+    const { depositAddress, status: next, swapDetails } = body;
+    if (typeof depositAddress !== 'string' || depositAddress === '')
+      return validationError('depositAddress must be a non-empty string');
+    if (typeof next !== 'string' || !(fakeOneClickStatuses as readonly string[]).includes(next))
+      return validationError(`status must be one of ${fakeOneClickStatuses.join(', ')}`);
+    if (swapDetails !== undefined && !isRecord(swapDetails))
+      return validationError('swapDetails must be a JSON object');
+    const entry = remembered.get(depositAddress);
+    if (!entry)
+      return { status: 404, body: { message: `Deposit address ${depositAddress} not found` } };
+    entry.status = next as FakeOneClickStatus;
+    entry.swapDetails = { ...detailsFor(entry, entry.status), ...swapDetails };
+    entry.updatedAt = now().toISOString();
+
+    return { status: 200, body: { depositAddress, status: next } };
+  };
+
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const chunks: Buffer[] = [];
     request.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -402,6 +431,11 @@ export const startFakeOneClick = async ({ tokens = defaultOneClickTokens, minAmo
       const recorded: FakeOneClickRequest = {
         method: request.method ?? '', path: url.pathname, query: Object.fromEntries(url.searchParams), headers: request.headers, body,
       };
+      const controlled = controls ? control(recorded.method, recorded.path, body) : undefined;
+      if (controlled) {
+        send(request, response, controlled);
+        return;
+      }
       requests.push(recorded);
       const path = recorded.path as FakeOneClickPath;
       const known = Object.hasOwn(defaults, path) && recorded.method === (path === '/v0/quote' ? 'POST' : 'GET');

@@ -89,6 +89,9 @@ export interface StackOptions {
   readonly console?: string;
   // Default: CONFIG_PATH of the environment, else config/example.yaml
   readonly configPath?: string;
+  // How long a top-up's address takes transfers, in minutes, for every token: 10 to 10080. Past it a top-up with no
+  // deposit is `expired`. Default: the config's own, 1440 for a stablecoin and 120 for another token.
+  readonly topupDeadlineMinutes?: number;
   // Default: warnings only
   readonly logger?: Logger;
   readonly env?: Readonly<Record<string, string | undefined>>;
@@ -227,7 +230,7 @@ export const startLocalStack = async (options: StackOptions): Promise<LocalStack
       feePayer: encodeBase58(Uint8Array.from({ length: 32 }, () => 9)),
       port: ports.facilitator,
     }));
-    const oneClick: FakeOneClick = own(await startFakeOneClick({ port: ports.oneClick }));
+    const oneClick: FakeOneClick = own(await startFakeOneClick({ port: ports.oneClick, controls: true }));
     const nearRpc: FakeNearRpc = own(await startFakeNearRpc({ port: ports.nearRpc }));
     const tempoRpc: FakeTempoRpc = own(await startFakeTempoRpc({ port: ports.tempoRpc }));
 
@@ -240,7 +243,10 @@ export const startLocalStack = async (options: StackOptions): Promise<LocalStack
           { name: 'cdp', url: facilitator.url, networks: ['eip155:84532', 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1'] },
           { name: 'near', url: facilitator.url, networks: ['near:testnet'] },
         ],
-        topups: { url: oneClick.url },
+        topups: {
+          url: oneClick.url,
+          ...options.topupDeadlineMinutes === undefined ? {} : { deadlineMinutes: { stablecoin: options.topupDeadlineMinutes, other: options.topupDeadlineMinutes } },
+        },
       },
     }, env);
     const urls = {
