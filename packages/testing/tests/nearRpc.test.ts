@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
-import { decodeSignedTransaction, encodeTransaction } from '@near-js/transactions';
+import { KeyPair, KeyType, type KeyPairString } from '@near-js/crypto';
+import { actionCreators, createTransaction, decodeSignedTransaction, encodeTransaction, Signature, SignedTransaction } from '@near-js/transactions';
 import type { PaymentRequired, PaymentRequirements } from '@x402/core/types';
 import { createFacilitatorNearSigner, createProviderFactory, decodeSignedDelegateB64, parseFtTransferArgs, type FacilitatorNearSigner } from '@x402/near';
 import { ExactNearScheme } from '@x402/near/exact/facilitator';
@@ -346,6 +347,108 @@ describe('the fake NEAR node\'s transactions', () => {
 
     expect((await submit(await signedDelegate())).innerReceipt.kind).toBe('success');
     expect(rpc.transactions[0]!.nonce).toBe(relayerNonce + 2n);
+  });
+});
+
+describe('the fake NEAR node\'s transactions of function calls', () => {
+  // A hot wallet with its own key, paying from its own balance on the token, and an implicit account the token hasn't registered
+  const walletId = 'hot.fakes.testnet';
+  const receiver = 'c'.repeat(64);
+  const deposit = 1_250_000_000_000_000_000_000n;
+  let walletKey: NearTestKey;
+
+  beforeEach(() => {
+    walletKey = generateNearKey();
+    rpc.addAccount({ accountId: walletId, publicKey: walletKey.publicKey });
+    rpc.setBalance(token, walletId, 20_000n);
+  });
+
+  const call = (methodName: string, args: Record<string, unknown>, attached: bigint) => actionCreators.functionCall(methodName, args, 30_000_000_000_000n, attached);
+  const register = (accountId = receiver) => call('storage_deposit', { account_id: accountId, registration_only: true }, deposit);
+  const transferTo = (amount: string, accountId = receiver) => call('ft_transfer', { receiver_id: accountId, amount }, 1n);
+
+  // Signed with the wallet's key at the next nonce, as near-js signs a transaction: its hash, and the signed bytes in base64
+  const signed = (actions: ReturnType<typeof call>[], nonce = rpc.nonceOf(walletId, walletKey.publicKey)! + 1n) => {
+    const pair = KeyPair.fromString(walletKey.secretKey as KeyPairString);
+    const transaction = createTransaction(walletId, pair.getPublicKey(), token, nonce, actions, new Uint8Array(32));
+    const digest = new Uint8Array(createHash('sha256').update(encodeTransaction(transaction)).digest());
+    const signature = new Signature({ keyType: KeyType.ED25519, data: pair.sign(digest).signature });
+
+    return { hash: encodeBase58(digest), base64: Buffer.from(new SignedTransaction({ transaction, signature }).encode()).toString('base64') };
+  };
+  const sendTx = (base64: string) => send('send_tx', { signed_tx_base64: base64, wait_until: 'FINAL' });
+  const amountOf = async (accountId: string) => BigInt((await send('query', { request_type: 'view_account', finality: 'final', account_id: accountId })).result.amount);
+
+  it('answers storage_balance_bounds with the storage deposit as both bounds', async () => {
+    const args = Buffer.from(JSON.stringify({})).toString('base64');
+    const { result } = await send('query', { request_type: 'call_function', account_id: token, method_name: 'storage_balance_bounds', args_base64: args, finality: 'final' });
+
+    expect(JSON.parse(Buffer.from(result.result as number[]).toString('utf8'))).toEqual({ min: '1250000000000000000000', max: '1250000000000000000000' });
+  });
+
+  it('registers the receiver then transfers, in one receipt on the token, paid from the signer\'s NEAR, and answers a resend with the same outcome', async () => {
+    const before = await amountOf(walletId);
+    const { hash, base64 } = signed([register(), transferTo('7000')]);
+
+    const answer = await sendTx(base64);
+
+    expect(answer.result).toMatchObject({
+      final_execution_status: 'FINAL', status: { SuccessValue: '' }, transaction: { hash, signer_id: walletId, receiver_id: token },
+      receipts_outcome: [{ outcome: { executor_id: token, status: { SuccessValue: '' }, logs: [expect.stringContaining(`"new_owner_id":"${receiver}","amount":"7000"`)] } }],
+    });
+    expect(rpc.balanceOf(token, walletId)).toBe(13_000n);
+    expect(rpc.balanceOf(token, receiver)).toBe(7_000n);
+    // The storage deposit and ft_transfer's yoctoNEAR
+    expect(await amountOf(walletId)).toBe(before - deposit - 1n);
+    expect(rpc.directTransactions).toEqual([{
+      hash, signerId: walletId, publicKey: walletKey.publicKey, nonce: rpc.nonceOf(walletId, walletKey.publicKey), receiverId: token, status: 'success', failure: undefined,
+      outcome: answer.result,
+      calls: [
+        { methodName: 'storage_deposit', args: { account_id: receiver, registration_only: true }, gas: 30_000_000_000_000n, deposit },
+        { methodName: 'ft_transfer', args: { receiver_id: receiver, amount: '7000' }, gas: 30_000_000_000_000n, deposit: 1n },
+      ],
+    }]);
+    expect(rpc.transactions).toEqual([]);
+    expect((await send('tx', { tx_hash: hash, sender_account_id: walletId, wait_until: 'NONE' })).result).toEqual(answer.result);
+
+    expect((await sendTx(base64)).result).toEqual(answer.result);
+    expect(rpc.balanceOf(token, receiver)).toBe(7_000n);
+    expect(rpc.directTransactions).toHaveLength(1);
+  });
+
+  it('applies none of the calls when one fails: the failing action\'s index, and the registration undone', async () => {
+    const before = await amountOf(walletId);
+    const { base64 } = signed([register(), transferTo('20001')]);
+
+    const answer = await sendTx(base64);
+
+    expect(answer.result.status).toEqual({ Failure: { ActionError: { index: 1, kind: { FunctionCallError: { ExecutionError: 'Smart contract panicked: The account doesn\'t have enough balance' } } } } });
+    expect(rpc.directTransactions[0]).toMatchObject({ status: 'failure' });
+    expect(rpc.balanceOf(token, walletId)).toBe(20_000n);
+    expect(await amountOf(walletId)).toBe(before);
+    // Still unregistered: an ft_transfer alone fails
+    expect((await sendTx(signed([transferTo('1')]).base64)).result.status).toMatchObject({ Failure: { ActionError: { index: 0 } } });
+  });
+
+  it('reverts the token\'s receipt when told: the nonce moves, balances and registrations don\'t', async () => {
+    rpc.broadcast('revert');
+    const { base64 } = signed([register(), transferTo('7000')]);
+
+    expect((await sendTx(base64)).result.status).toHaveProperty('Failure');
+    expect(rpc.balanceOf(token, walletId)).toBe(20_000n);
+    expect(rpc.nonceOf(walletId, walletKey.publicKey)).toBe(rpc.directTransactions[0]!.nonce);
+    expect((await sendTx(signed([transferTo('1')]).base64)).result.status).toHaveProperty('Failure');
+  });
+
+  it('takes an ft_transfer alone to a registered account, and refuses a nonce the key already used', async () => {
+    rpc.register(token, receiver);
+    const first = signed([transferTo('500')]);
+
+    expect((await sendTx(first.base64)).result.status).toEqual({ SuccessValue: '' });
+    expect(rpc.balanceOf(token, receiver)).toBe(500n);
+    const reused = signed([transferTo('501')], rpc.nonceOf(walletId, walletKey.publicKey)!);
+    expect((await sendTx(reused.base64)).error).toMatchObject({ cause: { name: 'INVALID_TRANSACTION' }, data: { TxExecutionError: { InvalidTxError: { InvalidNonce: {} } } } });
+    expect(rpc.balanceOf(token, receiver)).toBe(500n);
   });
 });
 

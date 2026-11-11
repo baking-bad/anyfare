@@ -33,6 +33,6 @@ export type {
 } from './oneClick.js';
 export { createTestNearPayer, generateNearKey, nearEmptyCodeHash, startFakeNearRpc } from './nearRpc.js';
 export type {
-  FakeNearAccount, FakeNearRpc, FakeNearRpcOptions, FakeNearToken, NearAccessKeyPermission, NearBroadcast, NearBroadcastOptions, NearDelegate, NearNetwork, NearRpcCall,
-  NearTestKey, NearTransaction, TestNearPayer, TestNearPayerOptions,
+  FakeNearAccount, FakeNearRpc, FakeNearRpcOptions, FakeNearToken, NearAccessKeyPermission, NearBroadcast, NearBroadcastOptions, NearDelegate, NearDirectTransaction,
+  NearFunctionCall, NearNetwork, NearRpcCall, NearTestKey, NearTransaction, TestNearPayer, TestNearPayerOptions,
 } from './nearRpc.js';

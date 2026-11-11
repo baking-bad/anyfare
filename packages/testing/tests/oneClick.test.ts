@@ -126,6 +126,42 @@ describe('the fake 1Click', () => {
     expect((await call('/v0/tokens')).status).toBe(200);
   });
 
+  it('gives a script the default answer to change, computed once', async () => {
+    oneClick = await startFakeOneClick();
+    oneClick.handle('/v0/quote', (_request, next) => {
+      const answer = next();
+      const body = answer.body as Record<string, Record<string, unknown>>;
+
+      return next() === answer ? { ...answer, body: { ...body, quote: { ...body['quote'], amountIn: '1' } } } : undefined;
+    });
+
+    const { status, body } = await call('/v0/quote', quoteRequest());
+
+    expect(status).toBe(201);
+    expect(body['quote']).toMatchObject({ amountIn: '1', amountOut: '1998760' });
+    // The default answer was made once: one address remembered
+    expect(oneClick.quotes()).toHaveLength(1);
+    expect(oneClick.quotes()[0]!.quote.depositAddress).toBe((body['quote'] as Record<string, unknown>)['depositAddress']);
+  });
+
+  it('answers an EXACT_OUTPUT quote with the amount out, for the least input whose value, less 1 basis point, covers it', async () => {
+    oneClick = await startFakeOneClick();
+    // $5 of USDC on Base, paid with USDC on NEAR testnet at $1
+    const { status, body } = await call('/v0/quote', quoteRequest({
+      swapType: 'EXACT_OUTPUT', originAsset: testnetUsdc, destinationAsset: baseUsdc, amount: '5000000', recipient: '0x3333333333333333333333333333333333333333',
+      refundTo: 'hot.anyfare.testnet', refundType: 'ORIGIN_CHAIN',
+    }));
+
+    expect(status).toBe(201);
+    expect(body['quote']).toMatchObject({
+      amountIn: '5000501', amountInFormatted: '5.000501', amountInUsd: '5.000501000000', minAmountIn: '4950495', amountOut: '5000000', amountOutFormatted: '5.0',
+      minAmountOut: '5000000', depositAddress: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    // 5.000501 less 1 basis point covers 5, and 5.0005 doesn't
+    expect(5_000_501n * 9_999n / 10_000n).toBeGreaterThanOrEqual(5_000_000n);
+    expect(5_000_500n * 9_999n).toBeLessThan(5_000_000n * 10_000n);
+  });
+
   it('cuts the connection when a script says destroy', async () => {
     oneClick = await startFakeOneClick();
     oneClick.handle('/v0/tokens', () => ({ status: 200, destroy: true }));

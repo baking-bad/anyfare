@@ -6,7 +6,9 @@ import { encodeBase58 } from './solanaRpc.js';
 
 // A fake of the 1Click API of NEAR Intents, answering as 1Click does: GET /v0/tokens, POST /v0/quote and
 // GET /v0/status. Quotes are computed simply: the input's USD value at the token's price, less 1 basis
-// point, delivered 1:1 in the destination's units.
+// point, delivered 1:1 in the destination's units. An EXACT_OUTPUT quote delivers its amount, in the
+// destination's units, for the least input that covers it the same way: its minAmountOut is its
+// amountOut, and the slippage is taken from its minAmountIn.
 
 export type FakeOneClickPath = '/v0/tokens' | '/v0/quote' | '/v0/status';
 
@@ -33,8 +35,8 @@ export interface FakeOneClickAnswer {
   readonly destroy?: boolean;
 }
 
-// Undefined: the default answer
-export type FakeOneClickScript = (request: FakeOneClickRequest) => FakeOneClickAnswer | undefined;
+// Undefined: the default answer. `next` computes the default answer, once, so a script can change it.
+export type FakeOneClickScript = (request: FakeOneClickRequest, next: () => FakeOneClickAnswer) => FakeOneClickAnswer | undefined;
 
 export interface FakeOneClickToken {
   readonly assetId: string;
@@ -71,7 +73,10 @@ export interface FakeOneClick {
   readonly url: string;
   // Every request, in order
   readonly requests: readonly FakeOneClickRequest[];
-  /** Scripts one path until `reset`. A script that answers undefined leaves the request to the default. */
+  /**
+   * Scripts one path until `reset`. A script that answers undefined leaves the request to the default.
+   * Its `next` is that default answer, computed once, such as a real quote it remembers, to change.
+   */
   handle(path: FakeOneClickPath, script: FakeOneClickScript): void;
   /** Back to the default answers. Remembered quotes stay. */
   reset(): void;
@@ -156,6 +161,8 @@ const formatAmount = (value: bigint, decimals: number): string => {
 };
 
 const usdOf = (amount: bigint, token: FakeOneClickToken): bigint => amount * scaledPrice(token.price) / 10n ** BigInt(token.decimals);
+
+const ceilDiv = (dividend: bigint, divisor: bigint): bigint => (dividend + divisor - 1n) / divisor;
 
 const isEvm = (blockchain: string): boolean => !['sol', 'near', 'btc'].includes(blockchain);
 
@@ -249,13 +256,19 @@ export const startFakeOneClick = async ({ tokens = defaultOneClickTokens, minAmo
       return logicError(400, `Asset ${String(body['originAsset'])} is not supported`, '/v0/quote');
     if (!destination)
       return logicError(400, `Asset ${String(body['destinationAsset'])} is not supported`, '/v0/quote');
-    const amountIn = BigInt(body['amount']);
+    // EXACT_OUTPUT: the amount is what is delivered, and the input is the least whose value, less 1
+    // basis point, covers it. Otherwise the amount is the input.
+    const exactOutput = body['swapType'] === 'EXACT_OUTPUT';
+    const asked = BigInt(body['amount']);
+    const amountIn = exactOutput
+      ? ceilDiv(ceilDiv(asked * 10n ** BigInt(usdScale) * 10_000n, 9_999n * 10n ** BigInt(destination.decimals)) * 10n ** BigInt(origin.decimals), scaledPrice(origin.price))
+      : asked;
     if (amountIn < minAmount)
       return logicError(400, `Amount is too low for bridge, try at least ${minAmount}`, '/v0/quote');
 
     const kept = BigInt(10_000 - slippage);
     const usdIn = usdOf(amountIn, origin);
-    const amountOut = usdIn * 9_999n / 10_000n * 10n ** BigInt(destination.decimals) / 10n ** BigInt(usdScale);
+    const amountOut = exactOutput ? asked : usdIn * 9_999n / 10_000n * 10n ** BigInt(destination.decimals) / 10n ** BigInt(usdScale);
     const real = !body['dry'];
     const deadline = new Date(Date.parse(body['deadline']) + 72 * 3_600_000).toISOString();
     const memo = real && body['depositMode'] === 'MEMO' ? String(randomInt(100_000_000, 1_000_000_000)) : undefined;
@@ -268,7 +281,7 @@ export const startFakeOneClick = async ({ tokens = defaultOneClickTokens, minAmo
         amountOut: amountOut.toString(),
         amountOutFormatted: formatAmount(amountOut, destination.decimals),
         amountOutUsd: formatFixed(usdOf(amountOut, destination), usdScale),
-        minAmountOut: (amountOut * kept / 10_000n).toString(),
+        minAmountOut: (exactOutput ? amountOut : amountOut * kept / 10_000n).toString(),
         ...real ? { depositAddress: depositAddressOn(origin.blockchain), ...memo === undefined ? {} : { depositMemo: memo }, timeWhenInactive: deadline, deadline } : {},
         timeEstimate: 35,
         refundFee: '0',
@@ -439,8 +452,10 @@ export const startFakeOneClick = async ({ tokens = defaultOneClickTokens, minAmo
       requests.push(recorded);
       const path = recorded.path as FakeOneClickPath;
       const known = Object.hasOwn(defaults, path) && recorded.method === (path === '/v0/quote' ? 'POST' : 'GET');
+      let computed: FakeOneClickAnswer | undefined;
+      const next = () => computed ??= defaults[path](recorded);
       const answer = known
-        ? scripts[path]?.(recorded) ?? defaults[path](recorded)
+        ? scripts[path]?.(recorded, next) ?? next()
         : { status: 404, body: { message: `Cannot ${recorded.method} ${recorded.path}`, error: 'Not Found', statusCode: 404 } };
       if (answer.delayMs) {
         const timer = setTimeout(() => {

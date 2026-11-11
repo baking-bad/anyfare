@@ -26,7 +26,7 @@ export type NearAccessKeyPermission =
  * What the fake does with the next `send_tx` calls, then `confirm` again. A resend of a transaction it
  * holds answers that transaction's outcome, whatever comes next.
  * - `confirm`: applies it and answers its final outcome;
- * - `revert`: applies it, but the inner `ft_transfer` receipt fails: nonces move, the balance doesn't;
+ * - `revert`: applies it, but the token's receipt fails: nonces move, balances and registrations don't;
  * - `refuse`: answers nearcore's `INVALID_TRANSACTION` error, and applies nothing. `invalid-nonce`
  *   first gives the relayer's key the transaction's nonce, as if another transaction had taken it;
  * - `fail`: answers HTTP 503, and applies nothing: the resend after it is a new call;
@@ -77,6 +77,35 @@ export interface NearTransaction {
   readonly outcome: Readonly<Record<string, unknown>>;
 }
 
+/** A function call in a transaction the fake applied, as it was signed. */
+export interface NearFunctionCall {
+  readonly methodName: string;
+  // Its arguments as JSON, or undefined when they aren't JSON
+  readonly args: unknown;
+  readonly gas: bigint;
+  // In yoctoNEAR
+  readonly deposit: bigint;
+}
+
+/**
+ * A transaction of function calls an account signed and sent itself, not a relayed delegate action,
+ * such as a hot wallet's `storage_deposit` and `ft_transfer` on a token, as `send_tx` took it.
+ */
+export interface NearDirectTransaction {
+  readonly hash: string;
+  readonly signerId: string;
+  readonly publicKey: string;
+  readonly nonce: bigint;
+  // The contract it calls
+  readonly receiverId: string;
+  readonly calls: readonly NearFunctionCall[];
+  // `success`: every call applied. `failure`: one failed, as `failure` says, and none applied.
+  readonly status: 'success' | 'failure';
+  readonly failure: unknown;
+  // The `FinalExecutionOutcome` the node answers for it
+  readonly outcome: Readonly<Record<string, unknown>>;
+}
+
 export interface FakeNearAccount {
   readonly accountId: string;
   // Adds this key to the account, which is created when it's new. Without one, a plain account with no key.
@@ -106,8 +135,10 @@ export interface FakeNearRpc {
   readonly height: bigint;
   // Every JSON-RPC call, in order
   readonly calls: readonly NearRpcCall[];
-  // Every transaction it applied, in order
+  // Every relayer transaction of a signed delegate action it applied, in order
   readonly transactions: readonly NearTransaction[];
+  // Every transaction of function calls it applied, in order
+  readonly directTransactions: readonly NearDirectTransaction[];
   addAccount(account: FakeNearAccount): void;
   /** A NEP-141 token contract with NEP-145 storage registrations. */
   addToken(token: FakeNearToken): void;
@@ -203,7 +234,7 @@ interface BorshSignedTransaction {
     readonly publicKey: BorshPublicKey;
     readonly nonce: bigint;
     readonly receiverId: string;
-    readonly actions: readonly { readonly signedDelegate?: BorshSignedDelegate }[];
+    readonly actions: readonly { readonly signedDelegate?: BorshSignedDelegate; readonly functionCall?: BorshFunctionCall }[];
   };
   readonly signature: BorshSignature;
 }
@@ -254,30 +285,48 @@ const queryError = (error: string, at: Record<string, unknown>): Answer => ({ re
 const invalidTransaction = (error: unknown): Answer => handlerError('INVALID_TRANSACTION', isRecord(error) ? error : {}, { TxExecutionError: { InvalidTxError: error } });
 
 // A receipt's failure, as the chain reports an action that failed
-const actionError = (kind: unknown) => ({ ActionError: { index: 0, kind } });
-const panic = (message: string) => actionError({ FunctionCallError: { ExecutionError: `Smart contract panicked: ${message}` } });
+const actionError = (kind: unknown, index = 0) => ({ ActionError: { index, kind } });
+const panic = (message: string, index = 0) => actionError({ FunctionCallError: { ExecutionError: `Smart contract panicked: ${message}` } }, index);
+
+// A function call's JSON arguments, or undefined
+const argsOf = (call: BorshFunctionCall): unknown => {
+  try {
+    return JSON.parse(Buffer.from(Uint8Array.from(call.args)).toString('utf8'));
+  }
+  catch {
+    return undefined;
+  }
+};
 
 /**
  * A NEAR node's JSON-RPC on 127.0.0.1, offline: what the x402 NEAR client, the facilitator scheme,
- * and its relayer call, with nearcore's result and error shapes.
+ * its relayer, and the Signer's own transfers call, with nearcore's result and error shapes.
  * - `block`: a new block on each call, its height one more, its hash 32 random bytes in base58.
  * - `query`: `view_account` (the empty code hash for a plain account, a made-up one for a token),
  *   `view_access_key` (nonce and permission), and `call_function` on a token: `ft_balance_of`,
- *   `storage_balance_of`, and `MethodNotFound` for any other method. An unknown account is nearcore's
- *   `UNKNOWN_ACCOUNT` error; an unknown access key and a contract's failure are a result with
- *   nearcore's error text, as `access key <key> does not exist while viewing`; a request it can't
- *   parse is HTTP 400.
- * - `send_tx`: decodes the relayer's signed transaction, checks its signature and raises its key's
- *   nonce, then applies its one signed delegate action: the sender's signature, `max_block_height`,
- *   and nonce, then the inner `ft_transfer` on the token. A delegate or transfer problem is a
- *   `Failure` in the token receipt, as an `ActionError`. The answer is the `FinalExecutionOutcome`.
+ *   `storage_balance_of`, `storage_balance_bounds` (min and max, both the 0.00125 NEAR deposit), and
+ *   `MethodNotFound` for any other method; a token without storage management has neither storage
+ *   method. An unknown account is nearcore's `UNKNOWN_ACCOUNT` error; an unknown access key and a
+ *   contract's failure are a result with nearcore's error text, as `access key <key> does not exist
+ *   while viewing`; a request it can't parse is HTTP 400.
+ * - `send_tx`: decodes the signed transaction, checks its signature and raises its key's nonce. A
+ *   relayer's transaction carries one signed delegate action: the sender's signature,
+ *   `max_block_height`, and nonce, then the inner `ft_transfer` on the token, listed in
+ *   `transactions`. A transaction of function calls only, signed with a full-access key, calls the
+ *   token directly, in one receipt that applies every call or none: `storage_deposit`, which registers
+ *   an account for at least the storage deposit, paid from the signer's NEAR, then `ft_transfer` from
+ *   the signer, listed in `directTransactions`. A delegate, call, or transfer problem is a `Failure` in
+ *   the token receipt, as an `ActionError` with the failing action's index. The answer is the
+ *   `FinalExecutionOutcome`.
  * - `tx` and `EXPERIMENTAL_tx_status`, by `wait_until`: with `NONE`, the outcome of a transaction it
  *   holds or `UNKNOWN_TRANSACTION`; with another level, an unknown one waits, then a 408.
  */
 export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2_000, height: startHeight = defaultHeight, port: listenPort = 0 }: FakeNearRpcOptions = {}): Promise<FakeNearRpc> => {
   const calls: NearRpcCall[] = [];
   const transactions: NearTransaction[] = [];
-  const held = new Map<string, NearTransaction>();
+  const directTransactions: NearDirectTransaction[] = [];
+  // The outcome of each transaction it applied, by hash
+  const held = new Map<string, Readonly<Record<string, unknown>>>();
   const accounts = new Map<string, Account>();
   const tokens = new Map<string, Token>();
   const timers = new Set<NodeJS.Timeout>();
@@ -342,9 +391,12 @@ export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2
       args = undefined;
     }
     const of = isRecord(args) && typeof args['account_id'] === 'string' ? args['account_id'] : undefined;
-    const implemented = method === 'ft_balance_of' || (method === 'storage_balance_of' && token.storageManagement);
+    const implemented = method === 'ft_balance_of'
+      || ((method === 'storage_balance_of' || method === 'storage_balance_bounds') && token.storageManagement);
     if (!implemented)
       return vmError('MethodResolveError(MethodNotFound)');
+    if (method === 'storage_balance_bounds')
+      return { result: { result: resultBytes({ min: storageDeposit, max: storageDeposit }), logs: [], ...at() } };
     if (of === undefined)
       return vmError('HostError(GuestPanic { panic_msg: "Failed to deserialize input from JSON." })');
     const value = method === 'ft_balance_of'
@@ -382,6 +434,35 @@ export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2
     }
   };
 
+  /**
+   * One `ft_transfer` on a token's balances and registrations, from `senderId`, as the `index`th action
+   * of its receipt: undefined when it moved the amount, else its failure.
+   */
+  const ftTransfer = (token: Pick<Token, 'balances' | 'registered'>, senderId: string, call: BorshFunctionCall, index = 0): unknown => {
+    if (BigInt(call.deposit) !== 1n)
+      return panic('Requires attached deposit of exactly 1 yoctoNEAR', index);
+    const args = argsOf(call);
+    const receiver = isRecord(args) && typeof args['receiver_id'] === 'string' ? args['receiver_id'] : undefined;
+    const amount = isRecord(args) && typeof args['amount'] === 'string' && /^\d+$/.test(args['amount']) ? BigInt(args['amount']) : undefined;
+    if (receiver === undefined || amount === undefined)
+      return panic('Failed to deserialize input from JSON.', index);
+    if (amount === 0n)
+      return panic('The amount should be a positive number', index);
+    if (receiver === senderId)
+      return panic('Sender and receiver should be different', index);
+    for (const accountId of [senderId, receiver]) {
+      if (!token.registered.has(accountId))
+        return panic(`The account ${accountId} is not registered`, index);
+    }
+    const balance = token.balances.get(senderId) ?? 0n;
+    if (balance < amount)
+      return panic('The account doesn\'t have enough balance', index);
+    token.balances.set(senderId, balance - amount);
+    token.balances.set(receiver, (token.balances.get(receiver) ?? 0n) + amount);
+
+    return undefined;
+  };
+
   /** The inner `ft_transfer` receipt on the token: undefined when it moved the amount, else its failure. */
   const transfer = (delegate: BorshDelegateAction): unknown => {
     const [action, ...more] = delegate.actions;
@@ -393,32 +474,51 @@ export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2
       return actionError({ FunctionCallError: { CompilationError: { CodeDoesNotExist: { account_id: delegate.receiverId } } } });
     if (call.methodName !== 'ft_transfer')
       return actionError({ FunctionCallError: { MethodResolveError: 'MethodNotFound' } });
-    if (BigInt(call.deposit) !== 1n)
-      return panic('Requires attached deposit of exactly 1 yoctoNEAR');
-    let args: unknown;
-    try {
-      args = JSON.parse(Buffer.from(Uint8Array.from(call.args)).toString('utf8'));
+
+    return ftTransfer(token, delegate.senderId, call);
+  };
+
+  /**
+   * A transaction's function calls on a token, in one receipt, as the chain applies it: every call
+   * applies, or none does. `storage_deposit` registers an account, its own or `account_id`, for at
+   * least the storage deposit, and keeps only that much with `registration_only`; an account already
+   * registered gets its deposit back. `ft_transfer` moves the amount from the signer. The signer's
+   * NEAR pays the deposits. Undefined when they applied, else the failure.
+   */
+  const applyCalls = (signerId: string, contractId: string, calls: readonly BorshFunctionCall[], revert: boolean): unknown => {
+    const token = tokens.get(contractId);
+    if (!token)
+      return actionError({ FunctionCallError: { CompilationError: { CodeDoesNotExist: { account_id: contractId } } } });
+    if (revert)
+      return panic('The transfer was reverted', calls.length - 1);
+    // Applied to copies, kept when every call succeeded
+    const state = { balances: new Map(token.balances), registered: new Set(token.registered) };
+    let kept = 0n;
+    for (const [index, call] of calls.entries()) {
+      if (call.methodName === 'ft_transfer') {
+        const failure = ftTransfer(state, signerId, call, index);
+        if (failure !== undefined)
+          return failure;
+        kept += 1n;
+        continue;
+      }
+      if (call.methodName !== 'storage_deposit' || !token.storageManagement)
+        return actionError({ FunctionCallError: { MethodResolveError: 'MethodNotFound' } }, index);
+      const args = argsOf(call);
+      const accountId = isRecord(args) && typeof args['account_id'] === 'string' ? args['account_id'] : signerId;
+      if (state.registered.has(accountId))
+        continue;
+      if (BigInt(call.deposit) < BigInt(storageDeposit))
+        return panic('The attached deposit is less than the minimum storage balance', index);
+      state.registered.add(accountId);
+      kept += isRecord(args) && args['registration_only'] === true ? BigInt(storageDeposit) : BigInt(call.deposit);
     }
-    catch {
-      args = undefined;
-    }
-    const receiver = isRecord(args) && typeof args['receiver_id'] === 'string' ? args['receiver_id'] : undefined;
-    const amount = isRecord(args) && typeof args['amount'] === 'string' && /^\d+$/.test(args['amount']) ? BigInt(args['amount']) : undefined;
-    if (receiver === undefined || amount === undefined)
-      return panic('Failed to deserialize input from JSON.');
-    if (amount === 0n)
-      return panic('The amount should be a positive number');
-    if (receiver === delegate.senderId)
-      return panic('Sender and receiver should be different');
-    for (const accountId of [delegate.senderId, receiver]) {
-      if (!token.registered.has(accountId))
-        return panic(`The account ${accountId} is not registered`);
-    }
-    const balance = token.balances.get(delegate.senderId) ?? 0n;
-    if (balance < amount)
-      return panic('The account doesn\'t have enough balance');
-    token.balances.set(delegate.senderId, balance - amount);
-    token.balances.set(receiver, (token.balances.get(receiver) ?? 0n) + amount);
+    token.balances.clear();
+    for (const [accountId, amount] of state.balances)
+      token.balances.set(accountId, amount);
+    for (const accountId of state.registered)
+      token.registered.add(accountId);
+    accountOf(signerId).amount -= kept;
 
     return undefined;
   };
@@ -471,14 +571,18 @@ export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2
     };
   };
 
-  const outcomeOf = (hash: string, signed: BorshSignedTransaction, signerKey: string, delegate: NearDelegate, failure: unknown): Record<string, unknown> => {
+  // The token's receipt executes on `executorId`. `moved`: the ft_transfer it logs when it succeeded.
+  const outcomeOf = (
+    hash: string, signed: BorshSignedTransaction, signerKey: string, executorId: string, moved: { readonly from: string; readonly to: string; readonly amount: bigint } | undefined,
+    failure: unknown,
+  ): Record<string, unknown> => {
     const { transaction } = signed;
     const receiptId = encodeBase58(sha256(Buffer.from(`${hash}:token`)));
     const status = failure === undefined ? { SuccessValue: '' } : { Failure: failure };
-    const logs = failure === undefined && delegate.transfer
+    const logs = failure === undefined && moved
       ? [`EVENT_JSON:${JSON.stringify({
         standard: 'nep141', version: '1.0.0', event: 'ft_transfer',
-        data: [{ old_owner_id: delegate.senderId, new_owner_id: delegate.transfer.receiverId, amount: delegate.transfer.amount.toString() }],
+        data: [{ old_owner_id: moved.from, new_owner_id: moved.to, amount: moved.amount.toString() }],
       })}`]
       : [];
     const metadata = { version: 1, gas_profile: null };
@@ -499,7 +603,7 @@ export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2
       },
       receipts_outcome: [{
         id: receiptId, block_hash: blockHash, proof: [],
-        outcome: { executor_id: delegate.receiverId, gas_burnt: 3_000_000_000_000, tokens_burnt: '300000000000000000000', logs, receipt_ids: [], status, metadata },
+        outcome: { executor_id: executorId, gas_burnt: 3_000_000_000_000, tokens_burnt: '300000000000000000000', logs, receipt_ids: [], status, metadata },
       }],
     };
   };
@@ -534,7 +638,7 @@ export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2
     // A resend of a transaction it applied: the same outcome
     const known = held.get(hash);
     if (known)
-      return { result: known.outcome };
+      return { result: known };
 
     const { outcome, refusal } = nextOutcome();
     if (outcome === 'fail')
@@ -559,18 +663,46 @@ export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2
     if (BigInt(transaction.nonce) <= key.nonce)
       return invalidTransaction({ InvalidNonce: { tx_nonce: Number(transaction.nonce), ak_nonce: Number(key.nonce) } });
     const [action, ...more] = transaction.actions;
-    if (!action?.signedDelegate || more.length > 0)
-      return handlerError('INVALID_TRANSACTION', {}, 'The fake NEAR RPC takes one signed delegate action per transaction');
+    const calls = transaction.actions.map(item => item.functionCall).filter(call => call !== undefined);
+    const direct = transaction.actions.length > 0 && calls.length === transaction.actions.length;
+    if (!direct && (!action?.signedDelegate || more.length > 0))
+      return handlerError('INVALID_TRANSACTION', {}, 'The fake NEAR RPC takes one signed delegate action, or function calls only, per transaction');
+    // Function calls attach deposits, which only a full-access key may, and the signer's NEAR pays them
+    const deposits = calls.reduce((sum, call) => sum + BigInt(call.deposit), 0n);
+    if (direct && key.permission !== 'FullAccess')
+      return invalidTransaction({ InvalidAccessKeyError: 'DepositWithFunctionCall' });
+    if (direct && accountOf(transaction.signerId).amount < deposits)
+      return invalidTransaction({ NotEnoughBalance: { signer_id: transaction.signerId, balance: accountOf(transaction.signerId).amount.toString(), cost: deposits.toString() } });
     key.nonce = BigInt(transaction.nonce);
 
-    const failure = applyDelegate(transaction.receiverId, action.signedDelegate, outcome === 'revert');
-    const delegate = delegateOf(action.signedDelegate);
-    const entry: NearTransaction = {
-      hash, signerId: transaction.signerId, publicKey: signerKey.toString(), nonce: BigInt(transaction.nonce), receiverId: transaction.receiverId, delegate,
-      status: failure === undefined ? 'success' : 'failure', failure, outcome: outcomeOf(hash, signed, signerKey.toString(), delegate, failure),
-    };
-    held.set(hash, entry);
-    transactions.push(entry);
+    let result: Readonly<Record<string, unknown>>;
+    if (direct) {
+      const failure = applyCalls(transaction.signerId, transaction.receiverId, calls, outcome === 'revert');
+      const summaries = calls.map(call => ({ methodName: call.methodName, args: argsOf(call), gas: BigInt(call.gas), deposit: BigInt(call.deposit) }));
+      const moved = summaries.find(call => call.methodName === 'ft_transfer')?.args;
+      const entry: NearDirectTransaction = {
+        hash, signerId: transaction.signerId, publicKey: signerKey.toString(), nonce: BigInt(transaction.nonce), receiverId: transaction.receiverId, calls: summaries,
+        status: failure === undefined ? 'success' : 'failure', failure,
+        outcome: outcomeOf(hash, signed, signerKey.toString(), transaction.receiverId, isRecord(moved) && typeof moved['receiver_id'] === 'string' && typeof moved['amount'] === 'string'
+          ? { from: transaction.signerId, to: moved['receiver_id'], amount: BigInt(moved['amount']) }
+          : undefined, failure),
+      };
+      directTransactions.push(entry);
+      result = entry.outcome;
+    }
+    else {
+      const signedDelegate = action!.signedDelegate!;
+      const failure = applyDelegate(transaction.receiverId, signedDelegate, outcome === 'revert');
+      const delegate = delegateOf(signedDelegate);
+      const moved = delegate.transfer && { from: delegate.senderId, to: delegate.transfer.receiverId, amount: delegate.transfer.amount };
+      const entry: NearTransaction = {
+        hash, signerId: transaction.signerId, publicKey: signerKey.toString(), nonce: BigInt(transaction.nonce), receiverId: transaction.receiverId, delegate,
+        status: failure === undefined ? 'success' : 'failure', failure, outcome: outcomeOf(hash, signed, signerKey.toString(), delegate.receiverId, moved, failure),
+      };
+      transactions.push(entry);
+      result = entry.outcome;
+    }
+    held.set(hash, result);
     if (outcome === 'timeout') {
       await hold();
 
@@ -578,7 +710,7 @@ export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2
       return { status: 408, ...handlerError('TIMEOUT_ERROR', {}, 'Timeout') };
     }
 
-    return { result: entry.outcome };
+    return { result };
   };
 
   const hold = () => new Promise<void>(resolve => {
@@ -600,7 +732,7 @@ export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2
     const waitUntil = isRecord(params) && typeof params['wait_until'] === 'string' ? params['wait_until'] : 'EXECUTED_OPTIMISTIC';
     const entry = typeof hash === 'string' ? held.get(hash) : undefined;
     if (entry)
-      return { result: withReceipts ? { ...entry.outcome, receipts: [] } : entry.outcome };
+      return { result: withReceipts ? { ...entry, receipts: [] } : entry };
     if (waitUntil === 'NONE')
       return handlerError('UNKNOWN_TRANSACTION', { requested_transaction_hash: hash ?? null }, `Transaction ${String(hash)} doesn't exist`);
     await hold();
@@ -672,6 +804,7 @@ export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2
     },
     calls,
     transactions,
+    directTransactions,
     addAccount: ({ accountId, publicKey, nonce, permission = 'FullAccess', amount }) => {
       const account = accountOf(accountId);
       if (amount !== undefined)
