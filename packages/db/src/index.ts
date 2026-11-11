@@ -19,8 +19,8 @@ export { createApiKeyRepository } from './apiKeyRepository.js';
 export type { ApiKeyRepositoryOptions } from './apiKeyRepository.js';
 export { createKeyStore, createPaymentKeyRepository } from './paymentKeyRepository.js';
 export type { PaymentKeyRepositoryOptions } from './paymentKeyRepository.js';
-export { createPaymentRepository } from './paymentRepository.js';
-export type { PaymentRepository, PaymentRepositoryOptions, SettlingPayment, StatusChange } from './paymentRepository.js';
+export { createPaymentRepository, paymentStateOf, paymentStates } from './paymentRepository.js';
+export type { PaymentFilter, PaymentRepository, PaymentRepositoryOptions, PaymentState, SettlingPayment, StatusChange } from './paymentRepository.js';
 export { createLedger, ledgerAccountIds } from './ledgerRepository.js';
 export type { CreditResult, Ledger, LedgerOptions } from './ledgerRepository.js';
 export {
@@ -47,5 +47,5 @@ export { createTreasuryRepository } from './treasuryRepository.js';
 export type { ReconciliationRunRecord, TreasuryFundingRecord, TreasuryRepository, TreasuryRepositoryOptions, TreasuryTransferRecord } from './treasuryRepository.js';
 export { createTopupRepository } from './topupRepository.js';
 export type {
-  NewTopup, PolledTopupStatus, Topup, TopupCredit, TopupPoll, TopupQuote, TopupQuoteFailure, TopupRefund, TopupRepository, TopupRepositoryOptions,
+  NewTopup, PolledTopupStatus, Topup, TopupCredit, TopupPage, TopupPoll, TopupQuote, TopupQuoteFailure, TopupRefund, TopupRepository, TopupRepositoryOptions,
 } from './topupRepository.js';

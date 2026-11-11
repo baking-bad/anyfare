@@ -428,6 +428,10 @@ describe('the agent files against the API\'s response schemas', () => {
     { id: 'services', file: 'stats/schemas.ts', schema: 'servicesSchema' },
     { id: 'service', file: 'stats/schemas.ts', schema: 'serviceSchema' },
     { id: 'endpoint-stats', file: 'stats/schemas.ts', schema: 'endpointSchema' },
+    { id: 'payments', file: 'ledger/routes.ts', schema: 'paymentsSchema' },
+    { id: 'list-topups', file: 'topups/routes.ts', schema: 'topupsSchema' },
+    { id: 'topup', file: 'topups/routes.ts', schema: 'topupSchema' },
+    { id: 'topup-status', file: 'topups/routes.ts', schema: 'topupSchema' },
   ] as const;
 
   it.each(documented.map(entry => [entry.id, entry] as const))('the example answer of %s has the schema\'s top-level fields, no more and no fewer', (_id, entry) => {
@@ -448,6 +452,24 @@ describe('the agent files against the API\'s response schemas', () => {
     expect(Object.keys(json.endpoints[0]!).sort()).toEqual(entry.sort());
     expect(json.next).toBeNull();
     expect(typeof json.partial).toBe('boolean');
+  });
+
+  it('shows a payment and a listed top-up with the fields the schemas name, and the payments\' nulls', () => {
+    const payments = schemaFacts(apiSource('ledger/routes.ts'), 'paymentsSchema');
+    expect(payments.top).toEqual(['payments', 'next']);
+    // A nullable part imported from another file isn't read as nullable here: the ones written in place are
+    expect(payments.nullable).toContain('keyId');
+    expect(payments.nullable).toContain('upstreamStatus');
+    expect(payments.nullable).not.toContain('state');
+    const payment = (agentEndpoints.find(candidate => candidate.id === 'payments')!.answer.json as { payments: Record<string, unknown>[] }).payments[0]!;
+    expect(Object.keys(payment).sort()).toEqual([...payments.names].filter(name => !payments.top.includes(name)).sort());
+
+    const listed = schemaFacts(apiSource('topups/routes.ts'), 'topupsSchema');
+    const topup = schemaFacts(apiSource('topups/routes.ts'), 'topupSchema');
+    expect(listed.top).toEqual(['topups', 'next']);
+    const json = agentEndpoints.find(candidate => candidate.id === 'list-topups')!.answer.json as { topups: Record<string, unknown>[]; next: unknown };
+    expect(Object.keys(json.topups[0]!).sort()).toEqual([...topup.top].sort());
+    expect(json.next).toBeNull();
   });
 
   it('lists the error codes the public reads answer with, and the stream\'s', () => {

@@ -16,6 +16,20 @@ export const object = <TProperties extends Record<string, unknown>>(properties: 
 
 export const list = <TItems>(items: TItems) => ({ type: 'array', items }) as const;
 
+/**
+ * A query string of these parameters, each optional, and no other. The server's validator drops a parameter the
+ * properties don't name instead of refusing it, so `propertyNames` refuses it first: a misspelt filter answers 400
+ * rather than a list it didn't narrow.
+ */
+export const closedQuery = <TProperties extends Record<string, unknown>>(properties: TProperties) =>
+  ({ type: 'object', properties, additionalProperties: false, propertyNames: { enum: Object.keys(properties) } }) as const;
+
+/** A page of a list newest first: `limit`, and `after`, the `next` of the page before. */
+export const pageQueryProperties = (defaultLimit: number) => ({
+  limit: { type: 'integer', minimum: 1, maximum: 100, description: `Default ${defaultLimit}` },
+  after: { type: 'string', maxLength: 512, description: 'The `next` of the page before' },
+}) as const;
+
 /** The path parameters of a route with an `:id`. */
 export const idParamsSchema = (description: string) => ({
   type: 'object',

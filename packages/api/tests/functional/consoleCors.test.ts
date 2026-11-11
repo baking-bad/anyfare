@@ -153,6 +153,7 @@ const tour = async (origin: string | undefined): Promise<Record<string, Answer>>
   await record('GET /v1/payments', call(app, 'GET', '/v1/payments', as));
   const topupId = (await record('POST /v1/topups', call(app, 'POST', '/v1/topups', { ...as, body: { network: 'base', token: 'USDC', amount: '1' } }))).body.id as string;
   await record('GET /v1/topups/:id', call(app, 'GET', `/v1/topups/${topupId}`, as));
+  await record('GET /v1/topups', call(app, 'GET', '/v1/topups?limit=5', as));
   await record('POST /v1/account/master-key/rotate', call(app, 'POST', '/v1/account/master-key/rotate', as));
 
   return tried;
@@ -178,6 +179,7 @@ describe('a route behind the master key', () => {
       'GET /v1/payments': 200,
       'POST /v1/topups': 201,
       'GET /v1/topups/:id': 200,
+      'GET /v1/topups': 200,
       'POST /v1/account/master-key/rotate': 200,
     });
     for (const [name, answer] of Object.entries(fromConsole))
@@ -298,6 +300,8 @@ describe('an error behind the master key', () => {
       [400, 'invalid_request', await call(app, 'POST', '/v1/accounts', { origin: consoleOrigin, body: { name: 'x' } })],
       [400, 'invalid_request', await call(app, 'POST', '/v1/topups', { ...as, body: {} })],
       [400, 'invalid_request', await call(app, 'GET', '/v1/payments?limit=0', as)],
+      [400, 'invalid_request', await call(app, 'GET', '/v1/payments?state=charged', as)],
+      [400, 'invalid_request', await call(app, 'GET', '/v1/topups?after=not-a-cursor', as)],
       [415, 'unsupported_media_type', await call(app, 'POST', '/v1/keys', { ...as, headers: { 'content-type': 'application/xml' }, body: '<label/>' })],
     ] as const;
 
@@ -313,6 +317,7 @@ describe('an error behind the master key', () => {
     for (const answer of [
       await call(strict, 'POST', '/v1/topups', { origin: consoleOrigin, key: master, body: { network: 'base', token: 'USDC', amount: '1' } }),
       await call(strict, 'GET', '/v1/topups/top_any', { origin: consoleOrigin, key: master }),
+      await call(strict, 'GET', '/v1/topups', { origin: consoleOrigin, key: master }),
     ]) {
       expect([answer.status, answer.body.error.code]).toEqual([503, 'topups_unavailable']);
       expectConsole(answer);

@@ -106,9 +106,18 @@ describe('the endpoint list', () => {
     expect(endpointGroups().every(group => group.endpoints.length > 0)).toBe(true);
   });
 
-  it('has no top-up link and no list of top-ups', () => {
+  it('has no top-up link, and has the list of top-ups', () => {
     expect(endpoints.some(endpoint => /topup-links|\/t\/:id/.test(endpoint.path))).toBe(false);
-    expect(endpoints.some(endpoint => endpoint.method === 'GET' && endpoint.path === '/v1/topups')).toBe(false);
+    expect(endpoints.filter(endpoint => endpoint.method === 'GET' && endpoint.path === '/v1/topups').map(endpoint => endpoint.group)).toEqual(['topups']);
+    expect(files['llms-full.txt']).not.toMatch(/no list of top-ups/i);
+  });
+
+  it('names the filters of the payments and the fields they add', () => {
+    const payments = endpoints.find(endpoint => endpoint.id === 'payments')!;
+    const request = payments.request!.join(' ');
+    for (const name of ['`state`', '`keyId`', '`service`', '`paid`', '`free`', '`pending`'])
+      expect(request, name).toContain(name);
+    expect(Object.keys((payments.answer.json as { payments: object[] }).payments[0]!)).toEqual(expect.arrayContaining(['keyId', 'state', 'upstreamStatus']));
   });
 
   it('gives every answer a status, every endpoint an error list, and every example a place', () => {

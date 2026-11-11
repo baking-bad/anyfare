@@ -1,8 +1,9 @@
-import { and, asc, eq, isNotNull, lt, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, lt, lte, sql } from 'drizzle-orm';
 
 import type { Clock, MicroUsd } from '@anyfare/common';
 import type { JsonObject, TopupStatus } from '@anyfare/core';
 
+import { decodePageCursor, encodePageCursor } from './paymentRepository.js';
 import { withTransaction, type DatabaseExecutor, type DatabaseTransaction } from './postgres.js';
 import { topups } from './schema/topups.js';
 
@@ -117,6 +118,13 @@ export interface TopupPoll {
   readonly originTxHashes?: readonly string[] | undefined;
 }
 
+/** One page of an account's top-ups, newest first. */
+export interface TopupPage {
+  readonly topups: readonly Topup[];
+  // Where the next page starts, or undefined on the last one
+  readonly next: string | undefined;
+}
+
 /** The statuses a top-up is polled in, and the one it shows while it is. */
 export type PolledTopupStatus = 'waiting' | 'incomplete' | 'processing' | 'expired';
 
@@ -163,6 +171,11 @@ export interface TopupRepository {
   listStuckQuoting(input: { readonly before: Date; readonly limit: number }): Promise<readonly Topup[]>;
   /** The account's own top-up: another account's is undefined, as an unknown ID is. */
   findForAccount(id: string, accountId: string): Promise<Topup | undefined>;
+  /**
+   * The account's own top-ups, every status, newest first by creation time, then ID, read by the account index.
+   * `after` is the `next` of the previous page. Throws InvalidPaymentCursorError for an `after` no page gave.
+   */
+  listForAccount(input: { readonly accountId: string; readonly limit: number; readonly after?: string }): Promise<TopupPage>;
   find(id: string): Promise<Topup | undefined>;
   /** Top-ups whose next poll is at or before `now`, soonest first. A final state has none. */
   listDue(input: { readonly now: Date; readonly limit: number }): Promise<readonly Topup[]>;
@@ -315,6 +328,21 @@ export const createTopupRepository = ({ db, clock }: TopupRepositoryOptions): To
       const [row] = await db.select().from(topups).where(and(eq(topups.id, id), eq(topups.accountId, accountId)));
 
       return row ? toTopup(row) : undefined;
+    },
+    listForAccount: async ({ accountId, limit, after }) => {
+      const cursor = after === undefined ? undefined : decodePageCursor(after);
+      const rows = await db.select().from(topups)
+        .where(and(
+          eq(topups.accountId, accountId),
+          // The plain bound is the account index's; the pair orders top-ups made in the same millisecond
+          cursor && lte(topups.createdAt, cursor.createdAt),
+          cursor && sql`(${topups.createdAt}, ${topups.id}) < (${cursor.createdAt}, ${cursor.id})`,
+        ))
+        .orderBy(desc(topups.createdAt), desc(topups.id))
+        .limit(limit + 1);
+      const page = rows.slice(0, limit).map(toTopup);
+
+      return { topups: page, next: rows.length > limit ? encodePageCursor(page.at(-1)!) : undefined };
     },
     find: async id => {
       const [row] = await db.select().from(topups).where(eq(topups.id, id));

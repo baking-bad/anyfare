@@ -3,8 +3,8 @@ import { randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
-import { createLogger, type Server } from '@anyfare/common';
-import { loadPlatformConfig, type PlatformConfig } from '@anyfare/core';
+import { createLogger, Secret, type Server } from '@anyfare/common';
+import { hashApiKey, loadPlatformConfig, type PlatformConfig } from '@anyfare/core';
 import { topups } from '@anyfare/db';
 import {
   createFakeClock, createTestDatabase, createTestRedis, defaultOneClickTokens, startFakeOneClick, testnetNearUsdcAddress, type FakeClock, type FakeOneClick,
@@ -591,9 +591,11 @@ describe('POST /v1/topups', () => {
       await topUp(owner.masterKey, { network: 'base', token: 'USDC', amount: '1' }, off),
       await call(off, 'GET', '/v1/topups/top_anything', { key: owner.masterKey }),
       await call(off, 'GET', '/v1/topups/options'),
+      await call(off, 'GET', '/v1/topups', { key: owner.masterKey }),
+      await call(off, 'GET', '/v1/topups?limit=5', { key: owner.masterKey }),
     ];
 
-    expect(answers).toEqual(Array.from({ length: 3 }, () => expect.objectContaining({
+    expect(answers).toEqual(Array.from({ length: 5 }, () => expect.objectContaining({
       status: 503, body: { error: { code: 'topups_unavailable', message: 'Top-ups are off' } },
     })));
     expect(oneClick.requests.slice(seen)).toEqual([]);
@@ -620,6 +622,117 @@ describe('POST /v1/topups', () => {
     expect((await call(app, 'POST', '/v1/topups', { body: { network: 'base', token: 'USDC', amount: '1' } })).status).toBe(401);
     expect((await topUp('afm_test_not-a-key', { network: 'base', token: 'USDC', amount: '1' })).status).toBe(401);
     expect((await call(app, 'GET', '/v1/topups/top_anything')).status).toBe(401);
+  });
+});
+
+describe('GET /v1/topups', () => {
+  // A top-up row as the status job leaves it, made at `createdAt`
+  const row = (accountId: string, id: string, createdAt: string) => ({
+    id, accountId, requestId: null, network: 'base', blockchain: 'base', tokenSymbol: 'USDC', originAsset: baseUsdc.assetId, tokenDecimals: 6, amount: 2_000_000n,
+    destinationAsset: 'near-usdc', recipient: 'treasury.anyfare.testnet', refundTo: 'treasury.anyfare.testnet', payBy: new Date('2026-11-13T12:00:00.000Z'),
+    quoteRequest: {}, originTxHashes: [] as string[], needsReview: false, createdAt: new Date(createdAt), updatedAt: new Date(createdAt),
+  });
+
+  const list = async (key: string, query = '', target: Started = app): Promise<Answer> => call(target, 'GET', `/v1/topups${query}`, { key });
+  const idsOf = (answer: Answer): string[] => (answer.body['topups'] as { id: string }[]).map(topup => topup.id);
+
+  it('lists the account\'s own top-ups, every status, newest first, each as GET /v1/topups/{id} gives it, and never another account\'s', async () => {
+    const [owner, other] = [await signup(), await signup()];
+    clock.set('2026-11-12T09:00:00.000Z');
+    const made = (await topUp(owner.masterKey, { network: 'base', token: 'USDC', amount: '1' })).body['id'] as string;
+    clock.set('2026-11-12T10:00:00.000Z');
+    const theirs = (await topUp(other.masterKey, { network: 'base', token: 'USDC', amount: '1' })).body['id'] as string;
+    const suffix = owner.id.slice(4);
+    await database.db.insert(topups).values([
+      {
+        ...row(owner.id, `top_credited-${suffix}`, '2026-11-12T11:00:00.000Z'), status: 'credited', depositAddress: `0xcredited${suffix}`,
+        addressExpiresAt: new Date('2026-11-13T12:00:00.000Z'), sendAmount: 2_000_000n, sendAtLeast: 1_980_000n, estimatedCredits: 1_990_000n,
+        depositedAmount: 2_000_000n, creditedAmount: 1_990_000n, deliveryTxHash: 'delivery-hash-list',
+      },
+      { ...row(owner.id, `top_failed-${suffix}`, '2026-11-12T08:00:00.000Z'), status: 'quote_failed', quoteError: 'refused' },
+      { ...row(other.id, `top_other-${suffix}`, '2026-11-12T11:00:00.000Z'), status: 'quote_unknown', quoteError: 'timeout' },
+    ]);
+
+    const listed = await list(owner.masterKey);
+
+    expect(listed.status).toBe(200);
+    expect(listed.headers.get('cache-control')).toBe('no-store');
+    expect(idsOf(listed)).toEqual([`top_credited-${suffix}`, made, `top_failed-${suffix}`]);
+    expect(listed.body['next']).toBeNull();
+    expect((listed.body['topups'] as { status: string }[]).map(topup => topup.status)).toEqual(['credited', 'waiting', 'quote_failed']);
+    for (const topup of listed.body['topups'] as { id: string }[])
+      expect(topup).toEqual((await call(app, 'GET', `/v1/topups/${topup.id}`, { key: owner.masterKey })).body);
+    expect(idsOf(await list(other.masterKey))).toEqual([`top_other-${suffix}`, theirs]);
+    // No other account's ID, key, deposit address or top-up
+    const text = JSON.stringify(listed.body);
+    for (const foreign of [other.id, other.masterKey, owner.masterKey, theirs, `top_other-${suffix}`, hashApiKey(Secret.from(owner.masterKey))])
+      expect(text).not.toContain(foreign);
+  });
+
+  it('pages with limit and after, through top-ups made in the same millisecond', async () => {
+    const owner = await signup();
+    const suffix = owner.id.slice(4);
+    await database.db.insert(topups).values(['a', 'b', 'c', 'd', 'e'].map((name, index) => ({
+      ...row(owner.id, `top_page-${suffix}-${name}`, index < 3 ? '2026-11-12T09:00:00.000Z' : '2026-11-12T10:00:00.000Z'), status: 'quote_unknown' as const, quoteError: 'timeout',
+    })));
+
+    const pages: string[][] = [];
+    let after: string | null = null;
+    do {
+      const page: Answer = await list(owner.masterKey, `?limit=2${after === null ? '' : `&after=${after}`}`);
+      expect(page.status).toBe(200);
+      pages.push(idsOf(page));
+      after = page.body['next'] as string | null;
+    } while (after !== null && pages.length < 10);
+
+    expect(pages).toEqual([['e', 'd'], ['c', 'b'], ['a']].map(names => names.map(name => `top_page-${suffix}-${name}`)));
+    // Twenty by default
+    expect(idsOf(await list(owner.masterKey))).toHaveLength(5);
+  });
+
+  it('lists nothing for an account without top-ups', async () => {
+    const owner = await signup();
+
+    expect(await list(owner.masterKey)).toMatchObject({ status: 200, body: { topups: [], next: null } });
+  });
+
+  it.each([
+    ['a limit of 0', '?limit=0'],
+    ['a limit over 100', '?limit=101'],
+    ['a parameter it doesn\'t take', '?status=credited'],
+    ['a parameter it doesn\'t take beside a good one', '?limit=5&cursor=x'],
+    ['a cursor no page gave', '?after=not-a-cursor'],
+    ['a cursor with a NUL', `?after=${Buffer.from('2026-11-12T09:00:00.000Z|top_\u0000').toString('base64url')}`],
+    ['a cursor over 512 characters', `?after=${'a'.repeat(513)}`],
+  ])('refuses %s with 400 invalid_request', async (_case, query) => {
+    const owner = await signup();
+
+    expect(await list(owner.masterKey, query)).toMatchObject({ status: 400, body: { error: { code: 'invalid_request' } } });
+  });
+
+  it('needs the master key: 401 without one, with a bad one, and with a payment key', async () => {
+    const owner = await signup();
+    const paymentKey = (await call(app, 'POST', '/v1/keys', { key: owner.masterKey })).body['key'] as string;
+
+    expect(await call(app, 'GET', '/v1/topups')).toMatchObject({ status: 401, body: { error: { code: 'unauthorized' } } });
+    expect(await list('afm_test_not-a-key')).toMatchObject({ status: 401, body: { error: { code: 'invalid_key' } } });
+    expect(await list(paymentKey)).toMatchObject({ status: 401, body: { error: { code: 'wrong_key_type' } } });
+  });
+
+  it('is not counted by the limit on making top-ups, and leaves the options and a top-up by its ID where they were', async () => {
+    const limited = await start({ ...config, rateLimits: { ...config.rateLimits, topups: { requests: 1, windowSeconds: 3_600 } } });
+    const owner = await signup(limited);
+
+    for (let count = 0; count < 3; count++)
+      expect((await list(owner.masterKey, '', limited)).status).toBe(200);
+    const made = await topUp(owner.masterKey, { network: 'base', token: 'USDC', amount: '1' }, limited);
+    const refused = await topUp(owner.masterKey, { network: 'base', token: 'USDC', amount: '1' }, limited);
+
+    expect([made.status, refused.status]).toEqual([201, 429]);
+    expect(idsOf(await list(owner.masterKey, '', limited))).toEqual([made.body['id']]);
+    expect(await call(limited, 'GET', '/v1/topups/options')).toMatchObject({ status: 200, body: { asset: 'USDC on NEAR' } });
+    expect(await call(limited, 'GET', `/v1/topups/${made.body['id'] as string}`, { key: owner.masterKey })).toMatchObject({ status: 200, body: { id: made.body['id'] } });
+    expect(await call(limited, 'GET', '/v1/topups/options', { key: owner.masterKey })).toMatchObject({ status: 200, body: { asset: 'USDC on NEAR' } });
   });
 });
 

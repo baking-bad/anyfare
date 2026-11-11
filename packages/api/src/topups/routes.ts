@@ -9,7 +9,9 @@ import { authenticatedAccount, masterKeySecurity } from '../accounts/auth.js';
 import type { AllowConsole } from '../accounts/consoleCors.js';
 import { errorStatuses } from '../errors.js';
 import { publicCors, publicReadMethods } from '../public/cors.js';
-import { idParamsSchema, integer, list, nullableString, nullableTime, nullableUsdString, object, string, time, usdString } from '../schemas.js';
+import {
+  closedQuery, idParamsSchema, integer, list, nullableString, nullableTime, nullableUsdString, object, pageQueryProperties, string, time, usdString,
+} from '../schemas.js';
 import { TopupMismatchError, TopupsUnavailableError, type TopupService } from './service.js';
 
 export interface TopupRoutesOptions {
@@ -54,6 +56,14 @@ interface TopupParams {
 
 const topupParamsSchema = idParamsSchema('The top-up\'s ID');
 
+const defaultListSize = 20;
+const listQuerySchema = closedQuery(pageQueryProperties(defaultListSize));
+
+interface ListQuery {
+  readonly limit?: number;
+  readonly after?: string;
+}
+
 // The options as the route makes them: a network's tokens only when 1Click's list could be read, a token's address
 // only when it has a contract. The serializer writes the required fields first, so a token's `decimals`, after the
 // address it may not have, isn't listed as required: listed, it would move before the address.
@@ -89,6 +99,10 @@ const topupSchema = object({
   transaction: { type: ['string', 'null'], description: 'The delivery\'s transaction on NEAR, once credited' },
   refunded: nullableTokenUnits,
   refundReason: nullableString,
+});
+const topupsSchema = object({
+  topups: list(topupSchema),
+  next: { type: ['string', 'null'], description: 'The next page\'s `after`. Null: the last page' },
 });
 
 const createErrors = [
@@ -137,8 +151,8 @@ const toTopupBody = (topup: Topup) => ({
 
 /**
  * `GET /v1/topups/options` without a key, limited per client IP and readable from any origin, and behind the master key,
- * `POST /v1/topups` and `GET /v1/topups/{id}`, which the console's origin may call. While top-ups are off, each answers
- * `503 topups_unavailable`.
+ * `POST /v1/topups`, `GET /v1/topups` and `GET /v1/topups/{id}`, which the console's origin may call. Only `POST` counts
+ * against the account's limit. While top-ups are off, each answers `503 topups_unavailable`.
  */
 export const registerTopupRoutes = (app: FastifyInstance, { topups, enabled, authenticate, documentsLimit, limiter, limit, allowConsole }: TopupRoutesOptions): void => {
   const whenEnabled = async (request: FastifyRequest, reply: FastifyReply): Promise<FastifyReply | undefined> =>
@@ -214,6 +228,23 @@ export const registerTopupRoutes = (app: FastifyInstance, { topups, enabled, aut
           return answer(request, reply, error);
         throw error;
       }
+    });
+
+    scope.get<{ Querystring: ListQuery }>('/v1/topups', {
+      schema: {
+        summary: 'The account\'s top-ups, newest first, a page at a time',
+        description: 'Every status, each as `GET /v1/topups/{id}` gives it.',
+        tags: ['topups'],
+        security: masterKeySecurity,
+        errors: ['invalid_request', 'topups_unavailable'],
+        querystring: listQuerySchema,
+        response: { 200: topupsSchema },
+      },
+    }, async (request, reply) => {
+      const { limit = defaultListSize, after } = request.query;
+      const page = await topups.list({ accountId: authenticatedAccount(request).accountId, limit, ...after === undefined ? {} : { after } });
+
+      return reply.header('cache-control', 'no-store').send({ topups: page.topups.map(toTopupBody), next: page.next ?? null });
     });
 
     scope.get<{ Params: TopupParams }>('/v1/topups/:id', {

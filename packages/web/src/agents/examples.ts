@@ -86,7 +86,7 @@ export const curlExamples = ({ apiUrl, payUrl }: Hosts): readonly CurlExample[] 
     needs: ['ANYFARE_MASTER_KEY', 'ANYFARE_KEY_ID'], destructive: true,
   },
   { id: 'balance', method: 'GET', url: `${apiUrl}/v1/balance`, headers: master, expect: { status: 200, fields: ['available', 'held'] }, needs: ['ANYFARE_MASTER_KEY'] },
-  { id: 'payments', method: 'GET', url: `${apiUrl}/v1/payments?limit=5`, headers: master, expect: { status: 200, fields: ['payments', 'next'] }, needs: ['ANYFARE_MASTER_KEY'] },
+  { id: 'payments', method: 'GET', url: `${apiUrl}/v1/payments?state=paid&limit=5`, headers: master, expect: { status: 200, fields: ['payments', 'next'] }, needs: ['ANYFARE_MASTER_KEY'] },
   { id: 'topup-options', method: 'GET', url: `${apiUrl}/v1/topups/options`, headers: {}, expect: { status: 200, fields: ['asset', 'networks'] }, needs: [] },
   {
     id: 'topup', method: 'POST', url: `${apiUrl}/v1/topups`, headers: { ...master, ...json }, body: '{"network":"base","token":"USDC","amount":"20"}',
@@ -98,6 +98,7 @@ export const curlExamples = ({ apiUrl, payUrl }: Hosts): readonly CurlExample[] 
     expect: { status: 200, fields: ['id', 'status', 'message', 'network', 'token', 'amount', 'depositAddress', 'depositMemo', 'send', 'sendAtLeast', 'estimatedCredits', 'payBy', 'addressExpiresAt', 'createdAt', 'updatedAt', 'deposited', 'credited', 'transaction', 'refunded', 'refundReason'] },
     needs: ['ANYFARE_MASTER_KEY', 'ANYFARE_TOPUP_ID'],
   },
+  { id: 'list-topups', method: 'GET', url: `${apiUrl}/v1/topups?limit=5`, headers: master, expect: { status: 200, fields: ['topups', 'next'] }, needs: ['ANYFARE_MASTER_KEY'] },
   { id: 'catalog', method: 'GET', url: `${apiUrl}/v1/catalog?limit=3`, headers: {}, expect: { status: 200, fields: ['endpoints', 'next', 'partial'] }, needs: [] },
   { id: 'calls', method: 'GET', url: `${apiUrl}/v1/calls?status=paid&size=3`, headers: {}, expect: { status: 200, fields: ['calls', 'page', 'size', 'total', 'totalCapped'] }, needs: [] },
   { id: 'calls-stream', method: 'GET', url: `${apiUrl}/v1/calls/stream`, headers: {}, flags: ['-N'], expect: { status: 200, fields: [], headers: ['content-type'] }, needs: [] },

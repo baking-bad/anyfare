@@ -1,13 +1,40 @@
-import { and, asc, desc, eq, gt, inArray, lt, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, lt, lte, or, sql } from 'drizzle-orm';
 
 import type { Clock } from '@anyfare/common';
 import {
-  InvalidPaymentCursorError, InvalidPaymentStatusChangeError, PaymentFinalizedError, statusesBefore, type BillingDecision, type InitialPaymentStatus, type JsonObject,
-  type NewPayment, type Payment, type PaymentPage, type PaymentStatus,
+  InvalidPaymentCursorError, InvalidPaymentStatusChangeError, PaymentFinalizedError, paymentStatuses, statusesBefore, type BillingDecision, type InitialPaymentStatus,
+  type JsonObject, type NewPayment, type Payment, type PaymentPage, type PaymentStatus,
 } from '@anyfare/core';
 
-import type { DatabaseExecutor } from './postgres.js';
+import { withTransaction, type DatabaseExecutor } from './postgres.js';
+import { finishedCallStatuses, freeCallStatuses, paidCallStatuses, statusIn } from './schema/callStatuses.js';
 import { payments } from './schema/ledger.js';
+
+/**
+ * Where a payment stands for its buyer: `paid` (charged), `free` (not charged) or `pending` (in flight). Paid and
+ * free are the public calls' own lists, so a call is never paid in one place and free in another.
+ */
+export const paymentStates = ['paid', 'free', 'pending'] as const;
+export type PaymentState = typeof paymentStates[number];
+
+const statusesOfState: Readonly<Record<PaymentState, readonly PaymentStatus[]>> = {
+  paid: paidCallStatuses,
+  free: freeCallStatuses,
+  // Every status of a call not finished yet
+  pending: paymentStatuses.filter(status => !(finishedCallStatuses as readonly PaymentStatus[]).includes(status)),
+};
+
+/** The state a payment's status is in. */
+export const paymentStateOf = (status: PaymentStatus): PaymentState => paymentStates.find(state => statusesOfState[state].includes(status))!;
+
+/** What narrows a buyer's list of payments. Every filter given must match. */
+export interface PaymentFilter {
+  readonly state?: PaymentState;
+  // A payment key's ID: another account's key matches none of the buyer's payments
+  readonly keyId?: string;
+  // The exact host, as routing keeps it: lowercase, with its port when it has one
+  readonly targetHost?: string;
+}
 
 export interface PaymentRepositoryOptions {
   // The database, or a transaction to join
@@ -52,8 +79,19 @@ export interface PaymentRepository {
   find(paymentId: string): Promise<Payment | undefined>;
   /** Reads the payment and locks its row until the transaction ends. */
   lock(paymentId: string): Promise<Payment | undefined>;
-  /** A buyer's payments, newest first. `after` is the `next` of the previous page. */
-  listForBuyer(input: { readonly buyerAccountId: string; readonly limit: number; readonly after?: string }): Promise<PaymentPage>;
+  /**
+   * A buyer's payments, newest first, those the filter matches. `after` is the `next` of the previous page, with
+   * these filters or others: it only says where the page starts. Read by the buyer index, the filters checked on the
+   * rows it walks. With `timeoutMs`, the read is one statement that gives up after it, in a transaction of its own.
+   * Throws InvalidPaymentCursorError for an `after` no page gave.
+   */
+  listForBuyer(input: {
+    readonly buyerAccountId: string;
+    readonly limit: number;
+    readonly after?: string;
+    readonly filter?: PaymentFilter;
+    readonly timeoutMs?: number;
+  }): Promise<PaymentPage>;
   /**
    * Payments still `held` that were created before `createdBefore`, oldest first: the holds a crash
    * left behind. `after` is the last payment of the previous page.
@@ -108,19 +146,32 @@ const toPayment = (row: typeof payments.$inferSelect): Payment => ({
   updatedAt: row.updatedAt,
 });
 
-// The page cursor: the last payment's time and ID, so payments made in the same millisecond keep their order
-const encodeCursor = (payment: Payment): string => Buffer.from(`${payment.createdAt.toISOString()}|${payment.id}`).toString('base64url');
-// Payments are from this year on, so an earlier time is no cursor of ours
+/** Where a page of rows newest first stops: the last row's creation time and ID. */
+export interface PageCursor {
+  readonly createdAt: Date;
+  readonly id: string;
+}
+
+/** The page cursor, opaque: the last row's time and ID, so rows made in the same millisecond keep their order. */
+export const encodePageCursor = ({ createdAt, id }: PageCursor): string => Buffer.from(`${createdAt.toISOString()}|${id}`).toString('base64url');
+// Rows are from this year on, so an earlier time is no cursor of ours
 const earliestCursorTime = Date.UTC(2000, 0, 1);
-/** Throws InvalidPaymentCursorError unless the cursor is one `encodeCursor` made. */
-const decodeCursor = (cursor: string): { readonly createdAt: Date; readonly id: string } => {
-  const [time = '', id] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
+// Postgres takes no year past 9999
+const latestCursorTime = Date.UTC(9999, 11, 31);
+// Our IDs: printable ASCII without a space. Anything else, a NUL above all, which Postgres can't take, is no cursor of ours.
+const cursorIdPattern = /^[\x21-\x7e]{1,128}$/;
+/** Throws InvalidPaymentCursorError unless the cursor is one `encodePageCursor` made. */
+export const decodePageCursor = (cursor: string): PageCursor => {
+  const [time = '', id = '', ...rest] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
   const createdAt = new Date(time);
-  if (!id || !Number.isFinite(createdAt.getTime()) || createdAt.getTime() < earliestCursorTime)
+  if (rest.length > 0 || !cursorIdPattern.test(id) || !Number.isFinite(createdAt.getTime()) || createdAt.getTime() < earliestCursorTime || createdAt.getTime() > latestCursorTime)
     throw new InvalidPaymentCursorError();
 
   return { createdAt, id };
 };
+
+// A statement timeout for the rest of the transaction it runs in, so the connection goes back to the pool without it
+const statementTimeout = (timeoutMs: number) => sql.raw(`set local statement_timeout = ${Math.max(1, Math.trunc(timeoutMs))}`);
 
 export const createPaymentRepository = ({ db, clock }: PaymentRepositoryOptions): PaymentRepository => {
   const find = async (paymentId: string): Promise<Payment | undefined> => {
@@ -194,18 +245,32 @@ export const createPaymentRepository = ({ db, clock }: PaymentRepositoryOptions)
 
       return row ? toPayment(row) : undefined;
     },
-    listForBuyer: async ({ buyerAccountId, limit, after }) => {
-      const cursor = after === undefined ? undefined : decodeCursor(after);
-      const rows = await db.select().from(payments)
+    listForBuyer: async ({ buyerAccountId, limit, after, filter = {}, timeoutMs }) => {
+      const cursor = after === undefined ? undefined : decodePageCursor(after);
+      const { state, keyId, targetHost } = filter;
+      const read = (executor: DatabaseExecutor) => executor.select().from(payments)
         .where(and(
           eq(payments.buyerAccountId, buyerAccountId),
-          cursor && or(lt(payments.createdAt, cursor.createdAt), and(eq(payments.createdAt, cursor.createdAt), lt(payments.id, cursor.id))),
+          // The plain bound and the pair are both bounds of the buyer index, so a later page starts where the last one stopped
+          cursor && lte(payments.createdAt, cursor.createdAt),
+          cursor && sql`(${payments.createdAt}, ${payments.id}) < (${cursor.createdAt}, ${cursor.id})`,
+          // The filters, checked on the rows the index gives
+          state && statusIn(payments.status, statusesOfState[state]),
+          keyId === undefined ? undefined : eq(payments.keyId, keyId),
+          targetHost === undefined ? undefined : eq(payments.targetHost, targetHost),
         ))
         .orderBy(desc(payments.createdAt), desc(payments.id))
         .limit(limit + 1);
+      const rows = timeoutMs === undefined
+        ? await read(db)
+        : await withTransaction(db, async tx => {
+          await tx.execute(statementTimeout(timeoutMs));
+
+          return read(tx);
+        });
       const page = rows.slice(0, limit).map(toPayment);
 
-      return { payments: page, next: rows.length > limit ? encodeCursor(page.at(-1)!) : undefined };
+      return { payments: page, next: rows.length > limit ? encodePageCursor(page.at(-1)!) : undefined };
     },
     listExpiredHolds: async ({ createdBefore, limit, after }) => {
       const rows = await db.select().from(payments)

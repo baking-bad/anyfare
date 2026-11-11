@@ -4,7 +4,7 @@ import {
   AnyfareError, atomicToUsd, formatUsd, isRecord, type Clock, type IdGenerator, type LogSink, type MicroUsd, type RequestId,
 } from '@anyfare/common';
 import type { JsonObject, KeyPrefixes, PlatformConfig, TopupNetwork } from '@anyfare/core';
-import { createTopupRepository, type Database, type Topup } from '@anyfare/db';
+import { createTopupRepository, type Database, type Topup, type TopupPage } from '@anyfare/db';
 import {
   buildQuoteRequest, formatTokenAmount, OneClickRefusedError, OneClickUnavailableError, parseTokenAmount, type OneClickClient,
   type OneClickDepositQuoteResponse, type OneClickQuoteRequest, type OneClickQuoteResponse, type OneClickToken, type TokenCatalog,
@@ -84,6 +84,11 @@ export interface TopupService {
   create(input: NewTopupInput): Promise<Topup>;
   /** The account's own top-up. Throws NotFoundError for another account's or an unknown ID. */
   get(input: { readonly accountId: string; readonly id: string }): Promise<Topup>;
+  /**
+   * The account's own top-ups, every status, newest first. `after` is the `next` of the page before; one no page gave
+   * throws an `invalid_request` error.
+   */
+  list(input: { readonly accountId: string; readonly limit: number; readonly after?: string }): Promise<TopupPage>;
 }
 
 export interface TopupServiceOptions {
@@ -380,6 +385,8 @@ export const createTopupService = ({
 
       return topup;
     },
+
+    list: input => topups.listForAccount(input),
   };
 };
 

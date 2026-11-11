@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createLogger, randomIdGenerator } from '@anyfare/common';
 import { loadPlatformConfig, type PlatformConfig } from '@anyfare/core';
-import { createLedger, createRoutingRepository, routedEndpoints, topups } from '@anyfare/db';
+import { createLedger, createPaymentRepository, createRoutingRepository, payments, routedEndpoints, topups } from '@anyfare/db';
 import {
   createFakeClock, createTestDatabase, createTestRedis, startFakeOneClick, type FakeClock, type FakeOneClick, type TestDatabase, type TestRedis,
 } from '@anyfare/testing';
@@ -159,7 +159,7 @@ describe('the answers of the routes with a response schema are what they sent wi
     expectUnchanged('GET', '/v1/keys', ['200']);
   });
 
-  it('GET /v1/balance and GET /v1/payments, a page with more after it and the last one', async () => {
+  it('GET /v1/balance and GET /v1/payments, a page with more after it and the last one, with a key and an API status and without', async () => {
     const owner = await signup();
     const keyId = String((await call('POST', '/v1/keys', { key: owner.masterKey })).body['id']);
     const ledger = createLedger({ db: database.db, clock, ids: randomIdGenerator });
@@ -175,14 +175,24 @@ describe('the answers of the routes with a response schema are what they sent wi
       });
       expect(held.ok).toBe(true);
     }
+    await createPaymentRepository({ db: database.db, clock }).recordDecision({
+      paymentId: `pay_answers_${owner.id}_1`, decision: 'billable', upstreamStatus: 200, upstreamLatencyMs: 40,
+    });
+    // A payment on a chain that names the account: no key
+    await database.db.insert(payments).values({
+      id: `pay_answers_${owner.id}_chain`, rail: 'x402', buyerAccountId: owner.id, keyId: null, targetHost: 'api.example.test', targetPath: '/v1/data',
+      network: 'eip155:84532', asset: 'base-usdc', atomicAmount: 10_000n, amount: 10_000n, status: 'settled', upstreamStatus: 200, needsReview: false,
+      createdAt: new Date('2026-11-12T11:00:00.000Z'), updatedAt: new Date('2026-11-12T11:00:00.000Z'),
+    });
 
     // The credit, and the free Credits of the sign-up, less the holds
     expect((await call('GET', '/v1/balance', { key: owner.masterKey })).body).toEqual({ available: '2.08', held: '0.02' });
     const first = await call('GET', '/v1/payments?limit=1', { key: owner.masterKey });
     const last = await call('GET', `/v1/payments?limit=1&after=${String(first.body['next'])}`, { key: owner.masterKey });
-    expect([first.body['next'] === null, last.body['next'] === null]).toEqual([false, true]);
-    expect((last.body['payments'] as { requestId: string | null }[]).concat(first.body['payments'] as never).map(payment => payment.requestId))
-      .toEqual([null, 'req-answers-2']);
+    expect([first.body['next'] === null, last.body['next'] === null]).toEqual([false, false]);
+    const all = (await call('GET', '/v1/payments?limit=100', { key: owner.masterKey })).body['payments'] as { keyId: string | null; upstreamStatus: number | null; state: string }[];
+    expect(all.map(payment => [payment.keyId === null, payment.upstreamStatus, payment.state])).toEqual([[false, 200, 'pending'], [false, null, 'pending'], [true, 200, 'paid']]);
+    expect((await call('GET', `/v1/payments?state=pending&keyId=${keyId}&service=api.example.test`, { key: owner.masterKey })).body['payments']).toHaveLength(2);
 
     expectUnchanged('GET', '/v1/balance', ['200']);
     expectUnchanged('GET', '/v1/payments', ['200']);
@@ -225,9 +235,15 @@ describe('the answers of the routes with a response schema are what they sent wi
     const failed = await call('GET', `/v1/topups/top_failed-${owner.id.slice(4)}`, { key: owner.masterKey });
     expect(Object.values(credited.body).every(value => value !== null)).toBe(true);
     expect(Object.values(failed.body).filter(value => value === null).length).toBe(11);
+    // The list of them: a page with more after it, and the last one, holding the three as GET gives each
+    const first = await call('GET', '/v1/topups?limit=2', { key: owner.masterKey });
+    const last = await call('GET', `/v1/topups?limit=2&after=${String(first.body['next'])}`, { key: owner.masterKey });
+    expect([first.body['next'] === null, last.body['next'] === null]).toEqual([false, true]);
+    expect([...first.body['topups'] as unknown[], ...last.body['topups'] as unknown[]]).toEqual(expect.arrayContaining([credited.body, failed.body]));
 
     expectUnchanged('POST', '/v1/topups', ['201']);
     expectUnchanged('GET', '/v1/topups/:id', ['200']);
+    expectUnchanged('GET', '/v1/topups', ['200']);
   });
 
   it('GET /v1/catalog, paid with a price and without, checked, a page with more after it and the last one', async () => {

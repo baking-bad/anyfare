@@ -181,7 +181,7 @@ Send any token from any chain a swap service supports to a deposit address, and 
 
 ${fence(stateTable)}
 
-There is no list of top-ups: keep the id.
+GET ${apiUrl}/v1/topups lists every top-up of the account, newest first, so an id you lost is there.
 
 ## The public reads
 

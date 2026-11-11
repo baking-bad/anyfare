@@ -26,7 +26,7 @@ export const errorStatuses = {
   amount_too_small: 400,
   // The server is shutting down, so a new stream of calls goes to another one
   shutting_down: 503,
-  // A public number couldn't be read in its bounds just now: try again shortly
+  // A public number, or an account's list of payments, couldn't be read in its bounds just now: try again shortly
   stats_unavailable: 503,
   // The OpenAPI document couldn't be built at start: every other route works
   document_unavailable: 503,
@@ -42,7 +42,10 @@ export class NotFoundError extends AnyfareError {
   readonly code = 'not_found';
 }
 
-/** A public number couldn't be read within its bounds just now, such as its timeout, or too many reads at once. */
+/**
+ * A public number, or an account's list of payments, couldn't be read within its bounds just now, such as its timeout,
+ * or too many reads at once.
+ */
 export class StatsUnavailableError extends AnyfareError {
   readonly code = 'stats_unavailable';
 }

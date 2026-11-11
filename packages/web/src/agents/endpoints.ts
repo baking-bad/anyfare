@@ -248,17 +248,27 @@ export const endpoints: readonly Endpoint[] = [
     source: { package: 'api', method: 'GET', path: '/v1/balance' },
   },
   {
-    id: 'payments', group: 'accounts', method: 'GET', host: 'api', path: '/v1/payments', summary: 'Every call the account paid, newest first, in pages', who: 'Master key', example: 'payments',
-    request: ['`limit`: 1 to 100, default 50. `after`: the `next` of the page before.'],
+    id: 'payments', group: 'accounts', method: 'GET', host: 'api', path: '/v1/payments', summary: 'Every call the account paid, newest first, in pages, by state, key or service', who: 'Master key', example: 'payments',
+    request: [
+      '`limit`: 1 to 100, default 50. `after`: the `next` of the page before.',
+      '`state`: `paid`, `free` or `pending`. `keyId`: the `id` of a payment key. `service`: an exact host, such as `pro-api.coinmarketcap.com`, without case. Each is optional; together, a payment must match them all. Any other parameter answers a `400`.',
+    ],
     answer: {
       status: 200,
       json: {
-        payments: [{ id: 'pay_…', requestId: '<request id>', rail: 'credits', targetHost: 'pro-api.coinmarketcap.com', targetPath: '/x402/v3/cryptocurrency/quotes/latest', amount: '0.01', status: 'captured', createdAt: time, updatedAt: time }],
+        payments: [{
+          id: 'pay_…', requestId: '<request id>', rail: 'credits', keyId: '<key id>', targetHost: 'pro-api.coinmarketcap.com', targetPath: '/x402/v3/cryptocurrency/quotes/latest',
+          amount: '0.01', status: 'captured', state: 'paid', upstreamStatus: 200, createdAt: time, updatedAt: time,
+        }],
         next: null,
       },
     },
-    errors: ['400 invalid_request', ...masterErrors],
-    notes: ['`next` is `null` on the last page.'],
+    errors: ['400 invalid_request', ...masterErrors, ...unavailableErrors],
+    notes: [
+      '`state` is `paid` when the call was charged, `free` when it was not, and `pending` while it is in flight. `keyId` is the payment key that paid, or `null` for a payment on a chain. `upstreamStatus` is the HTTP status the API answered, or `null` before it answered or when it never answered. `targetPath` is the path only: a query string is never kept.',
+      '`next` is `null` on the last page. Send it back as `after` with the same filters; with others it goes on from the same place.',
+      'A read that can\'t finish in time answers `503 stats_unavailable`: try again shortly.',
+    ],
     source: { package: 'api', method: 'GET', path: '/v1/payments' },
   },
   {
@@ -283,8 +293,16 @@ export const endpoints: readonly Endpoint[] = [
     id: 'topup-status', group: 'topups', method: 'GET', host: 'api', path: '/v1/topups/:id', summary: 'Where a top-up is', who: 'Master key', example: 'topup-status',
     answer: { status: 200, json: { ...topupView, status: 'credited', message: 'Added to your balance', deposited: '20', credited: '19.8', transaction: '<transaction id>' } },
     errors: ['404 not_found', '503 topups_unavailable', ...masterErrors],
-    notes: ['There is no list of top-ups: keep the `id`.'],
+    notes: ['`GET /v1/topups` lists every top-up of the account, so an `id` you lost is there.'],
     source: { package: 'api', method: 'GET', path: '/v1/topups/:id' },
+  },
+  {
+    id: 'list-topups', group: 'topups', method: 'GET', host: 'api', path: '/v1/topups', summary: 'Every top-up of the account, newest first, in pages', who: 'Master key', example: 'list-topups',
+    request: ['`limit`: 1 to 100, default 20. `after`: the `next` of the page before. Any other parameter answers a `400`.'],
+    answer: { status: 200, json: { topups: [topupView], next: null } },
+    errors: ['400 invalid_request', '503 topups_unavailable', ...masterErrors],
+    notes: ['Every status, each top-up as `GET /v1/topups/:id` gives it. `next` is `null` on the last page.'],
+    source: { package: 'api', method: 'GET', path: '/v1/topups' },
   },
   {
     id: 'catalog', group: 'public', method: 'GET', host: 'api', path: '/v1/catalog', summary: 'The endpoints Anyfare routes, paid or checked, with prices and the ways to pay', who: 'No key', example: 'catalog',

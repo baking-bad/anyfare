@@ -171,7 +171,8 @@ describe('the document\'s routes', () => {
     expect(documented.sort()).toEqual([
       'DELETE /v1/keys/{id}', 'GET /_/health', 'GET /openapi.json', 'GET /v1/account', 'GET /v1/balance', 'GET /v1/calls', 'GET /v1/calls/stream',
       'GET /v1/calls/{id}', 'GET /v1/catalog', 'GET /v1/endpoints/stats', 'GET /v1/keys', 'GET /v1/payments', 'GET /v1/services', 'GET /v1/services/{host}',
-      'GET /v1/stats', 'GET /v1/stats/live', 'GET /v1/stats/top', 'GET /v1/topups/options', 'GET /v1/topups/{id}', 'PATCH /v1/keys/{id}', 'POST /v1/account/master-key/rotate',
+      'GET /v1/stats', 'GET /v1/stats/live', 'GET /v1/stats/top', 'GET /v1/topups', 'GET /v1/topups/options', 'GET /v1/topups/{id}', 'PATCH /v1/keys/{id}',
+      'POST /v1/account/master-key/rotate',
       'POST /v1/accounts', 'POST /v1/keys', 'POST /v1/topups',
     ]);
   });
@@ -203,7 +204,7 @@ describe('the document\'s routes', () => {
     }));
 
     expect(answers.filter(answer => answer.keyed !== answer.refused)).toEqual([]);
-    expect(answers.filter(answer => answer.keyed).length).toBe(10);
+    expect(answers.filter(answer => answer.keyed).length).toBe(11);
     expect(operations(document).filter(({ operation }) => operation.security !== undefined).every(({ operation }) => isDeepStrictEqual(operation.security, [{ masterKey: [] }])))
       .toBe(true);
   });
@@ -259,6 +260,8 @@ describe('the document\'s routes', () => {
     expect(responses('post', '/v1/topups')).toEqual(['201', '400', '401', '413', '415', '429', '500', '502', '503']);
     // Its ID is any string the router gives
     expect(responses('get', '/v1/topups/{id}')).toEqual(['200', '401', '404', '500', '503']);
+    expect(responses('get', '/v1/topups')).toEqual(['200', '400', '401', '500', '503']);
+    expect(responses('get', '/v1/payments')).toEqual(['200', '400', '401', '500', '503']);
     expect(responses('get', '/v1/services/{host}')).toEqual(['200', '400', '404', '429', '500', '503']);
     expect(responses('get', '/v1/services')).toEqual(['200', '400', '429', '500', '503']);
     expect(responses('get', '/v1/calls')).toEqual(['200', '400', '429', '500']);
@@ -267,6 +270,20 @@ describe('the document\'s routes', () => {
     expect(responses('get', '/v1/stats')).toEqual(['200', '429', '500', '503']);
     expect(responses('get', '/v1/stats/live')).toEqual(['200', '429', '500', '503']);
     expect(responses('get', '/openapi.json')).toEqual(['200', '429', '500', '503']);
+  });
+
+  it('name the filters and fields of the payments and the list of top-ups, and the parameters each refuses', () => {
+    const operation = (path: string) => document.paths[path]!['get'] as unknown as Operation;
+    const query = (path: string) => operation(path).parameters!.filter(parameter => parameter.in === 'query').map(parameter => parameter.name);
+    const answer = (path: string) => operation(path).responses['200']!.content!['application/json']!.schema as { properties: Record<string, { items: { properties: object } }> };
+
+    expect(query('/v1/payments')).toEqual(['limit', 'after', 'state', 'keyId', 'service']);
+    expect(query('/v1/topups')).toEqual(['limit', 'after']);
+    expect(Object.keys(answer('/v1/payments').properties['payments']!.items.properties)).toEqual([
+      'id', 'requestId', 'rail', 'keyId', 'targetHost', 'targetPath', 'amount', 'status', 'state', 'upstreamStatus', 'createdAt', 'updatedAt',
+    ]);
+    expect(answer('/v1/topups').properties['topups']!.items).toBe(answer('/v1/topups/{id}'));
+    expect(Object.keys(answer('/v1/topups').properties)).toEqual(['topups', 'next']);
   });
 
   it('list no 400 where a query it doesn\'t name is dropped, not refused', async () => {

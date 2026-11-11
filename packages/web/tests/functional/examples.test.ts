@@ -202,6 +202,9 @@ describe('the examples, in the order an agent runs them', () => {
     expect(Number(balance.json.available)).toBeGreaterThan(0);
     const payments = await run('payments');
     expect(payments.json.payments.length).toBeGreaterThan(0);
+    // The example asks for the paid ones: the call the key paid is among them, with its key and the API's answer
+    expect(payments.json.payments.every((payment: { state: string }) => payment.state === 'paid')).toBe(true);
+    expect(payments.json.payments.find((payment: { id: string }) => payment.id === vars['ANYFARE_CALL_ID'])).toMatchObject({ keyId: vars['ANYFARE_KEY_ID'], upstreamStatus: 200 });
   });
 
   it('lists the top-up options, asks for a top-up and reads it', async () => {
@@ -214,6 +217,10 @@ describe('the examples, in the order an agent runs them', () => {
     vars['ANYFARE_TOPUP_ID'] = topup.json.id;
     const status = await run('topup-status');
     expect(status.json.id).toBe(topup.json.id);
+    // The list holds it, newest first, with the fields its read gives
+    const listed = await run('list-topups');
+    expect(listed.json.topups[0]).toMatchObject({ id: topup.json.id, network: 'base', token: 'USDC', amount: '20' });
+    expect(Object.keys(listed.json.topups[0])).toEqual(Object.keys(status.json));
   });
 
   it('reads the public lists, numbers and one service', async () => {

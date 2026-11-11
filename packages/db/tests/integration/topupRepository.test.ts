@@ -1,13 +1,16 @@
 import { eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { randomIdGenerator } from '@anyfare/common';
-import { createFakeClock, createTestDatabase, type FakeClock, type TestDatabase } from '@anyfare/testing';
+import { InvalidPaymentCursorError } from '@anyfare/core';
+import { createFakeClock, createTestDatabase, createTestPool, type FakeClock, type TestDatabase } from '@anyfare/testing';
 
 import {
   createAccountRepository, createLedger, createTopupRepository, topups, type NewTopup, type Topup, type TopupPoll, type TopupQuote,
   type TopupRepository,
 } from '../../src/index.js';
+import * as schema from '../../src/schema/index.js';
 
 let database: TestDatabase;
 let clock: FakeClock;
@@ -472,4 +475,106 @@ describe('the status job\'s changes', () => {
     expect(await repository.flagForReview(bare.id, 'processing', { reason: 'late' })).toBeUndefined();
     expect(await repository.find(bare.id)).toMatchObject({ reviewReason: 'polling_ended' });
   });
+});
+
+describe('an account\'s list of top-ups', () => {
+  const at = (time: string): void => clock.set(time);
+
+  it('holds the account\'s own top-ups, every status, newest first, then by ID, a page at a time through ties', async () => {
+    const [own, other] = [await newAccount(), await newAccount()];
+    at('2026-11-12T08:00:00.000Z');
+    const oldest = await repository.create(newTopup(own, { id: 'top_list-a' }));
+    await repository.markQuoteFailed(oldest.id, { error: 'refused' });
+    at('2026-11-12T09:00:00.000Z');
+    for (const id of ['top_list-b', 'top_list-d', 'top_list-c'])
+      await repository.create(newTopup(own, { id }));
+    await repository.markQuoted('top_list-c', quote());
+    await repository.create(newTopup(other, { id: 'top_list-c5' }));
+    at('2026-11-12T10:00:00.000Z');
+    await repository.create(newTopup(own, { id: 'top_list-e' }));
+    await repository.create(newTopup(other, { id: 'top_list-f' }));
+
+    const pages: string[][] = [];
+    let after: string | undefined;
+    do {
+      const page = await repository.listForAccount({ accountId: own, limit: 2, ...after === undefined ? {} : { after } });
+      pages.push(page.topups.map(topup => topup.id));
+      after = page.next;
+    } while (after !== undefined && pages.length < 10);
+    const all = await repository.listForAccount({ accountId: own, limit: 100 });
+
+    expect(pages).toEqual([['top_list-e', 'top_list-d'], ['top_list-c', 'top_list-b'], ['top_list-a']]);
+    expect(all.topups.map(topup => [topup.id, topup.status])).toEqual([
+      ['top_list-e', 'quoting'], ['top_list-d', 'quoting'], ['top_list-c', 'waiting'], ['top_list-b', 'quoting'], ['top_list-a', 'quote_failed'],
+    ]);
+    expect(all.next).toBeUndefined();
+    // Each as the repository reads it by its ID
+    expect(all.topups[2]).toEqual(await repository.findForAccount('top_list-c', own));
+    expect((await repository.listForAccount({ accountId: other, limit: 100 })).topups.map(topup => topup.id)).toEqual(['top_list-f', 'top_list-c5']);
+    // A page that ends with the last top-up has no next
+    expect((await repository.listForAccount({ accountId: own, limit: 5 })).next).toBeUndefined();
+  });
+
+  it('takes another account\'s cursor only as where to go on, and lists nothing for an account without top-ups', async () => {
+    const [own, other] = [await newAccount(), await newAccount()];
+    at('2026-11-12T11:00:00.000Z');
+    await repository.create(newTopup(own, { id: 'top_cursor-a' }));
+    at('2026-11-12T12:00:00.000Z');
+    await repository.create(newTopup(other, { id: 'top_cursor-b' }));
+    await repository.create(newTopup(other, { id: 'top_cursor-c' }));
+    at('2026-11-12T13:00:00.000Z');
+    await repository.create(newTopup(own, { id: 'top_cursor-d' }));
+
+    const theirs = await repository.listForAccount({ accountId: other, limit: 1 });
+    const mine = await repository.listForAccount({ accountId: own, limit: 10, after: theirs.next! });
+
+    expect(theirs.topups.map(topup => topup.id)).toEqual(['top_cursor-c']);
+    expect(mine.topups.map(topup => topup.id)).toEqual(['top_cursor-a']);
+    expect(await repository.listForAccount({ accountId: await newAccount(), limit: 10 })).toEqual({ topups: [], next: undefined });
+  });
+
+  it.each([
+    ['garbage', 'not-a-cursor'],
+    ['no ID', Buffer.from('2026-11-12T09:00:00.000Z|').toString('base64url')],
+    ['an ID with a NUL', Buffer.from('2026-11-12T09:00:00.000Z|top_\u0000').toString('base64url')],
+  ])('refuses a cursor with %s', async (_case, after) => {
+    await expect(repository.listForAccount({ accountId: 'acc_topup_1', limit: 10, after })).rejects.toBeInstanceOf(InvalidPaymentCursorError);
+  });
+
+  it('reads by the account index, on a table of some size', async () => {
+    // 20 accounts of 500 top-ups each, none polled or quoting, so no other read here lists them
+    const accounts = [];
+    for (let index = 0; index < 20; index++)
+      accounts.push(await newAccount());
+    const rows = accounts.flatMap((accountId, account) => Array.from({ length: 500 }, (_, index) => ({
+      ...newTopup(accountId, { id: `top_plan-${account}-${index}` }),
+      status: 'quote_failed' as const, quoteError: 'refused', originTxHashes: [], needsReview: false,
+      createdAt: new Date(Date.parse('2026-11-12T14:00:00.000Z') + index * 1_000), updatedAt: new Date('2026-11-12T14:00:00.000Z'),
+    })));
+    for (let index = 0; index < rows.length; index += 2_000)
+      await database.db.insert(topups).values(rows.slice(index, index + 2_000));
+    const pool = createTestPool(database);
+    try {
+      await pool.query('analyze topups');
+      // The repository on a connection that records the queries it sends
+      const queries: { sql: string; params: unknown[] }[] = [];
+      const recording = createTopupRepository({ db: drizzle({ client: pool, schema, logger: { logQuery: (query, params) => queries.push({ sql: query, params }) } }), clock });
+      const first = await recording.listForAccount({ accountId: accounts[3]!, limit: 20 });
+      await recording.listForAccount({ accountId: accounts[3]!, limit: 20, after: first.next! });
+
+      expect(queries).toHaveLength(2);
+      for (const query of queries) {
+        const { rows } = await pool.query<{ 'QUERY PLAN': string }>(`explain (costs off) ${query.sql}`, query.params);
+        const plan = rows.map(row => row['QUERY PLAN']).join('\n');
+
+        expect(plan, plan).toMatch(/Index Scan Backward using topups_account_idx on topups/);
+        expect(plan, plan).not.toMatch(/Seq Scan/);
+      }
+      expect(first.topups.map(topup => topup.id)).toEqual(Array.from({ length: 20 }, (_, index) => `top_plan-3-${499 - index}`));
+    }
+    finally {
+      await pool.end();
+    }
+  // Writing 10,000 rows takes longer than the default limit on a busy machine
+  }, 60_000);
 });
