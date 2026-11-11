@@ -38,7 +38,6 @@
 /* A long address breaks anywhere; words break between them */
 .ask-kv dd { overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
 .ask-description { overflow-wrap: anywhere; }
-.ask-kv dd.ask-description { text-align: left; }
 /* A link to another site in a row (the network's site, the explorer): the outside-link icon after it */
 .ask-kv a.out svg { display: inline-block; width: 12px; height: 12px; margin-left: 4px; vertical-align: -1px; color: var(--text-tertiary); }
 .ask-kv a.out:hover svg { color: currentColor; }
