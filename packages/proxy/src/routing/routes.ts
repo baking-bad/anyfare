@@ -21,8 +21,9 @@ import type { ProxyMetrics } from '../metrics.js';
 import type { PaidCall, PaymentStep } from '../payments/step.js';
 import type { CallDetailsRecorder } from './callDetails.js';
 import {
-  addressRefusal, asksOf, checkEntryKey, checkHeader, checkMethods, checkRefusalOf, invalidHost, notAUrl, parseProbeView, probeViewOf, upstreamOf,
-  type Asks, type CheckMethod, type CheckQuery, type CheckRefusal, type PayWay, type PayWays, type ProbeView, type UpstreamAnswer,
+  addressRefusal, asksOf, checkEntryKey, checkHeader, checkRefusalOf, defaultCheckMethods, exampleBodyOf, invalidHost, isListedMethod, notAUrl, parseProbeView,
+  probeViewOf, upstreamOf, type Asks, type CheckMethod, type CheckQuery, type CheckRefusal, type CheckTry, type ExampleBody, type PayWay, type PayWays,
+  type ProbeView, type UpstreamAnswer,
 } from './check.js';
 import type { CheckStats, EndpointStats } from './checkStats.js';
 import { routedRequestHeaders, routedResponseHeaders } from './headers.js';
@@ -220,6 +221,9 @@ export interface PayableCheck {
   readonly listed: boolean;
   readonly checkedAt: string;
   readonly ms: number;
+  // The body sent from the 402's own example, or null when none was sent
+  readonly exampleBody: unknown;
+  readonly tried: readonly CheckTry[];
 }
 
 /** `GET /_/check`'s answer for a link it won't quote: still a 200. */
@@ -230,7 +234,28 @@ export interface RefusedCheck {
   readonly message: string;
   readonly detail?: string;
   readonly upstream?: { readonly status: number };
+  readonly exampleBody: unknown;
+  readonly tried: readonly CheckTry[];
 }
+
+/** What a check's try saw: its probe's view, whether it came from the check's cache, and whether a request went out. */
+interface CheckSeen {
+  view?: ProbeView;
+  cached?: boolean;
+  sent?: boolean;
+}
+
+/** One try of a check: its quote, or the refusal it gave, and its entry in `tried` when a request left or its cache served it. */
+type CheckAttempt = {
+  readonly method: CheckMethod;
+  readonly entry: CheckTry | undefined;
+} & (
+  | { readonly checked: CheckedQuote; readonly refusal?: undefined; readonly view?: undefined }
+  | { readonly checked?: undefined; readonly refusal: CheckRefusal; readonly view: ProbeView | undefined }
+);
+
+// The refusals that end a check at once: whatever another try would get, its host isn't called, or can't be
+const finalReasons: ReadonlySet<CheckRefusal['reason']> = new Set(['invalid_target', 'host_not_allowed', 'upstream_unavailable']);
 
 /** Payment routing: `/<host>/<path>` pays any x402 or MPP API for the buyer, and `GET /_/check` quotes one. */
 export const createRouting = ({
@@ -721,13 +746,14 @@ export const createRouting = ({
   const unpayable = new Set(['invalid_target', 'host_not_allowed', 'not_payable', 'unsupported_payment', 'upstream_unavailable']);
 
   // A check's own cache entry: its quote and its probe's view, under one key. Only a check writes it, and
-  // only a check reads it. The key is a digest of the method and URL, never the text a buyer sent.
-  const checkKey = (method: string, target: RoutingTarget): string => checkEntryKey(redis.prefix, method, target.url);
+  // only a check reads it. The key is a digest of the method and URL, never the text a buyer sent, and of the
+  // body for a try with the API's example body.
+  const checkKey = (method: string, target: RoutingTarget, body: Buffer | undefined): string => checkEntryKey(redis.prefix, method, target.url, body);
 
   /** The check's cached entry, or undefined. Never a quote a routed call cached: its probe carried that buyer's headers and body. */
-  const cachedCheck = async (target: RoutingTarget, method: string, log: LogSink): Promise<CheckedQuote | undefined> => {
+  const cachedCheck = async (target: RoutingTarget, method: string, body: Buffer | undefined, log: LogSink): Promise<CheckedQuote | undefined> => {
     try {
-      const text = await redis.client.get(checkKey(method, target));
+      const text = await redis.client.get(checkKey(method, target, body));
       const entry: unknown = text === null ? undefined : JSON.parse(text);
       const view = isRecord(entry) ? parseProbeView(entry['view']) : undefined;
       if (!isRecord(entry) || typeof entry['quote'] !== 'string' || view === undefined)
@@ -745,16 +771,22 @@ export const createRouting = ({
   };
 
   /**
-   * Caches a check's quote with its view, for checks. Paid calls may use the quote only when none is
-   * cached: it is set if absent, so a routed call's quote is never replaced, extended or shortened. Best
-   * effort: a check that can't cache still answers.
+   * Caches a check's quote with its view, for checks. Paid calls may use the quote of a bodyless try only
+   * when none is cached: it is set if absent, so a routed call's quote is never replaced, extended or
+   * shortened. A try with the API's example body never gives paid calls its quote: their body is the
+   * buyer's. Best effort: a check that can't cache still answers.
    */
-  const keepCheck = async (target: RoutingTarget, method: string, checked: CheckedQuote, seconds: number, log: LogSink): Promise<void> => {
+  const keepCheck = async (
+    target: RoutingTarget, method: string, body: Buffer | undefined, checked: CheckedQuote, seconds: number, log: LogSink,
+  ): Promise<void> => {
     const serialized = serializeQuote(checked.quote);
     const expiration = { type: 'EX', value: seconds } as const;
     const writes = [
-      () => redis.client.set(checkKey(method, target), JSON.stringify({ quote: serialized, view: checked.view }), { expiration }),
-      () => redis.client.set(quoteKey(method, target), serialized, { condition: 'NX', expiration }),
+      () => redis.client.set(checkKey(method, target, body), JSON.stringify({ quote: serialized, view: checked.view }), { expiration }),
+      // Only a GET or POST check without a body fills a paid call's quote, as it always did
+      ...body === undefined && (method === 'GET' || method === 'POST')
+        ? [() => redis.client.set(quoteKey(method, target), serialized, { condition: 'NX', expiration })]
+        : [],
     ];
     await Promise.all(writes.map(async write => {
       try {
@@ -768,43 +800,84 @@ export const createRouting = ({
 
   /**
    * The host checks and the quote of a check, as a routed call makes them, from a probe of its own. A
-   * quote not cached costs a probe, counted first; `seen` hears the probe's view, whatever the outcome.
+   * quote not cached costs a probe, counted first; `seen` hears the probe's view, whatever the outcome,
+   * whether the cache served it, and whether the probe was sent.
    */
-  const quoteForCheck = async (target: RoutingTarget, method: CheckMethod, request: FastifyRequest, seen: { view?: ProbeView }): Promise<CheckedQuote> => {
+  const quoteForCheck = async (
+    target: RoutingTarget, method: CheckMethod, body: Buffer | undefined, request: FastifyRequest, seen: CheckSeen,
+  ): Promise<CheckedQuote> => {
     refuseOwnHost(target, request.log);
-    const cached = await cachedCheck(target, method, request.log);
+    const cached = await cachedCheck(target, method, body, request.log);
     if (!cached)
       await limitProbe(request.ip);
     await checkHost(target, request.log);
-    if (cached)
+    if (cached) {
+      seen.cached = true;
       return cached;
-    // Only what the check sets: no body, and no header but its own request ID
-    const { quote, cacheSeconds } = await probeQuote(target, method, routedRequestHeaders({}, request.id), undefined, request.log, view => {
+    }
+    // Only what the check sets: no header but its own request ID, and with the API's example body, its type
+    const headers = routedRequestHeaders(body === undefined ? {} : { 'content-type': 'application/json' }, request.id);
+    seen.sent = true;
+    const { quote, cacheSeconds } = await probeQuote(target, method, headers, body, request.log, view => {
       seen.view = view;
     });
     const checked = { quote, view: seen.view! };
     if (cacheSeconds > 0)
-      await keepCheck(target, method, checked, cacheSeconds, request.log);
+      await keepCheck(target, method, body, checked, cacheSeconds, request.log);
 
     return checked;
   };
 
   /**
+   * One try of a check: its quote, or the refusal it gave. Its entry, for `tried`, when a request left for it or
+   * the check's cache served it; never when its host was refused before. Throws what is no refusal, such as the
+   * probe limit's 429.
+   */
+  const attemptCheck = async (target: RoutingTarget, method: CheckMethod, example: ExampleBody | undefined, request: FastifyRequest): Promise<CheckAttempt> => {
+    const seen: CheckSeen = {};
+    const body = example === undefined ? 'none' : 'example';
+    try {
+      const checked = await quoteForCheck(target, method, example?.bytes, request, seen);
+
+      return { method, checked, entry: { method, body, status: checked.view.status, ...seen.cached === true ? { cached: true } : {} } };
+    }
+    catch (error) {
+      let refusal = checkRefusalOf(error, seen.view);
+      const code = (error as { code?: unknown }).code;
+      if (!refusal && typeof code === 'string' && unpayable.has(code))
+        refusal = { reason: code as CheckRefusal['reason'], message: (error as Error).message };
+      if (!refusal)
+        throw error;
+      const sent = seen.sent === true && refusal.reason !== 'host_not_allowed' && refusal.reason !== 'invalid_target';
+
+      return { method, refusal, view: seen.view, entry: sent ? { method, body, status: seen.view?.status ?? null } : undefined };
+    }
+  };
+
+  /**
    * `GET /_/check?url=&method=`: is the link payable, at what price, our quote, the target's 402 as it
-   * came, the ways we take the quote, and the endpoint's numbers, without paying. The probe goes with
-   * `method`, GET or POST, and no body, under every check and limit a routed call has. POST needs the
-   * header `X-Anyfare-Check: 1`, which a link, a prefetch or an image tag never sends. A link it won't
-   * quote is a 200 with the reason, and a detail the page can word. A payable link's host and path, never
-   * its query, join the services, without the answer waiting for it, as a quote from its cache does too.
+   * came, the ways we take the quote, and the endpoint's numbers, without paying. With `method`, one try
+   * with it and no body; without, GET, then POST, up to the first that gives a price. A POST, PUT or PATCH
+   * the target asks a price of 0 without a body is tried once more with the JSON body its 402 shows as
+   * its own example. Every try is under every check and limit a routed call has, and the check stops at a
+   * refused host, a dead link or the probe limit. Any method but GET needs the header `X-Anyfare-Check: 1`,
+   * which a link, a prefetch or an image tag never sends: without it, a check without `method` skips its
+   * POST try. A link it won't quote is a 200 with the reason, and a detail the page can word. A payable
+   * link's host and path, never its query, join the services, without the answer waiting for it, as a quote
+   * from its cache does too.
    */
   const check = async (request: FastifyRequest<{ Querystring: CheckQuery }>): Promise<PayableCheck | RefusedCheck> => {
-    // The schema takes only these, GET when none is given
-    const method: CheckMethod = checkMethods.find(item => item === request.query.method) ?? 'GET';
-    if (method === 'POST' && request.headers[checkHeader] !== '1')
-      throw new CheckHeaderRequiredError();
+    // The schema takes only the check's methods
+    const requested = request.query.method;
+    const hasHeader = request.headers[checkHeader] === '1';
+    if (requested !== undefined && requested !== 'GET' && !hasHeader)
+      throw new CheckHeaderRequiredError(requested);
     await limitIp(request.ip);
-    const refused = ({ reason, detail, message, status }: CheckRefusal): RefusedCheck => ({
-      payable: false, method, reason, message, ...detail === undefined ? {} : { detail }, ...status === undefined ? {} : { upstream: { status } },
+    const methods = requested === undefined ? defaultCheckMethods : [requested];
+    const tried: CheckTry[] = [];
+    let exampleBody: unknown = null;
+    const refused = ({ reason, detail, message, status }: CheckRefusal, method: CheckMethod = methods[0]!): RefusedCheck => ({
+      payable: false, method, reason, message, ...detail === undefined ? {} : { detail }, ...status === undefined ? {} : { upstream: { status } }, exampleBody, tried,
     });
     const link = request.query.url ?? '';
     let parsed: URL;
@@ -827,26 +900,61 @@ export const createRouting = ({
       throw error;
     }
 
-    const seen: { view?: ProbeView } = {};
-    let quoted: RoutingQuote;
-    let view: ProbeView;
-    try {
-      ({ quote: quoted, view } = await quoteForCheck(target, method, request, seen));
+    // The tries a request left for, or the cache served, in order
+    const attempts: CheckAttempt[] = [];
+    let exampleTried = false;
+    const attempt = async (method: CheckMethod, example?: ExampleBody): Promise<CheckAttempt> => {
+      const done = await attemptCheck(target, method, example, request);
+      if (done.entry) {
+        tried.push(done.entry);
+        attempts.push(done);
+        if (example)
+          exampleBody = example.value;
+      }
+
+      return done;
+    };
+    let priced: { readonly method: CheckMethod; readonly checked: CheckedQuote } | undefined;
+    for (const method of methods) {
+      if (method !== 'GET' && !hasHeader) {
+        tried.push({ method, body: 'none', status: null, skipped: 'header' });
+        continue;
+      }
+      let done = await attempt(method);
+      // Asked a price of 0 without a body, by a 402 that shows its own example of a body: that body, once
+      const example = done.refusal?.reason === 'unsupported_payment' && done.view !== undefined && !exampleTried
+        ? exampleBodyOf(done.view, method)
+        : undefined;
+      if (example) {
+        exampleTried = true;
+        done = await attempt(method, example);
+      }
+      if (done.checked) {
+        priced = { method, checked: done.checked };
+        break;
+      }
+      if (finalReasons.has(done.refusal.reason))
+        return refused(done.refusal, attempts.at(-1)?.method ?? method);
     }
-    catch (error) {
-      const refusal = checkRefusalOf(error, seen.view);
-      if (refusal)
-        return refused(refusal);
-      const code = (error as { code?: unknown }).code;
-      if (typeof code === 'string' && unpayable.has(code))
-        return refused({ reason: code as CheckRefusal['reason'], message: (error as Error).message });
-      throw error;
+    if (!priced) {
+      // No price: a 402 to any try asks a payment we don't make, and none is no paid link. With the last try sent's status.
+      const last = attempts.at(-1);
+      if (!last?.refusal)
+        return refused(checkRefusalOf(new NotPayableError(), undefined)!);
+      const asked = attempts.filter(item => item.refusal?.reason === 'unsupported_payment').at(-1);
+      const status = last.entry?.status ?? undefined;
+
+      return refused(asked?.refusal ? { ...asked.refusal, status } : last.refusal, last.method);
     }
+    const { method, checked: { quote: quoted, view } } = priced;
     const asset = findAsset(config, quoted.asset);
     metrics.routing('quoted');
     const [stats, listed] = await Promise.all([
       endpointStats(target.host, target.path, request.log),
-      listEndpoint({ host: target.host, path: target.path, method, quote: quoted.quote, ip: request.ip, requestId: request.id, log: request.log }),
+      // The listing keeps the methods GET and POST only
+      isListedMethod(method)
+        ? listEndpoint({ host: target.host, path: target.path, method, quote: quoted.quote, ip: request.ip, requestId: request.id, log: request.log })
+        : false,
     ]);
 
     return {
@@ -864,6 +972,8 @@ export const createRouting = ({
       listed,
       checkedAt: view.probedAt,
       ms: view.ms,
+      exampleBody,
+      tried,
     };
   };
 

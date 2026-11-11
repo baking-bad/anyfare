@@ -38,7 +38,7 @@ const ourAddress = '203.0.113.7';
 const newHosts = Array.from({ length: 21 }, (_, index) => `new-${index}.listing.test`);
 const targetHosts = [
   'api.target.test', 'blocked.target.test', 'optout.target.test', 'private.target.test', 'nowhere.target.test', 'ours.target.test', 'a.blocked-parent.test',
-  'stall-read.target.test', 'stall-redis.target.test', ...newHosts,
+  'stall-read.target.test', 'stall-redis.target.test', 'methods.target.test', ...newHosts,
 ];
 const generous = { requests: 100_000, windowSeconds: 60 };
 const signerWallet = privateKeyToAccount(generatePrivateKey());
@@ -59,6 +59,9 @@ let internal: HttpServer;
 let internalUrl: string;
 let stalled = false;
 const sent: Record<string, unknown>[] = [];
+
+// The example of a body a target priced by its body shows in its 402
+const searchExample = { urls: ['https://example.com'], text: true };
 
 const required = (url: string) => ({
   x402Version: 2, error: 'Payment required', resource: { url, description: 'Pools', mimeType: 'application/json' },
@@ -105,6 +108,23 @@ beforeAll(async () => {
     }
     if (path === '/v1/no-challenge') {
       response.writeHead(402, { 'content-type': 'application/json' }).end('{}');
+      return;
+    }
+    // Paid only with POST, or priced by its body: not found with GET
+    if ((path.startsWith('/v1/post-paid') || path.startsWith('/v1/body-priced')) && request.method === 'GET') {
+      response.writeHead(404, { 'content-type': 'application/json' }).end('{}');
+      return;
+    }
+    // Priced by its body: 0 without the body its 402 shows as its own example
+    if (path.startsWith('/v1/body-priced')) {
+      const challenge = required(`https://${request.servername}:${target.port}${path}`);
+      const sentExample = request.body.toString('utf8') === JSON.stringify(searchExample);
+      const input = { type: 'http', method: request.method, bodyType: 'json', body: searchExample };
+      response.writeHead(402, {
+        'payment-required': encodePaymentRequiredHeader({
+          ...challenge, accepts: challenge.accepts.map(option => ({ ...option, amount: sentExample ? option.amount : '0' })), extensions: { bazaar: { info: { input } } },
+        } as never),
+      }).end('{}');
       return;
     }
     if (typeof request.headers['payment-signature'] !== 'string') {
@@ -184,8 +204,8 @@ const withProxy = async (overrides: Partial<ProxyDependencies>, work: (url: stri
   }
 };
 
-const checkOf = async (url: string, link: string, ip = '198.51.100.20'): Promise<Record<string, unknown>> => {
-  const response = await fetch(`${url}/_/check?url=${encodeURIComponent(link)}`, { headers: { 'x-forwarded-for': ip } });
+const checkOf = async (url: string, link: string, ip = '198.51.100.20', query = '', headers: Record<string, string> = {}): Promise<Record<string, unknown>> => {
+  const response = await fetch(`${url}/_/check?url=${encodeURIComponent(link)}${query}`, { headers: { 'x-forwarded-for': ip, ...headers } });
   expect(response.status).toBe(200);
 
   return await response.json() as Record<string, unknown>;
@@ -237,6 +257,28 @@ describe('a payable check\'s listing', () => {
       expect(answers.map(answer => answer['payable'])).toEqual(links.map(() => false));
       expect(answers.every(answer => !('listed' in answer))).toBe(true);
       expect(sent.length).toBe(before);
+    });
+  });
+
+  it('lists the method that gave the price: POST after a GET that asked nothing, POST with the 402\'s own example body; and nothing for PUT', async () => {
+    const host = at('methods.target.test');
+    const header = { 'x-anyfare-check': '1' };
+    await withProxy({}, async url => {
+      const answers = [
+        await checkOf(url, `${host}/v1/post-paid`, undefined, '', header),
+        await checkOf(url, `${host}/v1/body-priced`, undefined, '', header),
+        await checkOf(url, `${host}/v1/put`, undefined, '&method=PUT', header),
+      ];
+      await landed(() => sentFor(host).length, 2);
+      // Long enough for a third listing to have gone out
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      expect(answers.map(answer => [answer['payable'], answer['method'], answer['listed']])).toEqual([[true, 'POST', true], [true, 'POST', true], [true, 'PUT', false]]);
+      expect(answers[1]).toMatchObject({ exampleBody: searchExample, tried: [{ status: 404 }, { body: 'none', status: 402 }, { body: 'example', status: 402 }] });
+      expect(sentFor(host).map(body => [body['path'], body['method'], body['kind'], body['quote']]).sort()).toEqual([
+        ['/v1/body-priced', 'POST', 'checked', '0.0011'], ['/v1/post-paid', 'POST', 'checked', '0.0011'],
+      ]);
+      expect((await rowsOf(host)).map(row => [row.path, row.checkMethod]).sort()).toEqual([['/v1/body-priced', 'POST'], ['/v1/post-paid', 'POST']]);
     });
   });
 

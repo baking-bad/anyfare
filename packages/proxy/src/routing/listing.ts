@@ -6,7 +6,7 @@ import {
   maxCheckedEndpointsPerHost, maxCheckedHostLabels, maxCheckedPathLength, RedisNotReadyError, type Redis, type RoutingRepository,
 } from '@anyfare/db';
 
-import type { CheckMethod } from './check.js';
+import type { ListedMethod } from './check.js';
 import type { EndpointRegistrar, ListingOutcome } from './support.js';
 
 // A payable check lists its endpoint, through the registrar a paid call registers with, and says whether
@@ -77,7 +77,7 @@ export const checkListingDefaults = { refreshMs: 60_000, maxEntries: 10_000, max
 export interface ListingRequest {
   readonly host: string;
   readonly path: string;
-  readonly method: CheckMethod;
+  readonly method: ListedMethod;
   // Our quote, as the endpoint's price
   readonly quote: MicroUsd;
   readonly ip: string;

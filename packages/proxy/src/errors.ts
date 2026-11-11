@@ -93,12 +93,12 @@ export class HostRefusedError extends HostNotAllowedError {
   }
 }
 
-/** `GET /_/check?method=POST` without `X-Anyfare-Check: 1`: a plain link never makes us send a POST. */
+/** `GET /_/check` with any method but GET, without `X-Anyfare-Check: 1`: a plain link never makes us send one. */
 export class CheckHeaderRequiredError extends AnyfareError {
   readonly code = 'invalid_request';
 
-  constructor() {
-    super('A check with method=POST needs the header X-Anyfare-Check: 1');
+  constructor(method: string) {
+    super(`A check with method=${method} needs the header X-Anyfare-Check: 1`);
   }
 }
 

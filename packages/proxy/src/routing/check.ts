@@ -15,11 +15,18 @@ import type { X402Requirement } from './support.js';
 // data: its body never, its other headers never, and no URL in it is fetched.
 
 /**
- * The methods a check probes with. Anyone can make us run a check with a link or an image tag, so it never
- * sends a bodyless PUT, PATCH or DELETE to someone's API; HEAD and OPTIONS answer no 402 worth checking.
+ * The methods a check probes with. Anyone can make us run a check with a link or an image tag, so every
+ * method but GET needs the check's header; HEAD and OPTIONS answer no 402 worth checking.
  */
-export const checkMethods = ['GET', 'POST'] as const;
+export const checkMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 export type CheckMethod = typeof checkMethods[number];
+
+/** The methods a check without one tries, in order, until one gives a price. */
+export const defaultCheckMethods: readonly CheckMethod[] = ['GET', 'POST'];
+
+/** The methods a checked endpoint is listed with: the listing keeps GET and POST only. */
+export type ListedMethod = Extract<CheckMethod, 'GET' | 'POST'>;
+export const isListedMethod = (method: CheckMethod): method is ListedMethod => method === 'GET' || method === 'POST';
 
 export interface CheckQuery {
   readonly url?: string;
@@ -27,10 +34,23 @@ export interface CheckQuery {
 }
 
 /**
- * The header a POST check needs, `X-Anyfare-Check: 1`. A link, a prefetch or an image tag never sends it,
- * and the pay host's CORS lets no other site's script add it.
+ * The header any check but GET's needs, `X-Anyfare-Check: 1`. A link, a prefetch or an image tag never
+ * sends it, and the pay host's CORS lets no other site's script add it.
  */
 export const checkHeader = 'x-anyfare-check';
+
+/** One try of a check, as its answer shows it. */
+export interface CheckTry {
+  readonly method: CheckMethod;
+  // `example`: the JSON body the API's own 402 shows as its example
+  readonly body: 'none' | 'example';
+  // Null: the API didn't answer, or the try wasn't sent
+  readonly status: number | null;
+  // Served from the check's cache: no request left
+  readonly cached?: true;
+  // Not sent: the check's header was missing
+  readonly skipped?: 'header';
+}
 
 // The target's headers a check shows, and the most of each it keeps. A challenge is kept long enough to
 // decode; the header limit of the transport caps all of them together anyway.
@@ -67,10 +87,14 @@ export const probeViewOf = (
   return { status, headers: shown, probedAt: probedAt.toISOString(), ms };
 };
 
-const digestOf = (text: string): string => createHash('sha256').update(text).digest('hex');
+const digestOf = (text: string | Buffer): string => createHash('sha256').update(text).digest('hex');
 
-/** The cache key of a check's own entry: the method and URL as a digest, never the text a buyer sent. */
-export const checkEntryKey = (prefix: string, method: string, url: string): string => `${prefix}check:${digestOf(`${method} ${url}`)}`;
+/**
+ * The cache key of a check's own entry: the method and URL as a digest, never the text a buyer sent. A try
+ * with the API's example body has an entry of its own, keyed by the body's digest too.
+ */
+export const checkEntryKey = (prefix: string, method: string, url: string, body?: Buffer): string =>
+  `${prefix}check:${digestOf(`${method} ${url}`)}${body === undefined ? '' : `:${digestOf(body)}`}`;
 
 /** A cached view, when it is well formed, its values of the types the answer says. */
 export const parseProbeView = (value: unknown): ProbeView | undefined => {
@@ -122,16 +146,66 @@ export const boundJson = (value: unknown): unknown => {
 
 const base64Pattern = /^[A-Za-z0-9+/_-]+={0,2}$/;
 
-/** The decoded `PAYMENT-REQUIRED`: base64 of a JSON object. Undefined when it isn't one. */
-const decodeX402 = (value: string | undefined): unknown => {
+/** `PAYMENT-REQUIRED` as sent: base64 of a JSON object. Undefined when it isn't one. */
+const decodeRequired = (value: string | undefined): Readonly<Record<string, unknown>> | undefined => {
   if (value === undefined || !base64Pattern.test(value))
     return undefined;
   try {
     const decoded: unknown = JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
 
-    return isRecord(decoded) ? boundJson(decoded) : undefined;
+    return isRecord(decoded) ? decoded : undefined;
   }
   catch {
+    return undefined;
+  }
+};
+
+/** The decoded `PAYMENT-REQUIRED`, cut to a sane shape. Undefined when it isn't base64 of a JSON object. */
+const decodeX402 = (value: string | undefined): unknown => {
+  const decoded = decodeRequired(value);
+
+  return decoded === undefined ? undefined : boundJson(decoded);
+};
+
+/** The methods whose bodyless try may be tried again with the API's own example body. */
+export const exampleMethods: ReadonlySet<CheckMethod> = new Set<CheckMethod>(['POST', 'PUT', 'PATCH']);
+/** The most an example body may be, as JSON, in bytes. */
+export const maxExampleBytes = 8_192;
+
+/** A body a check sends from a 402's own example: the JSON value, and the bytes that go out. */
+export interface ExampleBody {
+  readonly value: unknown;
+  readonly bytes: Buffer;
+}
+
+const isZeroAmount = (amount: unknown): boolean => (typeof amount === 'string' ? /^0+$/.test(amount) : amount === 0);
+const fieldOf = (value: unknown, ...path: readonly string[]): unknown =>
+  path.reduce<unknown>((item, key) => (isRecord(item) ? item[key] : undefined), value);
+
+/**
+ * The JSON body a bodyless try's `402` shows as its own example, when that 402 asked a price of 0: every x402
+ * option's amount is zero, and its `extensions.bazaar.info.input` is an `http` input of the same method
+ * (in any case), with `bodyType: "json"` and a body of at most 8 KB as JSON. Undefined otherwise. Only for
+ * POST, PUT and PATCH: a price that depends on the body.
+ */
+export const exampleBodyOf = (view: ProbeView, method: CheckMethod): ExampleBody | undefined => {
+  if (view.status !== 402 || !exampleMethods.has(method))
+    return undefined;
+  const required = decodeRequired(view.headers['payment-required']);
+  const accepts = required?.['accepts'];
+  if (!Array.isArray(accepts) || accepts.length === 0 || !accepts.every(option => isRecord(option) && isZeroAmount(option['amount'])))
+    return undefined;
+  const input = fieldOf(required, 'extensions', 'bazaar', 'info', 'input');
+  if (!isRecord(input) || input['type'] !== 'http' || typeof input['method'] !== 'string' || input['method'].toUpperCase() !== method
+    || input['bodyType'] !== 'json' || input['body'] === undefined || input['body'] === null)
+    return undefined;
+  try {
+    const bytes = Buffer.from(JSON.stringify(input['body']), 'utf8');
+
+    return bytes.length > maxExampleBytes ? undefined : { value: input['body'], bytes };
+  }
+  catch {
+    // A body nested too deep to write out is no example
     return undefined;
   }
 };
@@ -403,18 +477,50 @@ const object = <TProperties extends Record<string, unknown>>(properties: TProper
 
 export const checkHeadersSchema = {
   type: 'object',
-  properties: { [checkHeader]: { type: 'string', description: '1: needed with method=POST' } },
+  properties: {
+    [checkHeader]: {
+      type: 'string',
+      description: '1: needed with any method but GET. Without it, a check without `method` tries GET only, and shows its POST try as skipped.',
+    },
+  },
 } as const;
+
+const methodSchema = { type: 'string', enum: [...checkMethods] } as const;
 
 export const checkQuerySchema = {
   type: 'object',
   properties: {
     // The link, with or without https://
     url: { type: 'string', maxLength: 8_192 },
-    // The method the probe goes with, without a body: GET, or POST with the check's header
-    method: { type: 'string', enum: [...checkMethods], default: 'GET' },
+    method: {
+      ...methodSchema,
+      description: 'The method the check tries, once and without a body. Any method but GET needs the header X-Anyfare-Check: 1. '
+        + 'Without it, the check tries GET, then POST, and stops at the first that gives a price. '
+        + 'A POST, PUT or PATCH that the API asks a price of 0 without a body is tried once more with the JSON body its 402 shows as its own example.',
+    },
   },
   additionalProperties: false,
+} as const;
+
+const triedSchema = {
+  type: 'array',
+  description: 'Every try of the check, in order. Empty when no request left, such as for a blocked host or a link that isn\'t one.',
+  items: object({
+    method: methodSchema,
+    body: { type: 'string', enum: ['none', 'example'], description: 'none: no body. example: the JSON body the API\'s own 402 shows as its example.' },
+    status: { type: ['integer', 'null'], description: 'The API\'s status. Null: it didn\'t answer, or the try wasn\'t sent.' },
+    cached: { type: 'boolean', enum: [true], description: 'Served from the check\'s cache: no request left for it.' },
+    skipped: { type: 'string', enum: ['header'], description: 'Not sent: the header X-Anyfare-Check: 1 was missing.' },
+  }, ['method', 'body', 'status']),
+} as const;
+
+const exampleBodySchema = {
+  description: 'The JSON body the check sent from the API\'s own example in its 402, after a try without a body was asked a price of 0. Null: none was sent.',
+} as const;
+
+const answerMethodSchema = {
+  ...methodSchema,
+  description: 'The method of the try that gave the price; on a refusal, of the last try sent.',
 } as const;
 
 const asksSchema = object({
@@ -432,7 +538,7 @@ const upstreamSchema = object({
 
 const payableSchema = object({
   payable: { type: 'boolean', enum: [true] },
-  method: string,
+  method: answerMethodSchema,
   target: string,
   price: object({ amount: string, currency: string, asset: string, network: { type: ['string', 'null'] } }),
   quote: object({ amount: string, fee: string, currency: string }),
@@ -454,17 +560,21 @@ const payableSchema = object({
   },
   checkedAt: { type: 'string', format: 'date-time' },
   ms: integer,
+  exampleBody: exampleBodySchema,
+  tried: triedSchema,
 });
 
 const refusedSchema = object({
   payable: { type: 'boolean', enum: [false] },
-  method: string,
+  method: answerMethodSchema,
   reason: string,
   message: string,
   detail: string,
-  // The target's status, when it answered
+  // The status of the last try sent, when it answered
   upstream: object({ status: integer }),
-}, ['payable', 'method', 'reason', 'message']);
+  exampleBody: exampleBodySchema,
+  tried: triedSchema,
+}, ['payable', 'method', 'reason', 'message', 'exampleBody', 'tried']);
 
 const errorSchema = errorBodySchema;
 

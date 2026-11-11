@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { describe, expect, it } from 'vitest';
 
 import { BlockedAddressError, ConnectionFailedError, DnsLookupError, OutboundTimeoutError, parseIpAddress, type MicroUsd } from '@anyfare/common';
@@ -5,7 +7,7 @@ import { NotPayableError, UnsupportedPaymentError } from '@anyfare/payments';
 
 import { HostRefusedError, UpstreamUnavailableError } from '../../src/errors.js';
 import {
-  addressRefusal, asksOf, boundJson, checkEntryKey, checkRefusalOf, createPayWays, parseProbeView, probeViewOf, upstreamOf, type ProbeView,
+  addressRefusal, asksOf, boundJson, checkEntryKey, checkRefusalOf, createPayWays, exampleBodyOf, parseProbeView, probeViewOf, upstreamOf, type ProbeView,
 } from '../../src/routing/check.js';
 
 const probedAt = new Date('2026-11-12T09:30:00.000Z');
@@ -44,6 +46,54 @@ describe('a probe\'s view', () => {
 
     expect(key).toMatch(/^af:check:[0-9a-f]{64}$/);
     expect(key).not.toBe(checkEntryKey('af:', 'POST', 'https://api.example.com/v1/pools?q=secret'));
+  });
+
+  it('is cached for a try with a body under a key of its own, with the body\'s SHA-256', () => {
+    const body = Buffer.from('{"urls":["https://example.com"]}');
+    const digest = createHash('sha256').update(body).digest('hex');
+
+    const key = checkEntryKey('af:', 'POST', 'https://api.example.com/v1/search', body);
+
+    expect(key).toBe(`${checkEntryKey('af:', 'POST', 'https://api.example.com/v1/search')}:${digest}`);
+    expect(key).not.toBe(checkEntryKey('af:', 'POST', 'https://api.example.com/v1/search', Buffer.from('{"urls":[]}')));
+  });
+});
+
+describe('a 402\'s own example of a body', () => {
+  const example = { urls: ['https://example.com'], text: true };
+  const option = (amount: string) => ({ scheme: 'exact', network: 'eip155:84532', amount, asset: '0xabc', payTo: '0xdef', maxTimeoutSeconds: 60 });
+  const input = { type: 'http', method: 'POST', bodyType: 'json', body: example };
+  const viewOf = (required: unknown, status = 402): ProbeView => ({
+    status, headers: { 'payment-required': base64(required) }, probedAt: probedAt.toISOString(), ms: 1,
+  });
+  const zeroPriced = (overrides: Record<string, unknown> = {}, accepts = [option('0'), option('000')]) => viewOf({
+    x402Version: 2, accepts, extensions: { bazaar: { info: { input: { ...input, ...overrides }, output: { type: 'json' } } } },
+  });
+
+  it('is the body of a bazaar `http` input of the same method, in any case, when every option asks 0', () => {
+    const found = exampleBodyOf(zeroPriced(), 'POST');
+
+    expect(found?.value).toEqual(example);
+    expect(found?.bytes.toString('utf8')).toBe(JSON.stringify(example));
+    expect(exampleBodyOf(zeroPriced({ method: 'put' }), 'PUT')?.value).toEqual(example);
+    expect(exampleBodyOf(zeroPriced({ method: 'Patch' }), 'PATCH')?.value).toEqual(example);
+  });
+
+  it('is none for a price that isn\'t 0 in every option, for another method, body type or status, or a body over 8 KB', () => {
+    expect(exampleBodyOf(zeroPriced({}, [option('0'), option('1000')]), 'POST')).toBeUndefined();
+    expect(exampleBodyOf(zeroPriced({}, []), 'POST')).toBeUndefined();
+    expect(exampleBodyOf(zeroPriced({ method: 'GET' }), 'POST')).toBeUndefined();
+    expect(exampleBodyOf(zeroPriced({ method: 'DELETE' }), 'DELETE')).toBeUndefined();
+    expect(exampleBodyOf(zeroPriced({ method: 'GET' }), 'GET')).toBeUndefined();
+    expect(exampleBodyOf(zeroPriced({ bodyType: 'form-data' }), 'POST')).toBeUndefined();
+    expect(exampleBodyOf(zeroPriced({ type: 'mcp' }), 'POST')).toBeUndefined();
+    expect(exampleBodyOf(zeroPriced({ body: null }), 'POST')).toBeUndefined();
+    expect(exampleBodyOf({ ...zeroPriced(), status: 200 }, 'POST')).toBeUndefined();
+    expect(exampleBodyOf(viewOf({ x402Version: 2, accepts: [option('0')] }), 'POST')).toBeUndefined();
+    expect(exampleBodyOf({ ...zeroPriced(), headers: {} }, 'POST')).toBeUndefined();
+    // 8 KB of JSON at most: the quotes of a string count
+    expect(exampleBodyOf(zeroPriced({ body: 'x'.repeat(8_190) }), 'POST')?.bytes.length).toBe(8_192);
+    expect(exampleBodyOf(zeroPriced({ body: 'x'.repeat(8_191) }), 'POST')).toBeUndefined();
   });
 });
 

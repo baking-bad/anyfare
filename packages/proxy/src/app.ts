@@ -117,8 +117,8 @@ const robotsTxt = 'User-agent: *\nDisallow: /\n';
 // A 401 names the scheme it expects
 const keyErrorCodes = new Set(['unauthorized', 'invalid_key', 'wrong_key_type']);
 
-// The preflight of `GET /_/check`: GET only, and its header, which a POST check needs, only for our
-// website. No other site's script may add it, so no other page can make us send a POST.
+// The preflight of `GET /_/check`: GET only, and its header, which any check but GET's needs, only for
+// our website. No other site's script may add it, so no other page can make us send a POST.
 const checkPreflightHeaders = (origin: string, website: string): Record<string, string> => ({
   'access-control-allow-methods': 'GET',
   ...origin === website ? { 'access-control-allow-headers': 'X-Anyfare-Check' } : {},
@@ -165,7 +165,8 @@ const registerRoutingRoutes = (app: FastifyInstance, routing: Routing): void => 
     schema: {
       summary: 'Check a paid link: is it payable, at what price, and our quote, without paying',
       description: 'No key. Limited per address, as a routed call is. A link that can\'t be paid is still a 200, with `payable: false` and the reason. '
-        + 'A payable link joins the listed services.',
+        + 'A payable link joins the listed services. At most 3 requests leave per check, each counted against the per-address limit of probes; '
+        + '`tried` lists them.',
       tags: ['check'],
       errors: ['invalid_request', 'rate_limited'],
       headers: checkHeadersSchema,

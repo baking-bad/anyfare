@@ -19,10 +19,11 @@ import { createFacilitators, initializeMpp, initializeX402, type MppSetup, type 
 import { createApp as createSigner } from '@anyfare/signer';
 import {
   createFakeResolver, createTestDatabase, createTestRedis, encodeBase58, nearFacilitatorOff, startFakeFacilitator, startFakeTempoRpc, startFakeUpstream,
-  type FakeFacilitator, type FakeTempoRpc, type FakeUpstream, type TestDatabase, type TestRedis,
+  type FakeFacilitator, type FakeTempoRpc, type FakeUpstream, type RecordedRequest, type TestDatabase, type TestRedis,
 } from '@anyfare/testing';
 
 import { createApp, type ProxyDependencies, type ProxyServer } from '../../src/app.js';
+import { checkEntryKey } from '../../src/routing/check.js';
 import { createSignerClient } from '../../src/routing/support.js';
 
 // `GET /_/check` through the real proxy: the target's 402 as it came, what it asks, the ways we take the
@@ -76,6 +77,29 @@ const required = (url: string, path: string) => ({
     { scheme: 'exact', network: base, amount: '1000', asset: usdc, payTo: targetPayTo, maxTimeoutSeconds: 60, extra: { name: 'USDC', version: '2' } },
   ] as PaymentRequirements[],
 });
+
+// The example of a body a target priced by its body shows in its 402, and one over 8 KB as JSON
+const searchExample = { urls: ['https://example.com'], text: true };
+const largeExample = { text: 'x'.repeat(8_300) };
+
+/**
+ * The 402 of a target priced by its body: every option at 0 unless the request carries its example as JSON, and the
+ * plain challenge's prices with it. Its bazaar extension shows the example as the path says: `/v1/body-priced` of the
+ * request's method, `-bare` none, `-get` of GET, `-form` of form data, `-large` over 8 KB.
+ */
+const bodyPriced = (url: string, path: string, request: RecordedRequest) => {
+  const variant = path.split('/')[2]!.slice('body-priced'.length);
+  const example = variant === '-large' ? largeExample : searchExample;
+  const sentExample = request.headers['content-type'] === 'application/json' && request.body.toString('utf8') === JSON.stringify(example);
+  const challenge = required(url, path);
+  const input = { type: 'http', method: variant === '-get' ? 'GET' : request.method, bodyType: variant === '-form' ? 'form-data' : 'json', body: example };
+
+  return {
+    ...challenge,
+    accepts: challenge.accepts.map(option => ({ ...option, amount: sentExample ? option.amount : '0' })),
+    ...variant === '-bare' ? {} : { extensions: { bazaar: { info: { input, output: { type: 'json' } } } } },
+  };
+};
 
 /** The target's MPP challenge: a Tempo charge of 0.002 in pull mode, for five minutes. */
 const mppChallenge = (realm: string): string => Challenge.serialize(Challenge.from({
@@ -150,6 +174,27 @@ beforeAll(async () => {
       response.writeHead(402, { 'www-authenticate': lastMppChallenge, 'content-type': 'application/json', ...extras }).end('{"body":"never read"}');
       return;
     }
+    // Not found, whatever the method
+    if (path.startsWith('/v1/unpaid')) {
+      response.writeHead(404, { 'content-type': 'application/json' }).end('{}');
+      return;
+    }
+    // Paid only with POST: not found with any other method
+    if (path.startsWith('/v1/post-paid') && request.method !== 'POST') {
+      response.writeHead(404, { 'content-type': 'application/json' }).end('{}');
+      return;
+    }
+    // Priced by its body: not found with GET; 0 without the body its 402 shows as its example
+    if (path.startsWith('/v1/body-priced')) {
+      if (request.method === 'GET') {
+        response.writeHead(404, { 'content-type': 'application/json' }).end('{}');
+        return;
+      }
+      response.writeHead(402, {
+        'payment-required': encodePaymentRequiredHeader(bodyPriced(`${self}${path}`, path, request) as never), 'content-type': 'application/json',
+      }).end('{}');
+      return;
+    }
     // Paid only with POST: any other method is refused
     if (path.startsWith('/v1/post-only') && request.method !== 'POST') {
       response.writeHead(405, { allow: 'POST', 'content-type': 'application/json' }).end('{}');
@@ -204,8 +249,9 @@ afterAll(async () => {
 
 const at = (host: string): string => `${host}:${target.port}`;
 const checkUrl = (link: string, query = '', url = proxyUrl): string => `${url}/_/check?url=${encodeURIComponent(link)}${query}`;
-// A POST check sends the check's header
-const checkHeaders = (query: string): Record<string, string> => query.includes('method=POST') ? { 'x-anyfare-check': '1' } : {};
+// A check with any method but GET sends the check's header
+const withHeader = { 'x-anyfare-check': '1' } as const;
+const checkHeaders = (query: string): Record<string, string> => /method=(POST|PUT|PATCH|DELETE)/.test(query) ? withHeader : {};
 const checkOf = async (link: string, query = '', url = proxyUrl, headers: Record<string, string> = {}): Promise<Record<string, unknown>> => {
   const response = await fetch(checkUrl(link, query, url), { headers: { ...checkHeaders(query), ...headers } });
   expect(response.status).toBe(200);
@@ -290,6 +336,8 @@ describe('GET /_/check of a payable link', () => {
     expect(answer['stats']).toEqual({ calls: 0, buyers: 0, volume: '0', successRate: null, p50Ms: null });
     expect(Date.parse(answer['checkedAt'] as string)).toBeGreaterThanOrEqual(before - 1_000);
     expect(answer['ms']).toEqual(expect.any(Number));
+    expect(answer['exampleBody']).toBeNull();
+    expect(answer['tried']).toEqual([{ method: 'GET', body: 'none', status: 402 }]);
     // Nothing else of the target's answer: not its other headers, not its body
     const text = JSON.stringify(answer);
     for (const kept of [cookie, secret, 'x-powered-by', 'never read'])
@@ -342,7 +390,8 @@ describe('GET /_/check of a payable link', () => {
     const second = await checkOf(link);
 
     expect(requestsTo(path)).toHaveLength(1);
-    expect(second).toEqual(first);
+    expect({ ...second, tried: first['tried'] }).toEqual(first);
+    expect(second['tried']).toEqual([{ method: 'GET', body: 'none', status: 402, cached: true }]);
     expect(second['upstream']).toMatchObject({ status: 402 });
   });
 
@@ -541,6 +590,7 @@ describe('GET /_/check with a method', () => {
     expect(viaGet).toEqual({
       payable: false, method: 'GET', reason: 'not_payable', detail: 'no_payment_asked', upstream: { status: 405 },
       message: 'The link answered 405 without asking for a payment. Anyfare routes paid calls only.',
+      exampleBody: null, tried: [{ method: 'GET', body: 'none', status: 405 }, { method: 'POST', body: 'none', status: null, skipped: 'header' }],
     });
     expect(viaPost).toMatchObject({ payable: true, method: 'POST', protocol: 'x402', quote: { amount: '0.0011' } });
     expect(requestsTo('/v1/post-only').map(request => [request.method, request.body.length])).toEqual([['GET', 0], ['POST', 0]]);
@@ -557,7 +607,7 @@ describe('GET /_/check with a method', () => {
     expect(requestsTo('/v1/post-only-shared')).toHaveLength(1);
   });
 
-  // A check anyone can trigger from a link never sends a bodyless PUT, PATCH or DELETE
+  // A check anyone can trigger from a link sends nothing but a GET
   it('refuses a POST check without its header with 400, naming the header, before any request leaves; GET needs none', async () => {
     const before = target.requests.length;
 
@@ -572,14 +622,182 @@ describe('GET /_/check with a method', () => {
     expect(await checkOf(`${at('api.target.test')}/v1/pools-plain`)).toMatchObject({ payable: true, method: 'GET' });
   });
 
-  it.each(['PUT', 'PATCH', 'DELETE', 'post', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT', 'GET,POST', ''])('refuses the method %j with 400, before any request leaves', async method => {
+  it.each(['post', 'get', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT', 'GET,POST', ''])('refuses the method %j with 400, before any request leaves', async method => {
     const before = target.requests.length;
 
-    const response = await fetch(checkUrl(`${at('api.target.test')}/v1/pools`, `&method=${encodeURIComponent(method)}`));
+    const response = await fetch(checkUrl(`${at('api.target.test')}/v1/pools`, `&method=${encodeURIComponent(method)}`), { headers: withHeader });
 
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: { code: string } }).error.code).toBe('invalid_request');
     expect(target.requests.length).toBe(before);
+  });
+
+  it.each(['PUT', 'PATCH', 'DELETE'])('tries %s once, without a body, with the header; without it, refuses it with 400 before any request leaves', async method => {
+    const path = `/v1/pools-${method.toLowerCase()}`;
+    const link = `${at('api.target.test')}${path}`;
+
+    const bare = await fetch(checkUrl(link, `&method=${method}`));
+
+    expect(bare.status).toBe(400);
+    expect(await bare.json()).toEqual({ error: { code: 'invalid_request', message: `A check with method=${method} needs the header X-Anyfare-Check: 1` } });
+    expect(requestsTo(path)).toEqual([]);
+
+    const answer = await checkOf(link, `&method=${method}`);
+
+    expect(answer).toMatchObject({
+      payable: true, method, protocol: 'x402', price: { amount: '0.001' }, quote: { amount: '0.0011' }, upstream: { status: 402 }, exampleBody: null,
+      tried: [{ method, body: 'none', status: 402 }],
+    });
+    expect(requestsTo(path).map(request => [request.method, request.body.length])).toEqual([[method, 0]]);
+    // A paid call of this method still asks the API for its own price
+    expect(await redis.client.keys(`${redis.prefix}quote:${method} *`)).toEqual([]);
+  });
+
+  it('tries POST once when asked to, without trying GET first', async () => {
+    const answer = await checkOf(`${at('api.target.test')}/v1/post-paid-asked`, '&method=POST');
+
+    expect(answer).toMatchObject({ payable: true, method: 'POST', exampleBody: null, tried: [{ method: 'POST', body: 'none', status: 402 }] });
+    expect(requestsTo('/v1/post-paid-asked').map(request => request.method)).toEqual(['POST']);
+  });
+});
+
+describe('GET /_/check without a method', () => {
+  it('tries GET, then POST with the header, and answers the POST that gave a price', async () => {
+    const answer = await checkOf(`${at('api.target.test')}/v1/post-paid`, '', proxyUrl, withHeader);
+
+    expect(answer).toMatchObject({
+      payable: true, method: 'POST', protocol: 'x402', price: { amount: '0.001' }, quote: { amount: '0.0011' }, upstream: { status: 402 }, exampleBody: null,
+    });
+    expect(answer['tried']).toEqual([{ method: 'GET', body: 'none', status: 404 }, { method: 'POST', body: 'none', status: 402 }]);
+    expect(requestsTo('/v1/post-paid').map(request => [request.method, request.body.length])).toEqual([['GET', 0], ['POST', 0]]);
+  });
+
+  it('tries GET only without the header, shows its POST try as skipped, and says the link isn\'t paid', async () => {
+    const answer = await checkOf(`${at('api.target.test')}/v1/post-paid-no-header`);
+
+    expect(answer).toEqual({
+      payable: false, method: 'GET', reason: 'not_payable', detail: 'no_payment_asked', upstream: { status: 404 },
+      message: 'The link answered 404 without asking for a payment. Anyfare routes paid calls only.',
+      exampleBody: null, tried: [{ method: 'GET', body: 'none', status: 404 }, { method: 'POST', body: 'none', status: null, skipped: 'header' }],
+    });
+    expect(requestsTo('/v1/post-paid-no-header').map(request => request.method)).toEqual(['GET']);
+  });
+
+  it('stops at a GET that gives a price, with the header too', async () => {
+    const answer = await checkOf(`${at('api.target.test')}/v1/pools-first`, '', proxyUrl, withHeader);
+
+    expect(answer).toMatchObject({ payable: true, method: 'GET', exampleBody: null, tried: [{ method: 'GET', body: 'none', status: 402 }] });
+    expect(requestsTo('/v1/pools-first').map(request => request.method)).toEqual(['GET']);
+  });
+
+  it('says a link that answers 404 to GET and to POST isn\'t a paid link, with both statuses', async () => {
+    const answer = await checkOf(`${at('api.target.test')}/v1/unpaid`, '', proxyUrl, withHeader);
+
+    expect(answer).toEqual({
+      payable: false, method: 'POST', reason: 'not_payable', detail: 'no_payment_asked', upstream: { status: 404 },
+      message: 'The link answered 404 without asking for a payment. Anyfare routes paid calls only.',
+      exampleBody: null, tried: [{ method: 'GET', body: 'none', status: 404 }, { method: 'POST', body: 'none', status: 404 }],
+    });
+  });
+
+  it('stops at once at a blocked host, our own host, a private address or a dead link: at most one try, then the refusal', async () => {
+    await createRoutingRepository({ db: database.db, clock: systemClock }).block({ host: 'blocked-tries.target.test', reason: 'abuse' });
+    const before = target.requests.length;
+    const refused = [
+      [`${at('blocked-tries.target.test')}/v1/pools`, 'host_not_allowed', 'blocklisted', []],
+      ['https://www.anyfare.test/v1/x', 'host_not_allowed', 'own_host', []],
+      [`${at('ours.target.test')}/v1/x`, 'host_not_allowed', 'own_host', []],
+      ['https://10.0.0.1/v1/pools', 'host_not_allowed', 'private_address', []],
+      ['not a url', 'invalid_target', 'not_a_url', []],
+      [`${at('nowhere.target.test')}/v1/pools`, 'upstream_unavailable', 'dns', [{ method: 'GET', body: 'none', status: null }]],
+      [`${at('private.target.test')}/v1/pools`, 'upstream_unavailable', 'dns', [{ method: 'GET', body: 'none', status: null }]],
+      [`refused.target.test:${closedPort}/v1/pools`, 'upstream_unavailable', 'refused', [{ method: 'GET', body: 'none', status: null }]],
+    ] as const;
+
+    for (const [link, reason, detail, tried] of refused) {
+      const answer = await checkOf(link, '', proxyUrl, withHeader);
+
+      expect(answer, link).toEqual({ payable: false, method: 'GET', reason, detail, message: expect.any(String), exampleBody: null, tried });
+    }
+    expect(target.requests.length).toBe(before);
+  });
+});
+
+describe('GET /_/check of a link priced by its body', () => {
+  it('tries the 402\'s own example of a body once, after a price of 0 without a body, and answers the price it asks with it', async () => {
+    const path = '/v1/body-priced/search';
+    const link = `${at('api.target.test')}${path}`;
+
+    const answer = await checkOf(link, '', proxyUrl, withHeader);
+
+    expect(answer).toMatchObject({
+      payable: true, method: 'POST', protocol: 'x402', price: { amount: '0.001', asset: 'base-usdc' }, quote: { amount: '0.0011', fee: '0.0001' },
+      link: `${config.urls.pay}/${link}`, upstream: { status: 402 }, asks: { amount: '0.001', paidWith: 'base' }, exampleBody: searchExample,
+    });
+    expect(answer['tried']).toEqual([
+      { method: 'GET', body: 'none', status: 404 }, { method: 'POST', body: 'none', status: 402 }, { method: 'POST', body: 'example', status: 402 },
+    ]);
+    const [get, bare, example] = requestsTo(path);
+    expect(requestsTo(path)).toHaveLength(3);
+    expect([get!.method, bare!.method, bare!.body.length, bare!.headers['content-type']]).toEqual(['GET', 'POST', 0, undefined]);
+    // Exactly the example, as JSON
+    expect([example!.method, example!.headers['content-type'], example!.body.toString('utf8')]).toEqual(['POST', 'application/json', JSON.stringify(searchExample)]);
+    // The check's own entry for the body, and never the paid path's quote
+    const url = `https://${link}`;
+    expect(await redis.client.exists(checkEntryKey(redis.prefix, 'POST', url, example!.body))).toBe(1);
+    expect(await redis.client.exists(checkEntryKey(redis.prefix, 'POST', url))).toBe(0);
+    expect(await redis.client.exists(`${redis.prefix}quote:POST ${url}`)).toBe(0);
+    // Where a bodyless POST that gives a price keeps the paid path's quote, as before
+    await checkOf(`${at('api.target.test')}/v1/post-paid-quoted`, '&method=POST');
+    expect(await redis.client.exists(`${redis.prefix}quote:POST https://${at('api.target.test')}/v1/post-paid-quoted`)).toBe(1);
+  });
+
+  it('answers a repeat check\'s example try from the check\'s cache, and a routed POST still probes with its own body', async () => {
+    const path = '/v1/body-priced/repeat';
+    const link = `${at('api.target.test')}${path}`;
+    const first = await checkOf(link, '&method=POST');
+
+    const second = await checkOf(link, '&method=POST');
+    const routed = await fetch(`${proxyUrl}/${link}`, { method: 'POST', body: '{"urls":[]}', headers: { 'content-type': 'application/json' } });
+
+    expect(first['tried']).toEqual([{ method: 'POST', body: 'none', status: 402 }, { method: 'POST', body: 'example', status: 402 }]);
+    expect(second).toMatchObject({ payable: true, method: 'POST', exampleBody: searchExample, quote: { amount: '0.0011' } });
+    expect(second['tried']).toEqual([{ method: 'POST', body: 'none', status: 402 }, { method: 'POST', body: 'example', status: 402, cached: true }]);
+    // The routed call's own probe, with its own body: asked 0, which no one pays
+    expect(routed.status).toBe(502);
+    expect(((await routed.json()) as { error: { code: string } }).error.code).toBe('unsupported_payment');
+    expect(requestsTo(path).map(request => request.body.toString('utf8'))).toEqual(['', JSON.stringify(searchExample), '', '{"urls":[]}']);
+  });
+
+  it('tries the example of a PUT, with method=PUT', async () => {
+    const answer = await checkOf(`${at('api.target.test')}/v1/body-priced/put`, '&method=PUT');
+
+    expect(answer).toMatchObject({ payable: true, method: 'PUT', exampleBody: searchExample, quote: { amount: '0.0011' } });
+    expect(answer['tried']).toEqual([{ method: 'PUT', body: 'none', status: 402 }, { method: 'PUT', body: 'example', status: 402 }]);
+    expect(requestsTo('/v1/body-priced/put').map(request => [request.method, request.body.length > 0])).toEqual([['PUT', false], ['PUT', true]]);
+  });
+
+  it.each([
+    ['without an example', '/v1/body-priced-bare/x'],
+    ['with an example of another method', '/v1/body-priced-get/x'],
+    ['with an example of another body type', '/v1/body-priced-form/x'],
+    ['with an example over 8 KB', '/v1/body-priced-large/x'],
+  ])('says a link that asks 0 %s asks for no payment we make, and tries nothing more', async (_case, path) => {
+    const answer = await checkOf(`${at('api.target.test')}${path}`, '', proxyUrl, withHeader);
+
+    expect(answer).toEqual({
+      payable: false, method: 'POST', reason: 'unsupported_payment', detail: 'no_option', upstream: { status: 402 },
+      message: 'The link asks for a payment, but in no way Anyfare can pay yet.',
+      exampleBody: null, tried: [{ method: 'GET', body: 'none', status: 404 }, { method: 'POST', body: 'none', status: 402 }],
+    });
+    expect(requestsTo(path).map(request => [request.method, request.body.length])).toEqual([['GET', 0], ['POST', 0]]);
+  });
+
+  it('tries no example after a DELETE', async () => {
+    const answer = await checkOf(`${at('api.target.test')}/v1/body-priced/delete`, '&method=DELETE');
+
+    expect(answer).toMatchObject({ payable: false, method: 'DELETE', reason: 'unsupported_payment', exampleBody: null, tried: [{ method: 'DELETE', body: 'none', status: 402 }] });
+    expect(requestsTo('/v1/body-priced/delete')).toHaveLength(1);
   });
 });
 
@@ -689,6 +907,53 @@ describe('GET /_/check\'s limits', () => {
 
       expect(refused.status).toBe(429);
       expect(target.requests.length).toBe(sent);
+    });
+  });
+
+  it('counts each try sent against the probe limit, and a try from the check\'s cache costs nothing', async () => {
+    await withOwnRedis({ probeIp: { requests: 2, windowSeconds: 60 } }, async url => {
+      const link = `${at('api.target.test')}/v1/post-paid-counted`;
+      expect(await checkOf(link, '', url, withHeader)).toMatchObject({
+        payable: true, method: 'POST', tried: [{ method: 'GET', status: 404 }, { method: 'POST', status: 402 }],
+      });
+
+      const cached = await checkOf(link, '&method=POST', url);
+
+      expect(cached).toMatchObject({ payable: true, method: 'POST', tried: [{ method: 'POST', body: 'none', status: 402, cached: true }] });
+      expect(requestsTo('/v1/post-paid-counted')).toHaveLength(2);
+      const sent = target.requests.length;
+      const refused = await fetch(checkUrl(`${at('api.target.test')}/v1/post-paid-over`, '&method=POST', url), { headers: withHeader });
+      expect(refused.status).toBe(429);
+      expect(target.requests.length).toBe(sent);
+    });
+  });
+
+  it('stops a check at once at the probe limit, whichever try reaches it', async () => {
+    await withOwnRedis({ probeIp: { requests: 1, windowSeconds: 60 } }, async url => {
+      const response = await fetch(checkUrl(`${at('api.target.test')}/v1/post-paid-stopped`, '', url), { headers: withHeader });
+
+      expect(response.status).toBe(429);
+      expect(((await response.json()) as { error: { code: string } }).error.code).toBe('rate_limited');
+      expect(requestsTo('/v1/post-paid-stopped').map(request => request.method)).toEqual(['GET']);
+    });
+    await withOwnRedis({ probeIp: { requests: 2, windowSeconds: 60 } }, async url => {
+      const response = await fetch(checkUrl(`${at('api.target.test')}/v1/body-priced/stopped`, '', url), { headers: withHeader });
+
+      expect(response.status).toBe(429);
+      expect(requestsTo('/v1/body-priced/stopped').map(request => [request.method, request.body.length])).toEqual([['GET', 0], ['POST', 0]]);
+    });
+  });
+
+  it('counts a check of three tries once against the per-IP check limit', async () => {
+    await withOwnRedis({ unpaidIp: { requests: 1, windowSeconds: 60 } }, async url => {
+      expect(await checkOf(`${at('api.target.test')}/v1/body-priced/once`, '', url, withHeader)).toMatchObject({
+        payable: true, tried: [{ status: 404 }, { status: 402 }, { body: 'example', status: 402 }],
+      });
+
+      const refused = await fetch(checkUrl(`${at('api.target.test')}/v1/body-priced/twice`, '', url), { headers: withHeader });
+
+      expect(refused.status).toBe(429);
+      expect(requestsTo('/v1/body-priced/twice')).toEqual([]);
     });
   });
 });
