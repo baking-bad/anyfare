@@ -13,6 +13,11 @@
 // dialog; and open the console in a new browser, which must not know the key. The fake's `/_test/rotate` switch shapes
 // the rotation's answers. The last steps make payment keys on the Keys page: the key is on the page only while its
 // dialog shows it, in no storage, cookie or address, and gone from the page's HTML after "I saved it" and on `pagehide`.
+// Then Top up: a link's amount signed out and after sign-in, a link's other text never shown, a top-up through each
+// status (the fake's `/_test/topup` switch) with the address checked against the API's, a reload that brings it back,
+// a POST whose answer is dropped or lost (`/_test/create`) and never sent again, and the time to pay running out; one
+// request at a time when the form is shown again, an address that comes late while another top-up is open, a double click
+// and Enter with a click, and a slow answer for one top-up while another is open (`/_test/slow`).
 //
 // Exit code: 0 nothing found, 1 findings, 2 wrong use or the site did not answer, 3 `agent-browser` is not installed.
 
@@ -440,6 +445,223 @@ export const checkKey = async ({ console: consoleUrl, api, session }, log = line
     for (const place of paymentKeyHeld(another))
       fail(`a payment key is in ${place} after pagehide`);
     await travelled([master, payment, another], 'after the payment keys');
+
+    // The top-ups of the account, as the fake has them, read with the key outside the browser
+    const topupsOf = async key => (await (await ask(`${api}/v1/topups?limit=20`, { headers: { authorization: `Bearer ${key}`, [ownMark]: '1' } })).json()).topups ?? [];
+    const moveTopup = async (id, status, extra = '') => {
+      await ask(`${api}/_test/topup?id=${encodeURIComponent(id)}&status=${status}${extra}`, { method: 'POST' });
+    };
+    const posts = async () => (await record()).filter(entry => entry.method === 'POST' && entry.path.split('?')[0] === '/v1/topups').length;
+    const pageText = () => inPage('JSON.stringify(document.body.innerText)') ?? '';
+    // The POSTs the page sent, in the browser's own list of requests: a browser may send a POST again by itself when its
+    // connection drops, and the fake then counts two
+    const pagePosts = () => (valueOf(run(['network', 'requests', '--json']).stdout)?.data?.requests ?? [])
+      .filter(request => request.method === 'POST' && URL.canParse(request.url) && new URL(request.url).pathname === '/v1/topups').length;
+    const unanswered = async (before, when) => {
+      if (pagePosts() !== 1)
+        fail(`${when}: the page sent the POST more than once`);
+      const atFake = await posts() - before;
+      if (atFake > 1)
+        log(`  note: ${when}, the browser sent the POST again by itself when the connection dropped: the fake got ${atFake}`);
+    };
+    const shownAddress = () => inPage('JSON.stringify(document.querySelector(".addr-box")?.textContent ?? null)');
+    // The page reads an open top-up again only while its tab is visible: a headless browser that runs other sessions may
+    // report this one hidden, so the tab is brought to the front first
+    const toFront = () => {
+      const active = valueOf(run(['tab', 'list', '--json']).stdout)?.data?.tabs?.find(tab => tab.active)?.tabId;
+      if (active !== undefined)
+        run(['tab', active]);
+      if (inPage('JSON.stringify(document.visibilityState)') !== 'visible')
+        throw new Error('The tab is hidden, so the page reads nothing again: run this check alone');
+    };
+
+    log('13. A top-up link, signed out: only its amount shows, and after sign-in Top up opens with it');
+    must(['eval', 'sessionStorage.clear(); "cleared"'], 'Signing out');
+    must(['open', `${consoleUrl}/topup?amount=5`], 'Opening the top-up link');
+    must(['wait', '--text', 'Sign in or create an account'], 'Waiting for the sign-in view');
+    if (!pageText().includes('After you sign in, Top up opens with $5.00 from the link.'))
+      fail('signed out: the sign-in view does not say the link\'s amount');
+    must(['find', 'role', 'textbox', 'fill', master, '--name', 'Master key'], 'Pasting the key');
+    must(['press', 'Enter'], 'Signing in');
+    must(['wait', '--text', '$5.00 from the link'], 'Waiting for Top up with the link\'s amount');
+    must(['wait', '#topup-amount'], 'Waiting for the amount field');
+    if (inPage('JSON.stringify(document.querySelector("#topup-amount")?.value)') !== '5')
+      fail('after sign-in: the amount field doesn\'t hold the link\'s 5');
+    onlyInSession(master, 'on Top up');
+
+    log('14. A link whose query holds markup and other text: none of it shows');
+    must(['open', `${consoleUrl}/topup?amount=%3Cscript%3Ealert(1)%3C%2Fscript%3E&note=hello`], 'Opening a link with markup');
+    must(['wait', '--text', 'The amount in the link was not used'], 'Waiting for the warning');
+    const shown = pageText();
+    for (const text of ['alert(1)', '<script', 'hello', 'note='])
+      if (shown.includes(text))
+        fail(`a link's query shows on Top up: ${text}`);
+    if (inPage('JSON.stringify(document.documentElement.outerHTML.includes("alert(1)"))') !== false)
+      fail('a link\'s markup is in the page\'s HTML');
+
+    log('15. A top-up: the address is the API\'s, each status shows in turn, and a reload brings the open one back');
+    must(['open', `${consoleUrl}/topup?amount=5`], 'Opening Top up');
+    must(['wait', '--text', '$5.00 from the link'], 'Waiting for the form');
+    const postsBefore = await posts();
+    must(['find', 'role', 'button', 'click', '--name', 'Get a deposit address'], 'Asking for an address');
+    must(['wait', '--text', 'Deposit address, USDC on Base'], 'Waiting for the address');
+    toFront();
+    const [newest] = await topupsOf(master);
+    if (newest === undefined || newest.amount !== '5' || newest.token !== 'USDC' || newest.network !== 'base')
+      fail('the fake has no top-up of 5 USDC on Base');
+    else {
+      if (shownAddress() !== newest.depositAddress)
+        fail('the address on the page is not the API\'s');
+      if (inPage('JSON.stringify(document.querySelectorAll(\'svg[aria-label="QR code of the deposit address"]\').length)') !== 1)
+        fail('there is no QR code beside the address');
+      if (await posts() !== postsBefore + 1)
+        fail('one press sent more than one POST /v1/topups');
+      const steps = [['incomplete', 'Send the rest before the time runs out', true], ['processing', 'Received. Converting.', false], ['credited', 'The transaction on NearBlocks', false]];
+      for (const [status, text, address] of steps) {
+        await moveTopup(newest.id, status);
+        must(['wait', '--text', text], `Waiting for ${status}`);
+        if ((shownAddress() !== null) !== address)
+          fail(`${status}: the address ${address ? 'is gone' : 'still shows'}`);
+        if (status === 'processing') {
+          must(['open', `${consoleUrl}/topup`], 'Reloading Top up');
+          toFront();
+          must(['wait', '--text', 'Received. Converting.'], 'Waiting for the open top-up to come back');
+          if (!pageText().includes(newest.id))
+            fail('after a reload: the top-up on screen is not the open one');
+        }
+      }
+      must(['find', 'role', 'button', 'click', '--name', 'New top-up'], 'Pressing New top-up');
+      must(['wait', '--text', 'Get a deposit address'], 'Waiting for the form');
+      must(['click', '.topup-open'], 'Opening the newest top-up from the list');
+      must(['wait', '--text', 'The transaction on NearBlocks'], 'Waiting for the credited top-up');
+      // The page scrolls up to the view it opened: a click while it moves would land elsewhere
+      must(['wait', '1000'], 'Waiting for the scroll to end');
+    }
+
+    log('16. No answer to the POST: it is never sent again, and the top-up made is opened, or the page says none was made');
+    await ask(`${api}/_test/create?answer=drop`, { method: 'POST' });
+    must(['find', 'role', 'button', 'click', '--name', 'New top-up'], 'Pressing New top-up');
+    must(['wait', '#topup-amount'], 'Waiting for the form');
+    must(['fill', '#topup-amount', '7'], 'Typing 7');
+    const beforeDrop = await posts();
+    must(['network', 'requests', '--clear'], 'Clearing the request list');
+    must(['find', 'role', 'button', 'click', '--name', 'Get a deposit address'], 'Asking for an address whose answer is dropped');
+    must(['wait', '--text', 'Deposit address, USDC on Base'], 'Waiting for the top-up that was made');
+    const [dropped] = await topupsOf(master);
+    if (dropped?.amount !== '7' || shownAddress() !== dropped.depositAddress)
+      fail('after a dropped answer: the page doesn\'t show the top-up that was made');
+    await unanswered(beforeDrop, 'after a dropped answer');
+    must(['wait', '1000'], 'Waiting for the scroll to end');
+    await ask(`${api}/_test/create?answer=lost`, { method: 'POST' });
+    must(['find', 'role', 'button', 'click', '--name', 'New top-up'], 'Pressing New top-up');
+    must(['fill', '#topup-amount', '8'], 'Typing 8');
+    const beforeLost = await posts();
+    must(['network', 'requests', '--clear'], 'Clearing the request list');
+    must(['find', 'role', 'button', 'click', '--name', 'Get a deposit address'], 'Asking for an address whose request is lost');
+    must(['wait', '--text', 'The address was not made'], 'Waiting for the page to say so');
+    await unanswered(beforeLost, 'after a lost request');
+    if (shownAddress() !== null)
+      fail('after a lost request: an address shows');
+    await ask(`${api}/_test/create?answer=normal`, { method: 'POST' });
+
+    log('17. The time to pay runs out: the address goes at once, before the API says expired');
+    if (dropped !== undefined) {
+      await moveTopup(dropped.id, 'waiting', '&seconds=10');
+      must(['open', `${consoleUrl}/topup`], 'Reloading Top up');
+      toFront();
+      must(['wait', '.addr-box'], 'Waiting for the address');
+      must(['wait', '--text', 'The time to pay ran out'], 'Waiting for the time to run out');
+      if (shownAddress() !== null)
+        fail('at zero: the address still shows');
+    }
+
+    // The newest top-up of the account whose amount is `amount`, as the fake has it
+    const topupOfAmount = async amount => (await topupsOf(master)).find(topup => topup.amount === amount);
+    const openRow = amount => inPage(`(() => { const row = [...document.querySelectorAll('tr.topup-row')].find(item => item.querySelector('.c-sent')?.textContent.startsWith(${JSON.stringify(`${amount} USDC`)})); row?.querySelector('.topup-open')?.click(); return JSON.stringify(row !== undefined); })()`);
+    const shownId = () => inPage('JSON.stringify(document.querySelector(".topup-id code")?.textContent ?? null)');
+    const settle = () => must(['wait', '1000'], 'Waiting for the scroll to end');
+    const newForm = () => {
+      must(['find', 'role', 'button', 'click', '--name', 'New top-up'], 'Pressing New top-up');
+      must(['wait', '#topup-amount'], 'Waiting for the form');
+    };
+
+    log('18. One request at a time: a form shown again while the address is being made stays disabled and sends nothing');
+    await ask(`${api}/_test/create?answer=late&ms=6000`, { method: 'POST' });
+    must(['open', `${consoleUrl}/topup?amount=11`], 'Opening Top up');
+    must(['wait', '#topup-amount'], 'Waiting for the form');
+    must(['network', 'requests', '--clear'], 'Clearing the request list');
+    must(['find', 'role', 'button', 'click', '--name', 'Get a deposit address'], 'Asking for an address that comes late');
+    must(['wait', '.topup-sending'], 'Waiting for the form to say an address is being made');
+    must(['click', '.topup-open'], 'Opening another top-up from the list');
+    must(['wait', '#topup-status'], 'Waiting for that top-up');
+    settle();
+    newForm();
+    if (inPage('JSON.stringify(document.querySelector(".topup-go")?.disabled === true && document.querySelector(".topup-sending") !== null)') !== true)
+      fail('a form shown again while an address is being made is not disabled, or doesn\'t say so');
+    inPage('(() => { const field = document.querySelector("#topup-amount"); field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); document.querySelector(".topup-go").click(); return JSON.stringify(true); })()');
+    must(['wait', '--text', 'Deposit address, USDC on Base'], 'Waiting for the address that came late');
+    if (pagePosts() !== 1)
+      fail('a form shown again sent a second POST while the first ran');
+    const late = await topupOfAmount('11');
+    if (late === undefined || shownAddress() !== late.depositAddress)
+      fail('the address that came late is not the API\'s for that top-up');
+    settle();
+
+    log('19. An address that is ready while another top-up is open: it is offered, and what the person opened stays');
+    newForm();
+    must(['fill', '#topup-amount', '13'], 'Typing 13');
+    must(['find', 'role', 'button', 'click', '--name', 'Get a deposit address'], 'Asking for an address that comes late');
+    must(['wait', '.topup-sending'], 'Waiting for the form to say an address is being made');
+    must(['click', '.topup-open'], 'Opening another top-up from the list');
+    must(['wait', '#topup-status'], 'Waiting for that top-up');
+    const opened = shownId();
+    must(['wait', '--text', 'Your new deposit address is ready'], 'Waiting for the offer of the new address');
+    const offered = await topupOfAmount('13');
+    if (shownId() !== opened || offered === undefined || shownId() === offered.id)
+      fail('the answer that came late replaced the top-up the person opened');
+    settle();
+    must(['find', 'role', 'button', 'click', '--name', 'Open it'], 'Opening the new top-up');
+    must(['wait', '.addr-box'], 'Waiting for its address, after its own read');
+    if (offered !== undefined && (shownAddress() !== offered.depositAddress || shownId() !== offered.id))
+      fail('the new top-up opened with an address that is not its own');
+    await ask(`${api}/_test/create?answer=normal`, { method: 'POST' });
+    settle();
+
+    log('20. A double click, and Enter and a click, send one POST');
+    for (const [amount, how] of [['9', 'a double click'], ['10', 'Enter and a click']]) {
+      newForm();
+      must(['fill', '#topup-amount', amount], `Typing ${amount}`);
+      must(['network', 'requests', '--clear'], 'Clearing the request list');
+      if (how === 'a double click')
+        must(['dblclick', '.topup-go'], 'Double clicking the button');
+      else
+        inPage('(() => { const field = document.querySelector("#topup-amount"); field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); document.querySelector(".topup-go").click(); return JSON.stringify(true); })()');
+      must(['wait', '--text', 'Deposit address, USDC on Base'], `Waiting for the address after ${how}`);
+      if (pagePosts() !== 1)
+        fail(`${how} sent ${pagePosts()} POSTs`);
+      settle();
+    }
+
+    log('21. A slow answer for one top-up never puts its address on screen once another is open');
+    const [slowOne, quickOne] = [await topupOfAmount('11'), await topupOfAmount('13')];
+    if (slowOne === undefined || quickOne === undefined || slowOne.depositAddress === quickOne.depositAddress)
+      fail('the fake did not give the two top-ups their own addresses');
+    else {
+      await ask(`${api}/_test/slow?id=${slowOne.id}&ms=4000`, { method: 'POST' });
+      must(['open', `${consoleUrl}/topup?amount=5`], 'Opening Top up');
+      toFront();
+      must(['wait', '.topup-open'], 'Waiting for the list');
+      if (openRow('11') !== true || openRow('13') !== true)
+        fail('the rows of the two top-ups are not in the list');
+      must(['wait', '.addr-box'], 'Waiting for the second top-up\'s address');
+      must(['wait', '5000'], 'Waiting past the slow answer');
+      if (shownId() !== quickOne.id || shownAddress() !== quickOne.depositAddress)
+        fail('the top-up on screen is not the one opened last');
+      if (inPage(`JSON.stringify(document.documentElement.outerHTML.includes(${JSON.stringify(slowOne.depositAddress)}))`) !== false)
+        fail('the slow answer put the first top-up\'s address on the page');
+      await ask(`${api}/_test/slow?id=${slowOne.id}&ms=0`, { method: 'POST' });
+    }
+    await travelled([master], 'after the top-ups');
   }
   catch (error) {
     const cause = error instanceof Error && error.cause instanceof Error ? ` (${error.cause.message})` : '';
@@ -447,6 +669,7 @@ export const checkKey = async ({ console: consoleUrl, api, session }, log = line
   }
   finally {
     await rotateAnswer('normal').catch(() => undefined);
+    await ask(`${api}/_test/create?answer=normal`, { method: 'POST' }).catch(() => undefined);
     run(['close']);
   }
   log(findings.length === 0 ? 'The key went only where it should: nothing found' : `${findings.length} findings`);

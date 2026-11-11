@@ -79,9 +79,10 @@ export const surfaceOf = (host: string | null | undefined, { siteUrl, consoleUrl
 /** What a path is on a surface: a public page or file, the Console page, or something the host doesn't serve. */
 export type Verdict = 'public' | 'console' | 'hidden';
 
-// What the console host serves as it is, besides the paths of the console: health, the icons and the logo, robots.txt, and the framework's files
+// What the console host serves as it is, besides the paths of the console: health, the icons and the logo, robots.txt,
+// the logos of networks and tokens (Top up shows them), and the framework's files
 const consoleFiles: readonly string[] = ['/_/health', '/icon', '/apple-icon', '/favicon.ico', '/logo.svg', '/robots.txt', hiddenRoute];
-const consoleFilePrefixes: readonly string[] = ['/_next/', '/__nextjs'];
+const consoleFilePrefixes: readonly string[] = ['/_next/', '/__nextjs', '/logos/'];
 
 export const verdictFor = (surface: Surface, pathname: string): Verdict => {
   // The console's own routes are for the proxy's rewrite only: asked for directly, no host serves them

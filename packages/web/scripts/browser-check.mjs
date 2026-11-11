@@ -12,6 +12,8 @@
 // With `--console`, the console's pages are looked at signed out; with `--api` too, signed in as well: the script asks
 // the fake for a new account and signs in by pasting its sample key, once for each width and theme. On the console's
 // pages it also reads the browser's console (a refused style or script is an error there) and every failed request.
+// Top up is looked at as the form, with a link's amount and with one that was not used, and in each status of a top-up:
+// the fake's `/_test/topup` switch moves the newest top-up to it, and a final one is opened from its row.
 //
 // Exit code: 0 nothing found, 1 findings, 2 wrong use or the site did not answer, 3 `agent-browser` is not installed.
 
@@ -23,6 +25,9 @@ const support = fileURLToPath(new URL('../tests/support/', import.meta.url));
 
 /** Exit codes. */
 export const exits = { clean: 0, findings: 1, usage: 2, noTool: 3 };
+
+// The statuses of a top-up that the page brings back when it opens
+const openStatuses = ['quoting', 'waiting', 'incomplete', 'processing'];
 
 /** The widths to look at, in px. */
 export const widths = [360, 390, 768, 1024, 1440];
@@ -55,7 +60,13 @@ export const pages = [
   { name: 'Console, sign in, top-up link', path: '/topup?amount=5', host: 'console', session: 'out', ready: '.auth-col' },
   { name: 'Console, Overview', path: '/', host: 'console', session: 'in', ready: '.overview-balance' },
   { name: 'Console, Keys', path: '/keys', host: 'console', session: 'in', ready: '.page-title' },
-  { name: 'Console, Top up', path: '/topup?amount=5', host: 'console', session: 'in', ready: '.content-inner' },
+  // Top up: `topup` is the status the fake gives the newest top-up first (see `/_test/topup`); a final one is opened from its row
+  { name: 'Console, Top up, form', path: '/topup', host: 'console', session: 'in', topup: 'credited', ready: '.amount-box' },
+  { name: 'Console, Top up, link amount', path: '/topup?amount=5', host: 'console', session: 'in', ready: '.amount-box' },
+  { name: 'Console, Top up, link amount not used', path: '/topup?amount=abc', host: 'console', session: 'in', ready: '.amount-box' },
+  ...['quoting', 'waiting', 'incomplete', 'processing', 'credited', 'refunded', 'expired', 'failed', 'quote_failed', 'quote_unknown'].map(status => (
+    { name: `Console, Top up, ${status.replace('_', ' ')}`, path: '/topup', host: 'console', session: 'in', topup: status, open: true, ready: '#topup-status' })),
+  { name: 'Console, Top up, waiting with a memo', path: '/topup', host: 'console', session: 'in', topup: 'waiting', memo: true, open: true, ready: '#topup-status' },
   { name: 'Console, Payments', path: '/payments', host: 'console', session: 'in', ready: '.page-title' },
   { name: 'Console, Payments, filtered', path: '/payments?state=free&service=api.example.com&key=nothing&x=1', host: 'console', session: 'in', ready: '.page-title' },
   { name: 'Console, Settings', path: '/settings', host: 'console', session: 'in', ready: '.settings-kv' },
@@ -169,6 +180,16 @@ const main = async () => {
 
     return signedIn;
   };
+  // The fake's switch: the top-up `top_check` (added first, so the newest) in every account, at a status
+  const setTopup = async (status, memo) => {
+    if (options.api === undefined)
+      return false;
+    const url = `${options.api.replace(/\/$/, '')}/_test/topup?id=top_check&status=${status}${memo ? '&memo=1' : ''}`;
+    // Tried twice: a connection kept open while the browser works may have been closed by the fake
+    const answer = await fetch(url, { method: 'POST' }).catch(() => fetch(url, { method: 'POST' })).catch(() => undefined);
+
+    return answer?.ok === true;
+  };
   const signOut = () => {
     run(session, ['open', `${consoleUrl}/signin`]);
     run(session, ['eval', 'sessionStorage.clear(); "cleared"']);
@@ -187,6 +208,11 @@ const main = async () => {
           cell.push('could not sign in with the sample key');
           continue;
         }
+        // The top-up the page shows: the newest, moved to the page's status
+        if (page.topup !== undefined && !await setTopup(page.topup, page.memo === true)) {
+          cell.push('the fake API did not move the top-up');
+          continue;
+        }
         run(session, ['errors', '--clear']);
         if (page.host === 'console') {
           run(session, ['console', '--clear']);
@@ -198,6 +224,9 @@ const main = async () => {
           continue;
         }
         run(session, ['wait', '--load', 'load']);
+        // A final top-up is not brought back on its own: its row opens it
+        if (page.open === true && !openStatuses.includes(page.topup) && (run(session, ['wait', '.topup-open']).status !== 0 || run(session, ['click', '.topup-open']).status !== 0))
+          cell.push('the row of the top-up did not open it');
         if (page.ready !== undefined && run(session, ['wait', page.ready]).status !== 0)
           cell.push(`${page.ready} did not show`);
         run(session, ['wait', '600']);

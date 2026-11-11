@@ -24,6 +24,24 @@ export interface AgentPage {
   readonly requests: readonly ConsoleRequest[];
 }
 
+/**
+ * The Top up page's requests. The sample body asks for USDC on Base, the form's first token: with a top-up link's
+ * amount (a number the link's check passed), the body's amount is that number, as USDC is a dollar.
+ */
+export const topupAgentPage = (amount: number | undefined): AgentPage => ({
+  title: 'Console: top up',
+  lead: 'An agent asks for a deposit address with the master key, and its person sends the token there. Each POST makes a new address: send it once, and on no answer read the list before you ask again.',
+  requests: [
+    { method: 'GET', path: '/v1/topups/options', note: 'The networks, their tokens, and the least a top-up on each must be worth, in USD', keyed: false },
+    { method: 'POST', path: '/v1/topups', note: 'A deposit address for this top-up, waiting. Send at least sendAtLeast to depositAddress (with depositMemo when it is not null) before payBy', body: JSON.stringify({ network: 'base', token: 'USDC', amount: amount === undefined ? '20' : String(amount) }), keyed: true },
+    { method: 'GET', path: '/v1/topups/<top-up id>', note: 'The top-up as it stands now. Read it every few seconds until the status is final', keyed: true },
+    { method: 'GET', path: '/v1/topups?limit=10', note: 'The account\'s top-ups, newest first, every status. Add after=<next> for the next page. 503 topups_unavailable when top-ups are off', keyed: true },
+  ],
+});
+
+/** The Agent view of a page. Top up's sample body takes a top-up link's amount. */
+export const agentPageOf = (page: ConsolePageName, amount?: number): AgentPage => page === 'topup' ? topupAgentPage(amount) : consoleAgentPages[page];
+
 export const consoleAgentPages: Readonly<Record<ConsolePageName, AgentPage>> = {
   signin: {
     title: 'Console: sign in',
@@ -52,7 +70,7 @@ export const consoleAgentPages: Readonly<Record<ConsolePageName, AgentPage>> = {
       { method: 'DELETE', path: '/v1/keys/<key id>', note: 'Revokes a key. It stops at once, and calls in flight finish', keyed: true },
     ],
   },
-  topup: { title: 'Console: top up', requests: [] },
+  topup: topupAgentPage(undefined),
   payments: {
     title: 'Console: payments',
     requests: [
@@ -87,5 +105,5 @@ export const curlOfRequest = (apiUrl: string, { method, path, body, keyed }: Con
 };
 
 /** A page's requests as `curl` commands, a blank line between two. */
-export const curlOfPage = (apiUrl: string, page: ConsolePageName): string =>
-  consoleAgentPages[page].requests.map(request => curlOfRequest(apiUrl, request)).join('\n\n');
+export const curlOfPage = (apiUrl: string, page: ConsolePageName, amount?: number): string =>
+  agentPageOf(page, amount).requests.map(request => curlOfRequest(apiUrl, request)).join('\n\n');

@@ -52,6 +52,18 @@ import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, P
 // `edge` adds a key with a 60-character label and calls to the long host with the long path; `empty` has none of them. The payment
 // keys the fake issues are `af_test_` and 32 hex digits, and are kept in `FakeAccount.paymentKeys`.
 //
+// Top-ups: `GET /v1/topups/options` (no key, any origin) lists six networks with sample tokens (`edge` adds a second USDC on
+// Arbitrum, so a request must name it by its address); `POST /v1/topups` checks the request as the API does (the network,
+// the token, the amount and its decimals, and the least a top-up on the network is worth) and makes a top-up, `waiting`,
+// with the network's sample deposit address and an hour to pay; `GET /v1/topups/:id` reads one. Every address is a plain
+// sample. The switches: `POST /_test/topup?id=&status=[&memo=1][&seconds=<n>]` moves a top-up (in every account that has
+// it, or adds it) to any status with the fields that status carries; `POST /_test/topups?off=1` makes every top-up route
+// answer `503 topups_unavailable` until `off=0`; `POST /_test/options?tokens=0` gives the options without their tokens
+// until `tokens=1`; `POST /_test/create?answer=<how>` changes how `POST /v1/topups` answers: `hang` (made, no answer),
+// `drop` (made, the connection closes), `lost` (closes before anything is made), `late&ms=<n>` (made, answered after n ms),
+// and `normal`; and `POST /_test/slow?id=&ms=` makes `GET /v1/topups/:id` of one top-up answer after ms milliseconds.
+// Each top-up gets its own sample address, numbered in its last 8 characters, and keeps it when it moves.
+//
 // By hand: `node tests/support/fakeApi.ts full 4010 0 http://127.0.0.1:3000` (the last is the console's origin). Calls
 // made while it runs are pushed to the streams: `POST /_test/call` with a call as JSON, or with no body for a sample call.
 
@@ -939,6 +951,8 @@ export interface FakeApi {
   readonly limit: (on: boolean) => void;
   // How the rotation answers once it has rotated: see `RotateAnswer`
   readonly rotateAnswer: (answer: RotateAnswer, ms?: number) => void;
+  // How `POST /v1/topups` answers: see `CreateAnswer`; `ms` is how late a `late` answer comes
+  readonly createAnswer: (answer: CreateAnswer, ms?: number) => void;
   readonly close: () => Promise<void>;
 }
 
@@ -962,6 +976,15 @@ export const consoleCors = (origin: string | undefined, allowed: ReadonlySet<str
   origin !== undefined && allowed.has(origin)
     ? { vary: 'Origin', 'access-control-allow-origin': origin, 'access-control-expose-headers': 'Retry-After, X-Request-Id' }
     : { vary: 'Origin' };
+
+/**
+ * How `POST /v1/topups` answers: as the API does; `hang`, the top-up is made and no answer ever comes; `drop`, it is made
+ * and the connection closes with no answer; `lost`, the connection closes before anything is made; `late`, it is made
+ * and answered after `ms` milliseconds.
+ */
+export type CreateAnswer = 'normal' | 'hang' | 'drop' | 'lost' | 'late';
+
+const createAnswers: readonly CreateAnswer[] = ['normal', 'hang', 'drop', 'lost', 'late'];
 
 /** How the rotation answers once it has rotated: as the API does, a 200 no one can read, no answer at all, or late. */
 export type RotateAnswer = 'normal' | 'garble' | 'drop' | 'late';
@@ -1058,22 +1081,210 @@ const seedPayments = (mode: FakeApiMode, keys: readonly FakeKey[], now: number):
   return payments;
 };
 
+// ---------- Top-ups ----------
+
+/** The API's sentence for each status of a top-up. */
+export const topupMessages: Readonly<Record<string, string>> = {
+  quoting: 'Getting a deposit address',
+  quote_failed: 'No deposit address: the quote was refused. Nothing to send',
+  quote_unknown: 'No deposit address: the quote didn\'t answer. Nothing to send. Ask again',
+  waiting: 'Waiting for your transfer',
+  incomplete: 'Received less than the least to send. Send the rest before the time runs out',
+  processing: 'Received. Converting',
+  credited: 'Added to your balance',
+  refunded: 'Not added. We hold the amount for you and will return it. Contact us',
+  failed: 'Stopped. We are looking into it',
+  expired: 'The time to pay ran out. Don\'t send to this address',
+};
+
+export const topupStatusNames: readonly string[] = Object.keys(topupMessages);
+
+interface SampleToken {
+  readonly symbol: string;
+  readonly address?: string;
+  readonly decimals: number;
+  // A sample price in USD, for the estimate
+  readonly usd: number;
+}
+
+interface SampleNetwork {
+  readonly name: string;
+  readonly minimum: string;
+  readonly tokens: readonly SampleToken[];
+}
+
+// The six networks a top-up comes from, with sample tokens. Every address is a plain sample: no real contract or wallet.
+const sampleNetworks: readonly SampleNetwork[] = [
+  { name: 'base', minimum: '1', tokens: [{ symbol: 'USDC', address: `0x${'1'.repeat(40)}`, decimals: 6, usd: 1 }, { symbol: 'ETH', decimals: 18, usd: 3000 }] },
+  { name: 'arbitrum', minimum: '1', tokens: [{ symbol: 'USDC', address: `0x${'2'.repeat(40)}`, decimals: 6, usd: 1 }, { symbol: 'ARB', address: `0x${'3'.repeat(40)}`, decimals: 18, usd: 0.5 }] },
+  { name: 'solana', minimum: '1', tokens: [{ symbol: 'USDC', address: '4'.repeat(44), decimals: 6, usd: 1 }, { symbol: 'SOL', decimals: 9, usd: 150 }] },
+  { name: 'near', minimum: '1', tokens: [{ symbol: 'USDC', address: 'usdc.sample.near', decimals: 6, usd: 1 }, { symbol: 'wNEAR', address: 'wrap.sample.near', decimals: 24, usd: 3 }] },
+  { name: 'ethereum', minimum: '5', tokens: [{ symbol: 'USDC', address: `0x${'5'.repeat(40)}`, decimals: 6, usd: 1 }, { symbol: 'USDT', address: `0x${'6'.repeat(40)}`, decimals: 6, usd: 1 }, { symbol: 'DAI', address: `0x${'7'.repeat(40)}`, decimals: 18, usd: 1 }] },
+  { name: 'bitcoin', minimum: '10', tokens: [{ symbol: 'BTC', decimals: 8, usd: 60000 }] },
+];
+
+// In edge mode Arbitrum has a second token named USDC, so a request names it by its address
+const edgeNetworks: readonly SampleNetwork[] = sampleNetworks.map(network => network.name === 'arbitrum'
+  ? { ...network, tokens: [...network.tokens, { symbol: 'USDC', address: `0x${'8'.repeat(40)}`, decimals: 6, usd: 1 }] }
+  : network);
+
+const networksOf = (mode: FakeApiMode): readonly SampleNetwork[] => mode === 'edge' ? edgeNetworks : sampleNetworks;
+
+/** `GET /v1/topups/options`: the networks with their tokens, or without them when the token list "can't be read". */
+export const sampleTopupOptions = (mode: FakeApiMode, withTokens = true) => ({
+  asset: 'USDC on NEAR',
+  networks: networksOf(mode).map(network => ({
+    name: network.name,
+    minimum: network.minimum,
+    ...withTokens ? { tokens: network.tokens.map(token => ({ symbol: token.symbol, ...token.address === undefined ? {} : { address: token.address }, decimals: token.decimals })) } : {},
+  })),
+});
+
+// Each new deposit address gets the next number, so no two top-ups share one
+let addressCounter = 0;
+
+/**
+ * A sample deposit address on a network, with its number in its last 8 characters: `0xaaaa…00000007` on Base. A plain
+ * sample of the network's shape, no real wallet.
+ */
+export const sampleDepositAddress = (network: string, number: number): string => {
+  const tail = String(number).padStart(8, '0');
+  const shapes: Readonly<Record<string, string>> = {
+    base: `0x${'a'.repeat(32)}${tail}`,
+    arbitrum: `0x${'b'.repeat(32)}${tail}`,
+    ethereum: `0x${'c'.repeat(32)}${tail}`,
+    solana: `${'9'.repeat(36)}${tail.replace(/0/g, '9')}`,
+    near: `${'d'.repeat(56)}${tail}`,
+    bitcoin: `bc1q${'q'.repeat(30)}${tail}`,
+  };
+
+  return shapes[network] ?? `0x${'e'.repeat(32)}${tail}`;
+};
+
+const nextDepositAddress = (network: string): string => {
+  addressCounter += 1;
+
+  return sampleDepositAddress(network, addressCounter);
+};
+
+/** The memo the fake gives when asked for one. */
+export const sampleMemo = '424242';
+
+/** A sample delivery transaction on NEAR: base58 of the right length, plainly not a real one. */
+export const sampleTransaction = (index: number): string => `SampTx${(index % 9) + 1}${'1'.repeat(37)}`;
+
+const tokenOf = (network: string, symbol: string): SampleToken | undefined =>
+  sampleNetworks.concat(edgeNetworks).find(item => item.name === network)?.tokens.find(token => token.symbol.toUpperCase() === symbol.toUpperCase());
+
+/** An amount of a token, at most its decimals (and 6), without the zeros at the end. */
+const units = (value: number, decimals: number): string => {
+  const text = value.toFixed(Math.min(decimals, 6)).replace(/0+$/, '').replace(/\.$/, '');
+
+  return text === '' ? '0' : text;
+};
+
+/** A decimal string without its leading zeros and the zeros at the end of its fraction, as the API prints an amount. */
+const plainUnits = (amount: string): string => {
+  const [whole = '0', fraction = ''] = amount.split('.');
+  const wholePart = whole.replace(/^0+(?=\d)/, '');
+  const fractionPart = fraction.replace(/0+$/, '');
+
+  return fractionPart === '' ? wholePart : `${wholePart}.${fractionPart}`;
+};
+
+const usdText = (value: number): string => String(Math.round(value * 100) / 100);
+
+/**
+ * A top-up moved to `status` with the fields that status carries, from what was asked: the address and the amounts to
+ * send while it can take a transfer, what arrived from `incomplete` on, the Credits once credited. `seconds` is the
+ * time left to pay.
+ */
+export const topupAt = (base: Pick<Topup, 'id' | 'network' | 'token' | 'amount' | 'createdAt'> & { readonly depositAddress?: string | null }, status: string, now: number, options: { readonly memo?: boolean; readonly seconds?: number } = {}): Topup => {
+  const token = tokenOf(base.network, base.token) ?? { symbol: base.token, decimals: 6, usd: 1 };
+  const amount = Number(base.amount);
+  const sendAtLeast = units(amount * 0.995, token.decimals);
+  const quoted = status !== 'quoting' && status !== 'quote_failed' && status !== 'quote_unknown';
+  const arrived = ['processing', 'credited', 'refunded', 'failed'].includes(status);
+  const payBy = status === 'expired' ? now - 60_000 : now + (options.seconds ?? 3600) * 1000;
+
+  return {
+    id: base.id,
+    status,
+    message: topupMessages[status] ?? status,
+    network: base.network,
+    token: base.token,
+    amount: base.amount,
+    // A top-up keeps its own address when it moves; one that gets an address now gets a new one
+    depositAddress: quoted ? base.depositAddress ?? nextDepositAddress(base.network) : null,
+    depositMemo: quoted && options.memo === true ? sampleMemo : null,
+    send: quoted ? base.amount : null,
+    sendAtLeast: quoted ? sendAtLeast : null,
+    estimatedCredits: quoted ? usdText(amount * token.usd * 0.999) : null,
+    payBy: new Date(payBy).toISOString(),
+    addressExpiresAt: quoted ? new Date(payBy).toISOString() : null,
+    createdAt: base.createdAt,
+    updatedAt: new Date(now).toISOString(),
+    deposited: status === 'incomplete' ? units(amount * 0.6, token.decimals) : arrived ? base.amount : null,
+    credited: status === 'credited' ? usdText(amount * token.usd * 0.999) : null,
+    transaction: status === 'credited' ? sampleTransaction(base.id.length) : null,
+    refunded: status === 'refunded' ? base.amount : null,
+    refundReason: status === 'refunded' ? 'The swap could not be done at the quoted price.' : null,
+  };
+};
+
 const seedTopups = (mode: FakeApiMode, now: number): Topup[] => {
   if (mode === 'empty' || mode === 'checked')
     return [];
-  const make = (index: number, status: string, message: string, network: string, token: string, amount: string, credited: string | null, estimatedCredits: string | null): Topup =>
-    ({ id: `top_sample${index}`, status, message, network, token, amount, credited, estimatedCredits, createdAt: new Date(now - (index * 5 + 2) * 3_600_000).toISOString() });
+  const make = (index: number, status: string, network: string, token: string, amount: string): Topup =>
+    topupAt({ id: `top_sample${index}`, network, token, amount, createdAt: new Date(now - (index * 5 + 2) * 3_600_000).toISOString() }, status, now);
 
   return [
-    make(0, 'processing', 'Received. Converting.', 'base', 'USDC', '20', null, '19.99'),
-    make(1, 'credited', 'Added to your balance.', 'base', 'ETH', '0.0061', '19.84', null),
-    make(2, 'waiting', 'Waiting for your transfer.', 'solana', 'SOL', '0.2', null, '29.9'),
-    make(3, 'incomplete', 'Too little arrived.', 'near', 'USDC', '5', null, '2.5'),
-    make(4, 'refunded', 'Not added. It will be returned.', 'ethereum', 'USDC', '10', null, null),
-    make(5, 'expired', 'The time ran out.', 'arbitrum', 'USDC', '7', null, null),
-    make(6, 'failed', 'The conversion failed.', 'bitcoin', 'BTC', '0.0003', null, null),
-    make(7, 'quote_failed', 'No quote for this route.', 'near', 'wNEAR', '4', null, null),
+    make(0, 'processing', 'base', 'USDC', '20'),
+    make(1, 'credited', 'base', 'ETH', '0.0061'),
+    make(2, 'waiting', 'solana', 'SOL', '0.2'),
+    make(3, 'incomplete', 'near', 'USDC', '5'),
+    make(4, 'refunded', 'ethereum', 'USDC', '10'),
+    make(5, 'expired', 'arbitrum', 'USDC', '7'),
+    make(6, 'failed', 'bitcoin', 'BTC', '0.0003'),
+    make(7, 'quote_failed', 'near', 'wNEAR', '4'),
   ];
+};
+
+/** What the top-up routes are told by the fake's switches: off (`503`), the options without tokens, and the clock. */
+export interface TopupSwitches {
+  readonly off: boolean;
+  readonly tokens: boolean;
+}
+
+const unavailable503 = () => fail(503, 'topups_unavailable', 'Top-ups are off right now. Calls keep working.');
+
+/** `POST /v1/topups`: the request checked as the API checks it, then a new top-up, `waiting`, at the top of the account's list. */
+const createTopupAnswer = (account: FakeAccount, body: unknown, mode: FakeApiMode, now: number): { readonly status: number; readonly body: unknown } => {
+  const fields = bodyObject(body);
+  if (fields === undefined || Object.keys(fields).some(name => !['network', 'token', 'amount'].includes(name)))
+    return badRequest('The body is network, token and amount');
+  const { network, token, amount } = fields;
+  if (typeof network !== 'string' || typeof token !== 'string' || typeof amount !== 'string')
+    return badRequest('network, token and amount are strings');
+  const place = networksOf(mode).find(item => item.name === network);
+  if (place === undefined)
+    return fail(400, 'unsupported_network', `Top-ups come from ${networksOf(mode).map(item => item.name).join(', ')}`);
+  const bySymbol = place.tokens.filter(item => item.symbol.toUpperCase() === token.toUpperCase());
+  if (bySymbol.length > 1)
+    return fail(400, 'ambiguous_token', `Two tokens on ${network} are named ${token}: name one by its address`);
+  const chosen = bySymbol[0] ?? place.tokens.find(item => item.address === token);
+  if (chosen === undefined)
+    return fail(400, 'unknown_token', `No token ${token} on ${network}`);
+  const match = /^[0-9]{1,30}(?:\.([0-9]{1,30}))?$/.exec(amount);
+  if (match === null || (match[1] ?? '').length > chosen.decimals || Number(amount) <= 0)
+    return fail(400, 'invalid_amount', `The amount is a number above 0 with at most ${chosen.decimals} decimals`);
+  const worth = Number(amount) * chosen.usd;
+  if (worth < Number(place.minimum))
+    return fail(400, 'amount_too_small', `A top-up on ${network} must be worth at least $${Number(place.minimum).toFixed(2)}. This one is worth $${worth.toFixed(2)}.`);
+  const topup = topupAt({ id: `top_${randomBytes(8).toString('hex')}`, network, token: chosen.symbol, amount: plainUnits(amount), createdAt: new Date(now).toISOString() }, 'waiting', now);
+  account.topups.unshift(topup);
+
+  return { status: 201, body: topup };
 };
 
 const seedAccount = (account: FakeAccount, mode: FakeApiMode, now: number): void => {
@@ -1135,6 +1346,8 @@ export interface KeyedAsk {
   readonly mode: FakeApiMode;
   readonly search: URLSearchParams;
   readonly body: unknown;
+  // The top-up switches; none is all on
+  readonly topups?: TopupSwitches;
 }
 
 const keysAnswer = (method: string, pathname: string, account: FakeAccount, ask: KeyedAsk): { readonly status: number; readonly body: unknown } | undefined => {
@@ -1268,8 +1481,22 @@ export const keyedAnswer = (method: string, pathname: string, authorization: str
     return { status: 200, body: { available: account.available, held: account.held } };
   if (pathname === '/v1/payments' && method === 'GET')
     return paymentsAnswer(account, ask.search);
-  if (pathname === '/v1/topups' && method === 'GET')
-    return topupsAnswer(account, ask.search);
+  if (pathname === '/v1/topups' || pathname.startsWith('/v1/topups/')) {
+    if (ask.topups?.off === true)
+      return unavailable503();
+    if (pathname === '/v1/topups' && method === 'GET')
+      return topupsAnswer(account, ask.search);
+    if (pathname === '/v1/topups' && method === 'POST')
+      return createTopupAnswer(account, ask.body, ask.mode, Date.now());
+    if (method === 'GET') {
+      const id = decodeURIComponent(pathname.slice('/v1/topups/'.length));
+      const topup = account.topups.find(item => item.id === id);
+
+      return topup === undefined ? fail(404, 'not_found', 'No such top-up on this account') : { status: 200, body: topup };
+    }
+
+    return fail(405, 'method_not_allowed', 'Use GET or POST');
+  }
   if (pathname === '/v1/keys' || pathname.startsWith('/v1/keys/'))
     return keysAnswer(method, pathname, account, ask) ?? fail(404, 'not_found', 'Not found');
 
@@ -1285,6 +1512,13 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0, slowMs = 0, cons
   let limited = false;
   let requestCounter = 0;
   let rotation: { answer: RotateAnswer; ms: number } = { answer: 'normal', ms: 0 };
+  let topupSwitches: TopupSwitches = { off: false, tokens: true };
+  let creation: CreateAnswer = 'normal';
+  let creationMs = 0;
+  // How long `GET /v1/topups/:id` waits for one top-up, by its id
+  const slowReads = new Map<string, number>();
+  // Requests held open by `hang`, closed with the server
+  const held = new Set<ServerResponse>();
   // Each open stream with the filters it was opened with
   const streams = new Map<ServerResponse, URLSearchParams>();
   // The hosts listed while the fake runs
@@ -1323,6 +1557,71 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0, slowMs = 0, cons
 
       return;
     }
+    if (url.pathname === '/_test/slow' && method === 'POST') {
+      // `GET /v1/topups/:id` of this top-up answers after `ms` milliseconds; 0 puts it back
+      const id = url.searchParams.get('id') ?? '';
+      const ms = Number(url.searchParams.get('ms') ?? '0') || 0;
+      if (ms > 0)
+        slowReads.set(id, ms);
+      else
+        slowReads.delete(id);
+      json(response, 200, { id, ms });
+
+      return;
+    }
+    if (url.pathname === '/_test/topups' && method === 'POST') {
+      topupSwitches = { ...topupSwitches, off: url.searchParams.get('off') === '1' };
+      json(response, 200, topupSwitches);
+
+      return;
+    }
+    if (url.pathname === '/_test/options' && method === 'POST') {
+      topupSwitches = { ...topupSwitches, tokens: url.searchParams.get('tokens') !== '0' };
+      json(response, 200, topupSwitches);
+
+      return;
+    }
+    if (url.pathname === '/_test/create' && method === 'POST') {
+      const answer = url.searchParams.get('answer') ?? 'normal';
+      if (!createAnswers.includes(answer as CreateAnswer)) {
+        json(response, 400, { error: { code: 'invalid_request', message: `The answer is ${createAnswers.join(', ')}` } });
+
+        return;
+      }
+      creation = answer as CreateAnswer;
+      creationMs = Number(url.searchParams.get('ms') ?? '0') || 0;
+      json(response, 200, { answer: creation, ms: creationMs });
+
+      return;
+    }
+    if (url.pathname === '/_test/topup' && method === 'POST') {
+      // Moves the top-up with this id, in every account that has it, to a status with the fields it carries; an account
+      // without it gets it, at the top, as a USDC top-up on Base
+      const id = url.searchParams.get('id') ?? '';
+      const status = url.searchParams.get('status') ?? '';
+      if (!/^top_[A-Za-z0-9_-]{1,64}$/.test(id) || !topupStatusNames.includes(status)) {
+        json(response, 400, { error: { code: 'invalid_request', message: `id is a top-up id, status one of ${topupStatusNames.join(', ')}` } });
+
+        return;
+      }
+      const seconds = url.searchParams.get('seconds');
+      const options = { memo: url.searchParams.get('memo') === '1', ...seconds === null ? {} : { seconds: Number(seconds) || 0 } };
+      const now = Date.now();
+      let moved = 0;
+      for (const account of made) {
+        const index = account.topups.findIndex(item => item.id === id);
+        const base = index === -1 ? { id, network: 'base', token: 'USDC', amount: '20', createdAt: new Date(now).toISOString() } : account.topups[index]!;
+        const next = topupAt(base, status, now, options);
+        if (index === -1)
+          account.topups.unshift(next);
+        else
+          account.topups[index] = next;
+        moved += 1;
+      }
+      json(response, 200, { accounts: moved });
+
+      return;
+    }
     if (url.pathname === '/_test/held' && method === 'POST') {
       for (const account of made)
         account.held = url.searchParams.get('amount') ?? '0';
@@ -1331,6 +1630,21 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0, slowMs = 0, cons
       return;
     }
     requests.push({ method, path: `${url.pathname}${url.search}`, query: url.search.slice(1), headers: request.headers });
+    // The networks of a top-up: no key, and any origin may read them, as the API's
+    if (url.pathname === '/v1/topups/options') {
+      if (method === 'OPTIONS')
+        response.writeHead(204, cors).end();
+      else if (mode === 'down')
+        json(response, 500, { error: { code: 'internal_error', message: 'Internal server error' } });
+      else if (topupSwitches.off)
+        json(response, 503, unavailable503().body);
+      else if (method !== 'GET')
+        json(response, 405, { error: { code: 'method_not_allowed', message: 'Use GET' } });
+      else
+        json(response, 200, sampleTopupOptions(mode, topupSwitches.tokens));
+
+      return;
+    }
     if (isKeyedPath(url.pathname)) {
       requestCounter += 1;
       const origin = typeof request.headers.origin === 'string' ? request.headers.origin : undefined;
@@ -1366,7 +1680,26 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0, slowMs = 0, cons
         catch {
           body = 'not json';
         }
-        const found = keyedAnswer(method, url.pathname, request.headers.authorization, byKey, made, { mode, search: url.searchParams, body });
+        const creating = url.pathname === '/v1/topups' && method === 'POST' && !topupSwitches.off && byKey.has(/^Bearer (\S+)$/.exec(request.headers.authorization ?? '')?.[1] ?? '');
+        // Lost: the connection closes before the top-up is made
+        if (creating && creation === 'lost') {
+          response.destroy();
+
+          return;
+        }
+        const found = keyedAnswer(method, url.pathname, request.headers.authorization, byKey, made, { mode, search: url.searchParams, body, topups: topupSwitches });
+        // The top-up was made above; only its answer is changed
+        if (creating && found.status === 201 && creation === 'drop') {
+          response.destroy();
+
+          return;
+        }
+        if (creating && found.status === 201 && creation === 'hang') {
+          held.add(response);
+          response.on('close', () => held.delete(response));
+
+          return;
+        }
         const rotated = url.pathname === '/v1/account/master-key/rotate' && found.status === 200;
         // The rotation happened above; only its answer is changed
         if (rotated && rotation.answer === 'drop') {
@@ -1380,7 +1713,10 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0, slowMs = 0, cons
           else
             json(response, found.status, found.body, headers);
         };
-        const delay = rotated && rotation.answer === 'late' ? rotation.ms : slowMs;
+        const readId = method === 'GET' && url.pathname.startsWith('/v1/topups/') ? decodeURIComponent(url.pathname.slice('/v1/topups/'.length)) : undefined;
+        const delay = rotated && rotation.answer === 'late' ? rotation.ms
+          : creating && found.status === 201 && creation === 'late' ? creationMs
+            : readId !== undefined && slowReads.has(readId) ? slowReads.get(readId)! : slowMs;
         if (delay > 0)
           setTimeout(send, delay);
         else
@@ -1456,7 +1792,13 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0, slowMs = 0, cons
     rotateAnswer: (answer, ms = 0) => {
       rotation = { answer, ms };
     },
+    createAnswer: (answer, ms = 0) => {
+      creation = answer;
+      creationMs = ms;
+    },
     close: async () => {
+      for (const response of held)
+        response.destroy();
       for (const stream of streams.keys())
         stream.end();
       server.closeAllConnections();

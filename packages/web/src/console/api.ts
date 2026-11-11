@@ -295,6 +295,10 @@ export interface PaymentsQuery {
   readonly service?: string | undefined;
 }
 
+/**
+ * A top-up as the API gives it. Token amounts (`amount`, `send`, `sendAtLeast`, `deposited`, `refunded`) are decimal
+ * strings in the token's own units; `estimatedCredits` and `credited` are USD. Null is what it doesn't have yet.
+ */
 export interface Topup {
   readonly id: string;
   readonly status: string;
@@ -302,10 +306,52 @@ export interface Topup {
   readonly network: string;
   readonly token: string;
   readonly amount: string;
-  readonly credited: string | null;
+  readonly depositAddress: string | null;
+  readonly depositMemo: string | null;
+  readonly send: string | null;
+  readonly sendAtLeast: string | null;
   readonly estimatedCredits: string | null;
+  readonly payBy: string;
+  readonly addressExpiresAt: string | null;
   readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly deposited: string | null;
+  readonly credited: string | null;
+  // The delivery's transaction hash on NEAR, once credited
+  readonly transaction: string | null;
+  readonly refunded: string | null;
+  readonly refundReason: string | null;
 }
+
+/** A token a top-up can come from. `address` is its contract, when it has one. */
+export interface TopupToken {
+  readonly symbol: string;
+  readonly address?: string;
+  readonly decimals: number;
+}
+
+/** A network a top-up can come from: its name, the least a top-up on it must be worth in USD, and its tokens, missing when their list can't be read. */
+export interface TopupNetwork {
+  readonly name: string;
+  readonly minimum: string;
+  readonly tokens?: readonly TopupToken[];
+}
+
+export interface TopupOptions {
+  // What a top-up adds to the balance
+  readonly asset: string;
+  readonly networks: readonly TopupNetwork[];
+}
+
+/** What `POST /v1/topups` takes: a network's name, a symbol (or the token's address when two share it), and an amount in the token's units. */
+export interface NewTopup {
+  readonly network: string;
+  readonly token: string;
+  readonly amount: string;
+}
+
+/** How long `POST /v1/topups` waits for its answer: it asks the swap service for an address, which can take a while. */
+export const createTopupTimeoutMs = 60_000;
 
 /** Whether the API answered `503 topups_unavailable`: top-ups are off. */
 export const isTopupsOff = (error: unknown): boolean => error instanceof ConsoleApiError && error.status === 503 && error.code === 'topups_unavailable';
@@ -442,16 +488,57 @@ export const listPayments = async (apiUrl: string, { limit, after, state, keyId,
   return { payments: listOf(answer, 'payments').map(paymentOf), next: nextOf(answer) };
 };
 
-const topupOf = (value: unknown): Topup => {
+// A token amount in the token's own units: up to 30 digits each side of the point, as the API takes them
+const tokenAmountPattern = /^\d{1,30}(?:\.\d{1,30})?$/;
+const isTokenAmount = (value: unknown): value is string => typeof value === 'string' && tokenAmountPattern.test(value);
+// A deposit address: printable ASCII with no space, so what the page shows, copies and puts in the QR code is every character there is
+const isAddress = (value: unknown): value is string => typeof value === 'string' && /^[\x21-\x7e]{1,256}$/.test(value);
+// A memo: printable ASCII, a space only inside it
+const isMemo = (value: unknown): value is string => typeof value === 'string' && /^[\x21-\x7e](?:[\x20-\x7e]{0,254}[\x21-\x7e])?$/.test(value);
+
+/** A top-up from the API, every field checked. One of another shape is no top-up: the whole answer is refused. */
+export const topupOf = (value: unknown): Topup => {
   const item = objectOf(value);
   const message = orNull(item['message'], isText);
-  const credited = orNull(item['credited'], isAmount);
+  const depositAddress = orNull(item['depositAddress'], isAddress);
+  const depositMemo = orNull(item['depositMemo'], isMemo);
+  const send = orNull(item['send'], isTokenAmount);
+  const sendAtLeast = orNull(item['sendAtLeast'], isTokenAmount);
   const estimatedCredits = orNull(item['estimatedCredits'], isAmount);
-  if (!isText(item['id']) || !isText(item['status'], 64) || message === undefined || !isText(item['network'], 64) || !isText(item['token'], 64) || !isAmount(item['amount'])
-    || credited === undefined || estimatedCredits === undefined || !isTime(item['createdAt']))
+  const addressExpiresAt = orNull(item['addressExpiresAt'], isTime);
+  const deposited = orNull(item['deposited'], isTokenAmount);
+  const credited = orNull(item['credited'], isAmount);
+  const transaction = orNull(item['transaction'], (text): text is string => isText(text, 128));
+  const refunded = orNull(item['refunded'], isTokenAmount);
+  const refundReason = orNull(item['refundReason'], isText);
+  if (!isText(item['id']) || !isText(item['status'], 64) || message === undefined || !isText(item['network'], 64) || !isText(item['token'], 64) || !isTokenAmount(item['amount'])
+    || depositAddress === undefined || depositMemo === undefined || send === undefined || sendAtLeast === undefined || estimatedCredits === undefined || !isTime(item['payBy'])
+    || addressExpiresAt === undefined || !isTime(item['createdAt']) || !isTime(item['updatedAt']) || deposited === undefined || credited === undefined || transaction === undefined
+    || refunded === undefined || refundReason === undefined)
     throw unexpected();
 
-  return { id: item['id'], status: item['status'], message, network: item['network'], token: item['token'], amount: item['amount'], credited, estimatedCredits, createdAt: item['createdAt'] };
+  return {
+    id: item['id'],
+    status: item['status'],
+    message,
+    network: item['network'],
+    token: item['token'],
+    amount: item['amount'],
+    depositAddress,
+    depositMemo,
+    send,
+    sendAtLeast,
+    estimatedCredits,
+    payBy: item['payBy'],
+    addressExpiresAt,
+    createdAt: item['createdAt'],
+    updatedAt: item['updatedAt'],
+    deposited,
+    credited,
+    transaction,
+    refunded,
+    refundReason,
+  };
 };
 
 /** `GET /v1/topups`: a page of the account's top-ups, newest first. `503 topups_unavailable` when top-ups are off. */
@@ -462,4 +549,50 @@ export const listTopups = async (apiUrl: string, limit: number, after?: string):
   const answer = await keyedRequest(apiUrl, { method: 'GET', path: '/v1/topups', query });
 
   return { topups: listOf(answer, 'topups').map(topupOf), next: nextOf(answer) };
+};
+
+/** `GET /v1/topups/:id`: the top-up as it stands now. An answer for another top-up is refused. */
+export const readTopup = async (apiUrl: string, id: string): Promise<Topup> => {
+  const topup = topupOf(await keyedRequest(apiUrl, { method: 'GET', path: apiPath`/v1/topups/${id}` }));
+  if (topup.id !== id)
+    throw unexpected();
+
+  return topup;
+};
+
+/**
+ * `POST /v1/topups`: a new deposit address, `waiting`. Each request makes a new address, so it is sent once and never
+ * again by this code; it waits `createTopupTimeoutMs` for the answer.
+ */
+export const createTopup = async (apiUrl: string, body: NewTopup): Promise<Topup> =>
+  topupOf(await keyedRequest(apiUrl, { method: 'POST', path: '/v1/topups', body: { network: body.network, token: body.token, amount: body.amount }, timeoutMs: createTopupTimeoutMs }));
+
+const isDecimals = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 36;
+
+const topupTokenOf = (value: unknown): TopupToken => {
+  const item = objectOf(value);
+  const address = item['address'];
+  if (!isText(item['symbol'], 64) || (address !== undefined && address !== null && !isText(address, 256)) || !isDecimals(item['decimals']))
+    throw unexpected();
+
+  return { symbol: item['symbol'], ...typeof address === 'string' ? { address } : {}, decimals: item['decimals'] };
+};
+
+const topupNetworkOf = (value: unknown): TopupNetwork => {
+  const item = objectOf(value);
+  const tokens = item['tokens'];
+  if (!isText(item['name'], 64) || !isAmount(item['minimum']) || (tokens !== undefined && tokens !== null && !Array.isArray(tokens)))
+    throw unexpected();
+
+  return { name: item['name'], minimum: item['minimum'], ...Array.isArray(tokens) ? { tokens: tokens.map(topupTokenOf) } : {} };
+};
+
+/** `GET /v1/topups/options`, with no key: the networks and tokens a top-up can come from. `503 topups_unavailable` when top-ups are off. */
+export const readTopupOptions = async (apiUrl: string): Promise<TopupOptions> => {
+  const answer = objectOf(await send(apiUrl, { method: 'GET', path: '/v1/topups/options' }, undefined));
+  const networks = answer['networks'];
+  if (!isText(answer['asset'], 128) || !Array.isArray(networks))
+    throw unexpected();
+
+  return { asset: answer['asset'], networks: networks.map(topupNetworkOf) };
 };

@@ -6,18 +6,18 @@ import { CodeBlock } from '../components/CodeBlock';
 import { CopyButton } from '../components/CopyButton';
 import { Icon } from '../components/Icon';
 import { useSettings } from '../components/Settings';
-import { consoleAgentNote, consoleAgentPages, curlOfRequest } from './agentRequests';
+import { agentPageOf, consoleAgentNote, curlOfRequest } from './agentRequests';
 import type { ConsolePageName } from './pages';
 
 const methodClass = (method: string): string => ({ GET: 'get', POST: 'post', PATCH: 'post', DELETE: 'del' } as Record<string, string>)[method] ?? '';
 
 /**
  * The console page as an agent does it: the requests behind it, each with its URL to copy, and the same requests as
- * `curl` commands. The commands name the key as `$ANYFARE_MASTER_KEY`; no real key is ever in them.
+ * `curl` commands. `amount` is a top-up link's amount, for Top up's sample body. The commands name the key as `$ANYFARE_MASTER_KEY`; no real key is ever in them.
  */
-export const AgentPanel = ({ page }: { readonly page: ConsolePageName }) => {
+export const AgentPanel = ({ page, amount }: { readonly page: ConsolePageName; readonly amount?: number | undefined }) => {
   const { apiUrl } = useSettings();
-  const agent = consoleAgentPages[page];
+  const agent = agentPageOf(page, amount);
   const commands = agent.requests.map(request => curlOfRequest(apiUrl, request));
 
   return (

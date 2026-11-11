@@ -45,6 +45,13 @@ export const networkOf = (id: string | undefined): { readonly name: string; read
   return network === undefined ? undefined : { name: network.name, site: network.site };
 };
 
+// A NEAR transaction hash: 32 bytes in base58
+const nearHash = /^[1-9A-HJ-NP-Za-km-z]{32,64}$/;
+
+/** The explorer's page of a transaction on NEAR mainnet, such as a top-up's delivery. Nothing for a hash of another shape. */
+export const nearTransactionLink = (hash: string | null | undefined): string | undefined =>
+  typeof hash === 'string' && nearHash.test(hash) ? `https://nearblocks.io/txns/${hash}` : undefined;
+
 /** The explorer's page of an account or a token on a network. Nothing for an unknown network or an address of another shape. */
 export const explorerLink = (id: string | undefined, kind: AddressKind, address: string | undefined): string | undefined => {
   const network = known(id);

@@ -289,3 +289,95 @@ table.t tr.click:focus-within { background: var(--surface-row-hover); }
   .budget { width: 96px; }
   .pay-what { max-width: none; }
 }
+
+/* ---------- Top up ---------- */
+
+.topup-split { align-items: start; }
+/* The view takes the focus when it opens: it keeps the card's own line, and the ring only for the keyboard */
+.topup-card:focus { outline: 1px solid var(--border); outline-offset: -1px; }
+.topup-card:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.topup-head { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
+.topup-badge { margin: 0; font-size: inherit; line-height: 1; }
+.pay-by { display: inline-flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.countdown { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
+.topup-quoting { gap: 10px; flex-wrap: nowrap; }
+.topup-added { font-size: var(--text-xl); line-height: 28px; font-weight: 600; letter-spacing: var(--tracking-tight); overflow-wrap: anywhere; }
+.topup-code { overflow-wrap: anywhere; }
+.topup-stale { margin: 0; }
+.topup-steps { list-style: none; margin: 0; padding: 0; }
+.step.stopped .n { background: var(--danger-soft); color: var(--danger-text); }
+.topup-kv dd { overflow: visible; white-space: normal; text-overflow: clip; overflow-wrap: anywhere; }
+.topup-id { display: flex; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
+.topup-id code { min-width: 0; overflow-wrap: anywhere; }
+.topup-progress { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border-radius: var(--radius-2xl); background: var(--surface-well); }
+.topup-progress > svg { width: 20px; height: 20px; flex: none; color: var(--text-secondary); }
+.topup-progress .grow { flex: 1 1 200px; min-width: 0; }
+.topup-progress b { font-weight: 600; }
+.topup-ready > svg { color: var(--success-text); }
+.topup-terms { margin: 0; }
+.btn.topup-go { width: 100%; }
+
+/* The amount and the token, as a swap card */
+.amount-box { border-radius: var(--radius-2xl); background: var(--surface-well); padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+.amount-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; min-height: 24px; }
+.amount-label { gap: 8px; }
+.amount-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.amount-input { flex: 1; min-width: 0; height: 44px; border: 0; padding: 0; background: transparent; outline: none; color: var(--text); font: inherit; font-size: 32px; line-height: 40px;
+  font-weight: 600; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; border-radius: var(--radius-md); }
+.amount-input::placeholder { color: var(--text-amount-placeholder); }
+.amount-input:focus-visible { box-shadow: 0 0 0 2px var(--focus-field); }
+.amount-input[aria-invalid="true"] { color: var(--danger-text); }
+.token-pill { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 4px 12px 4px 4px; border-radius: var(--radius-full); border: 0; cursor: pointer; flex: none;
+  white-space: nowrap; background: var(--gray-50); box-shadow: inset 0 0 0 1px rgb(23 23 23 / 0.1); font: inherit; font-size: var(--text-sm); font-weight: 600; color: var(--text); }
+.token-pill > svg { width: 16px; height: 16px; color: var(--text-secondary); }
+.dark .token-pill { background: rgb(255 255 255 / 0.05); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05); }
+.token-pill.pending { width: 140px; padding: 0 16px; cursor: default; }
+.token-pill .pill-pick { padding-left: 8px; }
+@media (pointer: coarse), (max-width: 760px) { .token-pill { height: 44px; } }
+
+/* The token dialog: the search, the network chips and the list, which scrolls inside it */
+.tok-search { width: 100%; }
+.net-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.net-chips .chip { height: 32px; padding: 0 10px 0 6px; }
+.net-chips .chip.net-all { padding: 0 12px; }
+.tok-list { max-height: 336px; overflow-y: auto; margin: 0 -8px; padding: 0 8px; display: flex; flex-direction: column; gap: 2px; }
+.tok { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 12px; border-radius: var(--radius-lg); cursor: pointer; border: 0; background: transparent;
+  width: 100%; text-align: left; color: var(--text); font: inherit; }
+.tok:hover, .tok[aria-pressed="true"] { background: var(--surface-wash); }
+.tok:focus-visible { outline-offset: -2px; }
+.tok .grow { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.tok .side { flex: none; text-align: right; }
+.tok-none { margin: 0; padding: 16px 4px; }
+.tok-missing { align-items: flex-start; }
+
+/* Where to send: the QR code beside the address, which wraps and is never cut */
+.deposit-main { display: flex; gap: 20px; align-items: flex-start; }
+.deposit-text { flex: 1; min-width: 0; }
+.deposit-label { gap: 8px; flex-wrap: nowrap; }
+/* Shown exactly as it is copied: every space kept, and a long run broken anywhere rather than cut */
+.addr-box { display: block; font-family: var(--font-mono); font-size: 15px; line-height: 22px; font-weight: 450; white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; padding: 12px 14px;
+  border-radius: var(--radius-xl); background: var(--surface-well); color: var(--text); user-select: all; }
+.btn.deposit-copy { align-self: flex-start; }
+.qr { display: block; width: 152px; height: 152px; flex: none; border-radius: var(--radius-xl); overflow: hidden; background: #fff; outline: 1px solid var(--border); outline-offset: -1px; }
+.qr svg { display: block; width: 100%; height: 100%; }
+@media (max-width: 640px) {
+  /* On a phone the QR code goes above, and the address and its button take the width, the button in reach of a thumb */
+  .deposit-main { flex-direction: column; align-items: stretch; }
+  .deposit-main .qr { align-self: center; }
+  .deposit-label { flex-wrap: wrap; }
+  .btn.deposit-copy { align-self: stretch; }
+}
+
+/* The list: a row opens its top-up; the explorer link sits above the row's button */
+.topup-sent { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.topup-open { display: block; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.topup-open:focus-visible { outline: none; }
+table.t tr.click:has(.topup-open:focus-visible) { outline: 2px solid var(--focus); outline-offset: -2px; }
+table.t tr.click .topup-tx { position: relative; z-index: 1; }
+table.t tr.topup-row.current { background: var(--surface-row-hover); }
+table.t tr.topup-row .c-link { width: 1%; }
+@media (max-width: 640px) {
+  table.t tr.topup-row { grid-template-areas: "sent amount" "date status" "link link"; }
+  table.t tr.topup-row .c-link { grid-area: link; width: auto; text-align: right; }
+  table.t tr.topup-row .c-link:empty { display: none; }
+}

@@ -3,6 +3,9 @@ import Link from 'next/link';
 import { llmsPath, skillPath } from '../agents/links';
 import { Logo } from './Logo';
 
+/** Where a person writes to us: the footer's Email link, and the console's "Contact us". */
+export const contactEmail = 'hello@bakingbad.dev';
+
 /**
  * The footer: the logo and a line, three link columns, and the last line. "Read our post" has no target yet.
  * `base` is the site's origin when the page is on the console host: the links then lead to the public site.
@@ -37,7 +40,7 @@ export const SiteFooter = ({ consoleHref, base = '' }: { readonly consoleHref: s
           <h4>Connect</h4>
           <ul>
             <li><a href="https://x.com/3route_io">X</a></li>
-            <li><a href="mailto:hello@bakingbad.dev">Email</a></li>
+            <li><a href={`mailto:${contactEmail}`}>Email</a></li>
             <li><a href="https://github.com/baking-bad/anyfare">GitHub</a></li>
           </ul>
         </div>

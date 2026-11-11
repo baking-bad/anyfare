@@ -86,8 +86,14 @@ describe('what each host serves', () => {
     expect(verdictFor('console', path)).toBe('console');
   });
 
-  it.each(['/_/health', '/icon', '/apple-icon', '/logo.svg', '/robots.txt', '/_next/static/chunks/a.js', '/_next/image'])('serves the file %s on the console host', path => {
+  it.each(['/_/health', '/icon', '/apple-icon', '/logo.svg', '/robots.txt', '/_next/static/chunks/a.js', '/_next/image', '/logos/networks/near.svg', '/logos/tokens/usdc.svg'])('serves the file %s on the console host', path => {
     expect(verdictFor('console', path)).toBe('public');
+  });
+
+  it('serves the logos of networks and tokens on the console host, for Top up, and nothing else under that name', () => {
+    expect(verdictFor('console', '/logos/networks/base.svg')).toBe('public');
+    for (const path of ['/logos', '/logosx/a.svg', '/Logos/tokens/usdc.svg'])
+      expect(verdictFor('console', path), path).toBe('hidden');
   });
 
   it.each(['/services', '/services/api.example.com', '/calls', '/calls/pay_x', '/agents', '/check', '/index.md', '/agents.md', '/llms.txt', '/llms-full.txt', '/skills/anyfare-buyer/SKILL.md', '/sitemap.xml', '/opengraph-image', '/md/agents', '/dev/components', '/console', '/topup/x', '/keys/', '/Topup', '/signin/', '/settings.md', '/nothing', ...internal])('serves nothing at %s on the console host', path => {

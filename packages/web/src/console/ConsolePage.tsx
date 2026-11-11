@@ -16,6 +16,7 @@ import { PaymentsPage } from './PaymentsPage';
 import { useSession } from './session';
 import { SettingsPage } from './SettingsPage';
 import { SignIn } from './SignIn';
+import { TopupPage } from './topup/TopupPage';
 
 /** The console while it reads the session, on the server and while the page hydrates: no data, a spinner. */
 export const Opening = () => (
@@ -63,7 +64,7 @@ export const ConsolePage = ({ page, amount, amountUnused = false }: {
   if (leave)
     return <div className="console-leaving"><Spinner label="Opening the Overview" /></div>;
   if (view === 'agent')
-    return <AgentPanel page={page} />;
+    return <AgentPanel page={page} amount={page === 'topup' ? amount : undefined} />;
   switch (page) {
     case 'overview':
       return <Overview />;
@@ -73,7 +74,8 @@ export const ConsolePage = ({ page, amount, amountUnused = false }: {
       return <PaymentsPage />;
     case 'settings':
       return <SettingsPage />;
-    // Top up is built by a later task, from `amount` and `amountUnused`
+    case 'topup':
+      return <TopupPage amount={amount} amountUnused={amountUnused} />;
     default:
       return <PagePending name={page} />;
   }

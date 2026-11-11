@@ -69,6 +69,8 @@ ${curl('paid-call')}
 
 6. Top up with any token NEAR Intents takes. GET ${apiUrl}/v1/topups/options lists networks, tokens and minimums. POST ${apiUrl}/v1/topups with network, token and amount (master key) answers a deposit address. Send there, then read GET ${apiUrl}/v1/topups/<id> until status is credited.
 
+   When the balance runs low, you may send your user the link ${consoleUrl}/topup?amount=<dollars>, such as amount=5. They sign in and top up on the console. Only the amount is read from the link: dollars from 1 to 1000, with at most 2 decimals, such as 5 or 12.50.
+
 7. Before you spend: GET ${payUrl}/_/key with the payment key shows its limits and what is left. On 402 insufficient_balance ask your user to top up. On 402 key_budget_exceeded or key_price_limit ask before you raise a limit. On 429 wait Retry-After seconds. On 503 nothing was charged.
 
 ## Read more

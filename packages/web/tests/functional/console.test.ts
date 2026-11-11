@@ -212,6 +212,8 @@ describe('what the server\'s HTML of a console page holds', () => {
   it.each([
     ['/topup?amount=%3Cscript%3E', ['%3Cscript%3E', '&lt;script&gt;', 'amount=&lt;']],
     ['/topup?amount=5&note=hello-from-link', ['hello-from-link', 'note=']],
+    ['/topup?amount=%3Cscript%3Ealert(1)%3C%2Fscript%3E&note=hello', ['alert(1)', '&lt;script', 'note=hello', '%3Cscript']],
+    ['/topup?amount=5&id=top_from-link&status=waiting&depositAddress=0xfromlink&network=evil-net&token=EVILTOKEN', ['top_from-link', '0xfromlink', 'evil-net', 'EVILTOKEN', 'depositAddress']],
     ['/signin?key=afm_test_xyz', ['afm_test_xyz', 'key=afm']],
     ['/?next=%2F%2Fevil.test&amount=5', ['evil.test', 'next=']],
     ['/payments?key=%3Cscript%3E', ['%3Cscript%3E', '&lt;script&gt;', 'key=&lt;']],
@@ -263,6 +265,20 @@ describe('what the server\'s HTML of a console page holds', () => {
       }
     }
     expect(fake.requests.length).toBe(before);
+  });
+});
+
+describe('the logos on the console host', () => {
+  it('answers the logos of networks and tokens that Top up shows, as SVG, and 404 for one it doesn\'t have', async () => {
+    for (const path of ['/logos/networks/near.svg', '/logos/networks/base.svg', '/logos/tokens/usdc.svg', '/logos/tokens/btc.svg']) {
+      const reply = await getAs(site, consoleHost, path);
+
+      expect(reply.status, path).toBe(200);
+      expect(reply.headers['content-type'], path).toBe('image/svg+xml');
+      expect(reply.body, path).toMatch(/^<svg /);
+      expect(reply.body, path).not.toMatch(/<script|style=/i);
+    }
+    expect((await getAs(site, consoleHost, '/logos/tokens/nothing.svg')).status).toBe(404);
   });
 });
 
@@ -537,6 +553,139 @@ describe('the fake API\'s keys, payments and top-ups', () => {
   });
 });
 
+describe('the fake API\'s top-ups', () => {
+  const asAccount = async (api: FakeApi): Promise<(path: string, init?: RequestInit) => Promise<{ readonly status: number; readonly body: Record<string, unknown> }>> => {
+    const { masterKey } = await (await fetch(`${api.url}/v1/accounts`, { method: 'POST' })).json() as { readonly masterKey: string };
+
+    return async (path, init = {}) => {
+      const reply = await fetch(`${api.url}${path}`, { ...init, headers: { authorization: `Bearer ${masterKey}`, ...init.body === undefined ? {} : { 'content-type': 'application/json' } } });
+
+      return { status: reply.status, body: await reply.json() as Record<string, unknown> };
+    };
+  };
+  const post = (value: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(value) });
+  const errorCode = (reply: { readonly body: Record<string, unknown> }): unknown => (reply.body['error'] as { readonly code?: unknown } | undefined)?.code;
+
+  it('list six networks with their tokens, with no key and to any origin, and without the tokens when told', async () => {
+    const reply = await fetch(`${fake.url}/v1/topups/options`, { headers: { origin: 'https://anywhere.example.test' } });
+    const body = await reply.json() as { readonly networks: { readonly name: string; readonly minimum: string; readonly tokens?: unknown[] }[] };
+
+    expect(reply.status).toBe(200);
+    expect(reply.headers.get('access-control-allow-origin')).toBe('*');
+    expect(body.networks.map(network => network.name)).toEqual(['base', 'arbitrum', 'solana', 'near', 'ethereum', 'bitcoin']);
+    expect(body.networks.every(network => (network.tokens ?? []).length > 0)).toBe(true);
+    await fetch(`${fake.url}/_test/options?tokens=0`, { method: 'POST' });
+    try {
+      const bare = await (await fetch(`${fake.url}/v1/topups/options`)).json() as typeof body;
+      expect(bare.networks.every(network => network.tokens === undefined)).toBe(true);
+    }
+    finally {
+      await fetch(`${fake.url}/_test/options?tokens=1`, { method: 'POST' });
+    }
+  });
+
+  it('make a waiting top-up with a sample address and an hour to pay, and refuse what the API refuses', async () => {
+    const call = await asAccount(fake);
+    const made = await call('/v1/topups', post({ network: 'base', token: 'USDC', amount: '20.50' }));
+
+    expect(made.status).toBe(201);
+    expect(made.body).toMatchObject({ status: 'waiting', network: 'base', token: 'USDC', amount: '20.5', depositAddress: expect.stringMatching(/^0xa{32}\d{8}$/), depositMemo: null });
+    const payBy = Date.parse(String(made.body['payBy']));
+    expect(payBy - Date.now()).toBeGreaterThan(3_500_000);
+    expect(payBy - Date.now()).toBeLessThanOrEqual(3_600_000);
+    expect((await call(`/v1/topups/${String(made.body['id'])}`)).body).toEqual(made.body);
+    expect(((await call('/v1/topups?limit=1')).body['topups'] as unknown[])[0]).toEqual(made.body);
+    // Each top-up has its own address
+    const second = await call('/v1/topups', post({ network: 'base', token: 'USDC', amount: '20.5' }));
+    expect(second.body['depositAddress']).not.toBe(made.body['depositAddress']);
+    expect(errorCode(await call('/v1/topups/top_nothing'))).toBe('not_found');
+
+    expect(errorCode(await call('/v1/topups', post({ network: 'base', token: 'USDC', amount: '0.5' })))).toBe('amount_too_small');
+    expect(errorCode(await call('/v1/topups', post({ network: 'ethereum', token: 'USDT', amount: '4.99' })))).toBe('amount_too_small');
+    expect(errorCode(await call('/v1/topups', post({ network: 'base', token: 'USDC', amount: '1.1234567' })))).toBe('invalid_amount');
+    expect(errorCode(await call('/v1/topups', post({ network: 'base', token: 'USDC', amount: '-1' })))).toBe('invalid_amount');
+    expect(errorCode(await call('/v1/topups', post({ network: 'mars', token: 'USDC', amount: '5' })))).toBe('unsupported_network');
+    expect(errorCode(await call('/v1/topups', post({ network: 'base', token: 'DOGE', amount: '5' })))).toBe('unknown_token');
+    expect(errorCode(await call('/v1/topups', post({ network: 'base', token: 'USDC', amount: '5', memo: 'x' })))).toBe('invalid_request');
+    // A token named by its address
+    expect((await call('/v1/topups', post({ network: 'base', token: `0x${'1'.repeat(40)}`, amount: '5' }))).body).toMatchObject({ token: 'USDC' });
+  });
+
+  it('move a top-up to any status with its fields, and answer 503 everywhere when top-ups are off', async () => {
+    const call = await asAccount(fake);
+    const at = async (status: string, extra = ''): Promise<Record<string, unknown>> => {
+      await fetch(`${fake.url}/_test/topup?id=top_sample0&status=${status}${extra}`, { method: 'POST' });
+
+      return (await call('/v1/topups/top_sample0')).body;
+    };
+
+    const waiting = await at('waiting', '&memo=1');
+    expect(waiting).toMatchObject({ status: 'waiting', depositMemo: '424242', depositAddress: expect.stringMatching(/^0xa{32}\d{8}$/) });
+    // A top-up keeps its address when it moves
+    expect((await at('incomplete'))['depositAddress']).toBe(waiting['depositAddress']);
+    expect(await at('incomplete')).toMatchObject({ status: 'incomplete', deposited: '12' });
+    expect(await at('credited')).toMatchObject({ status: 'credited', credited: '19.98', transaction: expect.stringMatching(/^SampTx\d1{37}$/) });
+    expect(await at('refunded')).toMatchObject({ status: 'refunded', refunded: '20', refundReason: expect.any(String) });
+    expect(await at('quote_failed')).toMatchObject({ depositAddress: null, sendAtLeast: null });
+    expect(Date.parse(String((await at('expired'))['payBy']))).toBeLessThan(Date.now());
+    expect(Date.parse(String((await at('waiting', '&seconds=30'))['payBy'])) - Date.now()).toBeLessThanOrEqual(30_000);
+
+    await fetch(`${fake.url}/_test/topups?off=1`, { method: 'POST' });
+    try {
+      expect(errorCode(await call('/v1/topups'))).toBe('topups_unavailable');
+      expect(errorCode(await call('/v1/topups/top_sample0'))).toBe('topups_unavailable');
+      expect(errorCode(await call('/v1/topups', post({ network: 'base', token: 'USDC', amount: '5' })))).toBe('topups_unavailable');
+      expect((await fetch(`${fake.url}/v1/topups/options`)).status).toBe(503);
+    }
+    finally {
+      await fetch(`${fake.url}/_test/topups?off=0`, { method: 'POST' });
+    }
+    expect((await call('/v1/topups')).status).toBe(200);
+  });
+
+  it('answer one top-up\'s read late, and a POST late, when told', async () => {
+    const call = await asAccount(fake);
+    await fetch(`${fake.url}/_test/slow?id=top_sample0&ms=700`, { method: 'POST' });
+    try {
+      const started = Date.now();
+      expect((await call('/v1/topups/top_sample0')).status).toBe(200);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(650);
+      const quick = Date.now();
+      await call('/v1/topups/top_sample1');
+      expect(Date.now() - quick).toBeLessThan(650);
+    }
+    finally {
+      await fetch(`${fake.url}/_test/slow?id=top_sample0&ms=0`, { method: 'POST' });
+    }
+    fake.createAnswer('late', 700);
+    try {
+      const started = Date.now();
+      expect((await call('/v1/topups', post({ network: 'base', token: 'USDC', amount: '5' }))).status).toBe(201);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(650);
+    }
+    finally {
+      fake.createAnswer('normal');
+    }
+  });
+
+  it('make the top-up and drop the answer, or drop it before anything is made, when told', async () => {
+    const call = await asAccount(fake);
+    const count = async (): Promise<number> => ((await call('/v1/topups?limit=100')).body['topups'] as unknown[]).length;
+    const before = await count();
+    try {
+      fake.createAnswer('drop');
+      await expect(call('/v1/topups', post({ network: 'base', token: 'USDC', amount: '5' }))).rejects.toThrow();
+      expect(await count()).toBe(before + 1);
+      fake.createAnswer('lost');
+      await expect(call('/v1/topups', post({ network: 'base', token: 'USDC', amount: '5' }))).rejects.toThrow();
+      expect(await count()).toBe(before + 1);
+    }
+    finally {
+      fake.createAnswer('normal');
+    }
+  });
+});
+
 // The key in a real browser. CI has no agent-browser: the check says so and passes over it.
 const hasBrowser = spawnSync('agent-browser', ['--version'], { encoding: 'utf8' }).error === undefined;
 
@@ -556,7 +705,7 @@ describe('the master key in a real browser', () => {
     expect(output.split('\n').filter(line => line.includes('finding'))).toEqual([]);
     expect(output).toContain('nothing found');
     expect(code).toBe(0);
-  }, 240_000);
+  }, 420_000);
 
   it.runIf(!hasBrowser)('is not checked here: agent-browser is not installed (run npm run check:key -w @anyfare/web by hand)', () => {
     expect(hasBrowser).toBe(false);
