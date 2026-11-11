@@ -8,6 +8,7 @@ import { loadHome } from '../home/data';
 import { isHost, parsePeriod, serviceMissingLine } from '../services/content';
 import { loadService, loadServiceCalls, loadServices } from '../services/data';
 import { parseServicesFilters } from '../services/filters';
+import { agentsMarkdown } from './agents';
 import { callsMarkdown } from './calls';
 import { checkMarkdown } from './check';
 import { notFoundLine } from '../receipt/content';
@@ -48,6 +49,7 @@ export interface MarkdownPage {
 
 export const markdownPages: readonly MarkdownPage[] = [
   { pattern: /^\/$/, render: async ({ settings, read }) => homeMarkdown(settings, await loadHome(read)) },
+  { pattern: /^\/agents$/, render: async ({ settings }) => agentsMarkdown(settings) },
   {
     pattern: /^\/calls$/,
     render: async ({ settings, read, search }) => {

@@ -1,0 +1,24 @@
+/* The For agents page. Classes only: the content security policy allows no inline style. */
+
+.agents-hero { padding-bottom: 64px; }
+.agents-split { gap: 48px; align-items: start; }
+.agents-title { font-size: 40px; line-height: 44px; }
+@media (min-width: 1024px) { .agents-title { font-size: 48px; line-height: 52px; } }
+.api-intro { gap: 16px; max-width: 640px; }
+
+/* The API table: method, address, what it does, who may call it, state */
+.ep-row { display: grid; grid-template-columns: 64px minmax(0, 1.4fr) minmax(0, 1fr) 120px 72px; gap: 12px; align-items: center; padding: 12px 16px; font-size: var(--text-sm); }
+.ep-path { min-width: 0; overflow-wrap: anywhere; }
+.ep-path .muted { font-weight: 400; }
+.ep-state { text-align: right; }
+.ep-group + .ep-group { border-top: 1px solid var(--line-table); }
+.ep-group-title { padding: 12px 16px 4px; font-size: var(--text-xs); line-height: var(--leading-xs); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-secondary); }
+@media (max-width: 860px) {
+  .ep-row { grid-template-columns: 64px minmax(0, 1fr); }
+  .ep-row > :nth-child(n+3) { grid-column: 2; }
+  .ep-state { text-align: left; }
+}
+
+/* A card that is a link keeps its column layout (a.card is a block) */
+a.card.agent-card { display: flex; flex-direction: column; }
+@media (min-width: 900px) { .start-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
