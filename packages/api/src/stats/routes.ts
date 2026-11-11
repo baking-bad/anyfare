@@ -346,21 +346,22 @@ export const registerStatsRoutes = (app: FastifyInstance, {
         if (asked.answer)
           listing = await listingOf(asked.answer.endpoints.map(endpoint => endpoint.path));
       }
-      if (isUnlisted(listing, false, asked.answer !== undefined))
+      if (isUnlisted(listing, listing.stored, asked.answer !== undefined))
         throw new NotFoundError(unlisted);
       reply.header('cache-control', listedCache);
+      const status = asked.answer !== undefined || listing.paid ? 'paid' : 'checked';
       if (asked.answer) {
         const { answer } = asked;
 
         return {
-          ...answer, ...listedPage({ host, payUrl, ranked: answer.endpoints, countedEndpoints: answer.paidEndpoints, listing, status: 'paid' }), updatedAt: asked.at.toISOString(),
+          ...answer, ...listedPage({ host, payUrl, ranked: answer.endpoints, countedEndpoints: answer.paidEndpoints, listing, status }), updatedAt: asked.at.toISOString(),
         };
       }
       // Listed by checks, or reached by a paid call not finished yet: no numbers
       const empty = buildServicePage({ host, period, counts: undefined, callsBefore: period === 'all' ? undefined : 0, daily: [], now });
 
       return {
-        ...empty, ...listedPage({ host, payUrl, ranked: [], countedEndpoints: 0, listing, status: listing.paid ? 'paid' : 'checked' }), exact: true,
+        ...empty, ...listedPage({ host, payUrl, ranked: [], countedEndpoints: 0, listing, status }), exact: true,
         updatedAt: now.toISOString(),
       };
     },

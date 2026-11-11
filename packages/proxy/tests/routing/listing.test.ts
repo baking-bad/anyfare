@@ -172,13 +172,16 @@ describe('a payable check\'s listing', () => {
   });
 
   it('refreshes no host of the pool for a client past its 20 of the day, the pool\'s own hosts included', async () => {
-    const { list, listed } = fixture({ state: host => (host.startsWith('pool-') ? { ...inPool, hostListed: true } : unlisted) });
+    const { list, listed } = fixture({
+      state: (host, path) => (host.startsWith('pool-') ? { ...inPool, status: path === '/v1/pools' ? 'checked' : undefined } : unlisted),
+    });
 
     for (let index = 0; index < 20; index += 1)
       expect(await list(request({ host: `new-${index}.target.test` }))).toBe(true);
 
-    // A host a check reached before is no free refresh
-    expect(await list(request({ host: 'pool-1.target.test' }))).toBe(false);
+    // A host a check reached before is no free refresh, nor a new endpoint of it: its listed endpoint stays listed
+    expect(await list(request({ host: 'pool-1.target.test', path: '/v1/new' }))).toBe(false);
+    expect(await list(request({ host: 'pool-1.target.test' }))).toBe(true);
     expect(listed).toHaveLength(20);
   });
 
@@ -197,17 +200,44 @@ describe('a payable check\'s listing', () => {
     expect(listed.map(item => item.endpoint.path)).toEqual(['/v1/listed']);
   });
 
-  it('lists no host of more than 8 labels, and reads nothing for one: it is checked, never listed', async () => {
-    const { list, reads, listed } = fixture();
+  it('lists nothing of a host of more than 8 labels, and says listed for an endpoint of one a paid call listed', async () => {
+    const deep = Array.from({ length: 127 }, () => 'a').join('.');
+    const { list, reads, listed } = fixture({ state: host => (host === deep ? { ...stored, status: 'paid' } : unlisted) });
     const named = (labels: number) => Array.from({ length: labels }, (_, index) => `l${index}`).join('.');
 
     expect(await list(request({ host: named(8) }))).toBe(true);
     expect(await list(request({ host: `${named(8)}:8443` }))).toBe(true);
     expect(await list(request({ host: named(9) }))).toBe(false);
-    expect(await list(request({ host: Array.from({ length: 127 }, () => 'a').join('.') }))).toBe(false);
+    expect(await list(request({ host: deep }))).toBe(true);
 
-    expect(reads.map(read => read.host)).toEqual([named(8), `${named(8)}:8443`]);
-    expect(listed).toHaveLength(2);
+    expect(reads.map(read => read.host)).toEqual([named(8), `${named(8)}:8443`, named(9), deep]);
+    // Only those of 8 labels at most go to the internal API
+    expect(listed.map(item => item.endpoint.host)).toEqual([named(8), `${named(8)}:8443`]);
+  });
+
+  it('says listed for an endpoint listed before, whether or not its refresh goes through: its client past its 20, or the pool full', async () => {
+    const limit = memoryLimit();
+    for (let index = 0; index < newHostsPerClient; index += 1)
+      await limit.admit('198.51.100.7', `other-${index}.target.test`);
+    const paidOutside = { ...unlisted, status: 'paid' as const, hostListed: true };
+    const past = fixture({ newHosts: limit, state: () => paidOutside });
+    const full = fixture({ state: () => paidOutside });
+
+    // The client counted 20 hosts today: no refresh, and the endpoint is still listed
+    expect(await past.list(request())).toBe(true);
+    expect(past.listed).toEqual([]);
+    // The internal API found no room in the pool: still listed, for the next minute too
+    expect(await full.list(request())).toBe(true);
+    full.listed[0]!.onOutcome?.('capped');
+    expect(await full.list(request())).toBe(true);
+    // A full queue sends nothing: still listed
+    const queueFull = fixture({ queues: false, state: () => paidOutside });
+    expect(await queueFull.list(request())).toBe(true);
+    // A new endpoint the pool had no room for is not
+    const fresh = fixture();
+    expect(await fresh.list(request({ path: '/v1/new' }))).toBe(true);
+    fresh.listed[0]!.onOutcome?.('capped');
+    expect(await fresh.list(request({ path: '/v1/new' }))).toBe(false);
   });
 
   it('lists nothing of a host the blocklist names or names a parent domain of, nor a new endpoint of a host that holds 20, and says so for a minute', async () => {
@@ -261,7 +291,8 @@ describe('a payable check\'s listing', () => {
     const pooled = fixture({ newHosts: failing, state: () => inPool });
     const counted = fixture({ newHosts: failing, state: () => stored });
 
-    expect([await down.list(request()), await pooled.list(request())]).toEqual([false, false]);
+    // A new host lists nothing; one a check listed before stays listed, with no refresh
+    expect([await down.list(request()), await pooled.list(request())]).toEqual([false, true]);
     expect([down.listed, pooled.listed]).toEqual([[], []]);
     expect(await counted.list(request())).toBe(true);
     expect(counted.listed).toHaveLength(1);

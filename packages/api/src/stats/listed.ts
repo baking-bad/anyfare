@@ -33,25 +33,27 @@ const orders: Readonly<Record<ServicesSort, (a: ListedServiceRow, b: ListedServi
 
 /**
  * The services the list shows, from one read of every kind, in its order: each host once, none the blocklist names
- * or names a parent domain of, and of the checked pool, read the most recently checked first, at most 20 of one
- * parent domain. A paid service is never left out for its parent domain.
+ * or names a parent domain of, and of the checked pool, read the most recently checked first, the 20 newest of one
+ * parent domain, a blocked one among them counted as a service's page counts it. A paid service is never left out for
+ * its parent domain.
  */
 export const shownServices = (listed: ListedServices, isBlocked: (host: string) => boolean): ListedServiceRow[] => {
   const seen = new Set<string>();
   const perParent = new Map<string, number>();
   const shown: ListedServiceRow[] = [];
   for (const row of listed.rows) {
-    if (seen.has(row.host) || isBlocked(row.host))
+    if (seen.has(row.host))
       continue;
     if (row.kind === 'checked') {
       const parent = parentDomainOf(row.host);
       const held = perParent.get(parent) ?? 0;
+      perParent.set(parent, held + 1);
       if (held >= maxCheckedHostsPerParent)
         continue;
-      perParent.set(parent, held + 1);
     }
     seen.add(row.host);
-    shown.push(row);
+    if (!isBlocked(row.host))
+      shown.push(row);
   }
 
   return shown;
@@ -217,7 +219,7 @@ export const listedPage = (input: {
 /**
  * Whether a host's page is not found: the blocklist names it or a parent domain of it, or the list doesn't show it.
  * `paid`: a paid call reached it, as its numbers or the listing says. A paid one the count doesn't store is shown
- * among the newest registered; one listed only by checks, while it has a checked endpoint and is within the pool's caps.
+ * among the newest registered; one listed only by checks, while it is of the checked pool and within its caps.
  */
 export const isUnlisted = (listing: HostListing, stored: boolean, paid: boolean): boolean => {
   if (listing.blocked)
@@ -227,7 +229,7 @@ export const isUnlisted = (listing: HostListing, stored: boolean, paid: boolean)
   if (paid || listing.paid)
     return listing.paidHidden;
 
-  return listing.checkedCount === 0 || listing.poolHidden;
+  return !listing.pooled || listing.poolHidden;
 };
 
 /** The top lists without a host the blocklist names, or names a parent domain of. */

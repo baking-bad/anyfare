@@ -33,7 +33,11 @@ export const maxCursorLength = 8_192;
 export const encodeCursor = (cursor: CatalogCursor): string =>
   Buffer.from(JSON.stringify([cursor.createdAt.toISOString(), cursor.host, cursor.path])).toString('base64url');
 
-/** A cursor a page gave, or undefined for any other text, such as the offsets pages gave before. */
+// A host and a path as the routed endpoints keep them: a lowercase DNS name with an optional port, and printable ASCII
+const cursorHost = /^(?=[^:]{1,253}(?::\d{1,5})?$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?::\d{1,5})?$/;
+const cursorPath = /^\/[\x21-\x7e]{0,2047}$/;
+
+/** A cursor a page gave, or undefined for any other text, such as the offsets pages gave before, or a key no page could give. */
 export const decodeCursor = (text: string): CatalogCursor | undefined => {
   let value: unknown;
   try {
@@ -46,7 +50,7 @@ export const decodeCursor = (text: string): CatalogCursor | undefined => {
     return undefined;
   const [at, host, path] = value as [string, string, string];
   const createdAt = new Date(at);
-  if (!Number.isFinite(createdAt.getTime()) || createdAt.toISOString() !== at || host.length === 0 || host.length > 259 || !path.startsWith('/') || path.length > 2_048)
+  if (!Number.isFinite(createdAt.getTime()) || createdAt.toISOString() !== at || !cursorHost.test(host) || !cursorPath.test(path))
     return undefined;
 
   return { createdAt, host, path };

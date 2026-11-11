@@ -39,10 +39,15 @@ afterAll(async () => {
 
 describe('a checked link through the real apps', () => {
   it('joins the services as checked within seconds of a payable check, with its host and path only', async () => {
-    const checked = await check(`${stack.urls.paidApi}/base?token=secret-in-query`);
+    const link = `${stack.urls.paidApi}/base?token=secret-in-query`;
+    const checked = await check(link);
 
-    expect(checked.body).toMatchObject({ payable: true, listed: true });
-    await expect.poll(async () => (await service()).status, { timeout: 5_000, interval: 200 }).toBe(200);
+    expect(checked.body).toMatchObject({ payable: true });
+    // A check waits 150 ms for its listing's decision, and the decision goes on past it: on a slow machine the next
+    // check of the link answers what was decided
+    if (checked.body.listed !== true)
+      await expect.poll(async () => (await check(link)).body.listed, { timeout: 10_000, interval: 200 }).toBe(true);
+    await expect.poll(async () => (await service()).status, { timeout: 15_000, interval: 200 }).toBe(200);
     const page = await service();
     expect(page.body).toMatchObject({ host: stack.paidApiHost, status: 'checked', paidEndpoints: 1, stats: { calls: 0 } });
     expect(page.body.endpoints).toEqual([expect.objectContaining({

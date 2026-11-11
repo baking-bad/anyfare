@@ -22,7 +22,7 @@ import {
 } from '@anyfare/testing';
 
 import { createApp, type ProxyDependencies } from '../../src/app.js';
-import { createNewHostLimit, newHostsPerClient } from '../../src/routing/listing.js';
+import { checkListingDefaults, createNewHostLimit, newHostsPerClient } from '../../src/routing/listing.js';
 import { createSignerClient } from '../../src/routing/support.js';
 
 // A payable check lists its endpoint through the registrar, without the answer waiting for it: host and path
@@ -162,13 +162,17 @@ afterAll(async () => {
 
 const at = (host: string): string => `${host}:${target.port}`;
 
+// A check here waits for its listing's decision, however slow the machine: what a test asserts is the decision. The
+// tests of the check's own bound on that wait set it back to its 150 ms.
+const decisionMs = 10_000;
+
 /** A proxy with the internal API, a Redis of its own so its limits start at 0, and some dependencies of its own. */
 const withProxy = async (overrides: Partial<ProxyDependencies>, work: (url: string, own: TestRedis) => Promise<void>): Promise<void> => {
   const own = await createTestRedis();
   const proxy = createApp({
     config, logger: createLogger({ level: 'silent' }), postgres: database.postgres, redis: own, http, x402, claims: store, trustProxy: '127.0.0.1',
     signer: createSignerClient({ url: signerUrl, secret: Secret.from(signerSecret), timeoutMs: 5_000 }),
-    internalApi: { url: internalUrl, secret: Secret.from(internalSecret) }, ...overrides,
+    internalApi: { url: internalUrl, secret: Secret.from(internalSecret) }, listingAnswerMs: decisionMs, ...overrides,
   });
   const { port } = await proxy.listen({ host: '127.0.0.1', port: 0, metricsPort: 0 });
   try {
@@ -188,9 +192,9 @@ const checkOf = async (url: string, link: string, ip = '198.51.100.20'): Promise
 };
 const sentFor = (host: string) => sent.filter(body => body['host'] === host);
 const rowsOf = (host: string) => database.db.select().from(routedEndpoints).where(eq(routedEndpoints.host, host));
-// The listing goes after the answer: until it lands, or for long enough that it would have
+// The listing goes after the answer: until it lands, as slow as the machine is
 const landed = async (count: () => number | Promise<number>, expected: number): Promise<void> => {
-  await expect.poll(count, { timeout: 3_000 }).toBe(expected);
+  await expect.poll(count, { timeout: 15_000, interval: 50 }).toBe(expected);
 };
 
 describe('a payable check\'s listing', () => {
@@ -280,9 +284,10 @@ describe('a payable check\'s listing', () => {
     ['Redis', 'redis'],
   ])('answers within its usual time while %s stalls: listed false, and nothing waits on it', async (_case, stalled) => {
     const never = new Promise<never>(() => undefined);
+    // The check's own bound on its wait for the listing
     const overrides: Partial<ProxyDependencies> = stalled === 'read'
-      ? { listing: { endpointListing: () => never } }
-      : { newHostLimit: { admit: () => never } };
+      ? { listing: { endpointListing: () => never }, listingAnswerMs: checkListingDefaults.answerMs }
+      : { newHostLimit: { admit: () => never }, listingAnswerMs: checkListingDefaults.answerMs };
     await withProxy(overrides, async url => {
       const started = performance.now();
       // A host no check listed yet: it would join the pool, so its client's limit is read

@@ -24,7 +24,8 @@ export const catalogReadTimeoutMs = 2_000;
 const listQuerySchema = {
   type: 'object',
   properties: {
-    q: { type: 'string', maxLength: 200 },
+    // A part of the host and path, without case, and without a NUL, which Postgres can't take
+    q: { type: 'string', maxLength: 100, pattern: '^[^\\u0000]*$' },
     maxPrice: { type: 'string', pattern: usdAmountPattern, maxLength: 26 },
     limit: { type: 'integer', minimum: 1, maximum: 100 },
     // As the previous page's `next` gave it
@@ -52,8 +53,8 @@ const catalogSchema = object({
   next: { type: ['string', 'null'], description: 'The next page\'s `cursor`, opaque. Null: the last page' },
   partial: {
     ...boolean,
-    description: `True: the search read its ${catalogScanBudget.toLocaleString('en-US')} endpoints for this page before the end, and \`next\` goes on from there. `
-      + 'A page of a search may so hold fewer endpoints than `limit`, or none, before the last',
+    description: 'True: the page holds fewer endpoints than `limit`, or none, and `next` goes on: a search read its '
+      + `${catalogScanBudget.toLocaleString('en-US')} endpoints for this page, or the blocklist left some out. Follow \`next\` until it is null`,
   },
 });
 
@@ -150,8 +151,8 @@ export const registerCatalogRoutes = (app: FastifyInstance, { db, config, limit,
     schema: {
       summary: 'The paid APIs Anyfare routes payments to, oldest first',
       description: 'No key. Limited per address. The endpoints are unverified: their owners haven\'t registered them. Pages go on to the end: '
-        + `\`next\` is the next page's cursor. A search reads at most ${catalogScanBudget.toLocaleString('en-US')} endpoints a page, and \`partial\` `
-        + 'says when it stopped there. A cursor no page gave answers 400.',
+        + `\`next\` is the next page's cursor. A search reads at most ${catalogScanBudget.toLocaleString('en-US')} endpoints a page; \`partial\` says a `
+        + 'page holds fewer than `limit` and goes on. A cursor no page gave answers 400.',
       tags: ['catalog'],
       errors: ['rate_limited', 'invalid_request', 'stats_unavailable'],
       querystring: listQuerySchema,

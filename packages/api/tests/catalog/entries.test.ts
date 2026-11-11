@@ -38,7 +38,7 @@ describe('an endpoint of the catalog', () => {
 
 describe('a cursor of the catalog', () => {
   it('gives back the endpoint it was made from, at the bounds of a key too', () => {
-    const longest = { createdAt, host: `${'h'.repeat(250)}.test:8443`.slice(0, 259), path: `/${'"\\'.repeat(1_023)}a` };
+    const longest = { createdAt, host: `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(61)}:65535`, path: `/${'"\\'.repeat(1_023)}a` };
 
     for (const cursor of [{ createdAt, host: 'api.example.com', path: '/v1/pools' }, longest]) {
       const text = encodeCursor(cursor);
@@ -55,5 +55,18 @@ describe('a cursor of the catalog', () => {
     for (const text of ['20', '10000', 'abc', made(['2026-11-20T12:00:00.123Z', 'h', 'no-slash']), made(['yesterday', 'h', '/x']), made(['2026-11-20T12:00:00.123Z', '', '/x']),
       made({ createdAt: '2026-11-20T12:00:00.123Z' }), made(['2026-11-20T12:00:00.123Z', 'h', '/x', 'more']), made(['2026-11-20T12:00:00Z', 'h', '/x'])])
       expect(decodeCursor(text), text).toBeUndefined();
+  });
+
+  it('is none for a key no endpoint could have: a NUL, a space or a capital in the host, a path not of printable ASCII, either too long', () => {
+    const made = (host: string, pathname: string) => Buffer.from(JSON.stringify(['2026-11-20T12:00:00.123Z', host, pathname])).toString('base64url');
+    const forged = [
+      made('api.example.com\u0000', '/x'), made('api.example.com', '/x\u0000'), made('api example.com', '/x'), made('API.example.com', '/x'), made('api.example.com', '/x y'),
+      made('api.example.com', '/é'), made('localhost', '/x'), made(`${'a'.repeat(250)}.com`, '/x'), made('api.example.com', `/${'p'.repeat(2_048)}`),
+      made('api.example.com:123456', '/x'), made('-api.example.com', '/x'),
+    ];
+
+    for (const text of forged)
+      expect(decodeCursor(text), Buffer.from(text, 'base64url').toString()).toBeUndefined();
+    expect(decodeCursor(made('api.example.com:8443', `/${'p'.repeat(2_047)}`))).toBeDefined();
   });
 });

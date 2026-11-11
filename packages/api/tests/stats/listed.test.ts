@@ -30,7 +30,7 @@ const listedOf = (rows: readonly ListedServiceRow[], changes: Partial<ListedServ
 });
 const listing = (changes: Partial<HostListing> = {}): HostListing => ({
   blocked: false, paid: false, stored: false, paidSummary: undefined, paidRows: [], listedAt: undefined, checkedAt: undefined, checkedCount: 0, checked: [],
-  checkedTimes: new Map(), poolHidden: false, paidHidden: false, ...changes,
+  checkedTimes: new Map(), pooled: false, poolHidden: false, paidHidden: false, ...changes,
 });
 const ranked = (path: string, calls: number) => endpointListEntry({
   host: 'api.example.com', path, method: 'GET', price: 1_000n, payUrl,
@@ -52,6 +52,14 @@ describe('the services the list shows', () => {
     expect(ofCrowd.map(each => each.host)).toEqual(Array.from({ length: 20 }, (_, index) => `h${index}.crowd.example`));
     expect(shown.map(each => each.host)).toEqual(expect.arrayContaining(['api.crowd.example', 'pay.crowd.example', 'honest.example.net']));
     expect(shown).toHaveLength(2 + 20 + 1);
+  });
+
+  it('counts a blocked host of the pool toward its parent\'s 20, as a service\'s page does: the 21st newest isn\'t shown', () => {
+    // 21 hosts of one parent listed only by checks, the newest blocked
+    const crowd = Array.from({ length: 21 }, (_, index) => pooled(`h${index}.crowded.example`, index));
+    const shown = shownServices(listedOf(crowd), createBlocklistMatcher(['h0.crowded.example']));
+
+    expect(shown.map(each => each.host)).toEqual(crowd.slice(1, 20).map(each => each.host));
   });
 
   it('leaves out a host the blocklist names or names a parent domain of, and shows each host once, its first kind', () => {
@@ -166,8 +174,9 @@ describe('whether a service page is found', () => {
     ['a paid one the count doesn\'t store', listing({ paid: true }), false, true, false],
     ['a paid one outside the newest the list shows', listing({ paid: true, paidHidden: true }), false, true, true],
     ['a paid one asked for before its listing says so', listing(), false, true, false],
-    ['a checked one', listing({ checkedCount: 1 }), false, false, false],
-    ['a checked one outside the pool the list shows', listing({ checkedCount: 1, poolHidden: true }), false, false, true],
+    ['a checked one', listing({ pooled: true, checkedCount: 1 }), false, false, false],
+    ['a checked one outside the pool the list shows, a blocked one of its parent counted', listing({ pooled: true, checkedCount: 1, poolHidden: true }), false, false, true],
+    ['a host with a checked endpoint the list doesn\'t read as of the pool', listing({ checkedCount: 1 }), false, false, true],
     ['a host neither reached', listing(), false, false, true],
   ])('%s', (_case, listed, stored, paid, unlisted) => {
     expect(isUnlisted(listed, stored, paid)).toBe(unlisted);

@@ -241,5 +241,6 @@ describe('a scratch database', () => {
     expect(await count('payments')).toBe(before);
     expect(isScratchName('anyfare')).toBe(false);
     expect(isScratchName('anyfare_test_abc_0123456789ab')).toBe(false);
-  });
+  // Creating a database and running every migration takes longer than the default limit on a busy machine
+  }, 60_000);
 });

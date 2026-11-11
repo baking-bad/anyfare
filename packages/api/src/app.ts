@@ -163,7 +163,7 @@ export const createApp = ({
   // Public documents share one limit per client IP
   const documentsLimit = createIpLimit({ limiter, limit: config.rateLimits.documents, name: 'documents' });
   // The public reads of what routing listed, on the public reads' pool, with one read of the blocklist every few seconds
-  const blocklist = createBlocklistCache({ db: statsPostgres.db, clock });
+  const blocklist = createBlocklistCache({ db: statsPostgres.db, clock, logger });
   registerCatalogRoutes(app, { db: statsPostgres.db, config, limit: documentsLimit, clock, blocklist });
   registerTopupRoutes(app, {
     topups: createTopupService({

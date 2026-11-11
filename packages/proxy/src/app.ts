@@ -78,6 +78,8 @@ export interface ProxyDependencies {
   readonly listing?: Pick<RoutingRepository, 'endpointListing'>;
   // How many hosts each client's checks add to the checked pool a day. Default: a set per client in Redis.
   readonly newHostLimit?: NewHostLimit;
+  // How long a check waits for its listing's decision. Default: 150 ms. A test that asserts the decision waits for it.
+  readonly listingAnswerMs?: number;
   // Where a paid call's method, payer and arrival are kept, best effort. Default: the call_details table.
   readonly callDetails?: Pick<CallRepository, 'recordDetails'>;
   // The endpoints' counted numbers `GET /_/check` shows. Default: the stats tables.
@@ -255,6 +257,7 @@ export const createApp = ({
   routingRepository = createRoutingRepository({ db: postgres.db, clock }),
   listing = createRoutingRepository({ db: postgres.db, clock }),
   newHostLimit = createNewHostLimit({ redis }),
+  listingAnswerMs,
   callDetails: callDetailsStore = createCallRepository({ db: postgres.db }),
   stats = createStatsRepository({ db: postgres.db }),
 }: ProxyDependencies): ProxyServer => {
@@ -354,7 +357,9 @@ export const createApp = ({
     // As the combined 402 offers them: the assets of the rails that take payments here
     payWays: createPayWays(config, { x402: x402?.assets ?? [], mpp: mpp && { network: mpp.network, assets: mpp.assets } }),
     endpointStats: createEndpointStats({ stats, busy: poolBusy(postgres), clock }).get,
-    listEndpoint: createCheckListing({ registrar, endpoints: listing, newHosts: newHostLimit, busy: poolFull(postgres), clock }).list,
+    listEndpoint: createCheckListing({
+      registrar, endpoints: listing, newHosts: newHostLimit, busy: poolFull(postgres), clock, ...listingAnswerMs === undefined ? {} : { answerMs: listingAnswerMs },
+    }).list,
     metrics,
     clock,
     logger,

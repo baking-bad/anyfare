@@ -86,10 +86,10 @@ export interface ListingRequest {
 }
 
 /**
- * Whether a payable check's endpoint is listed once its listing goes through: true when it was, or its
- * listing is on its way and nothing the proxy knows keeps it out; false when the blocklist (the host's name or
- * a parent domain's), a name of more than 8 labels, a cap, the per-client limit of new hosts, a full queue, or a
- * read not made in time keeps it out. A host in the checked pool, one the count doesn't store, costs the check's
+ * Whether a payable check's endpoint is listed once its listing goes through: true when a paid call or a check listed
+ * it before, whatever this check may add, or its listing is on its way and nothing the proxy knows keeps it out; false
+ * when the blocklist (the host's name or a parent domain's), a name of more than 8 labels, a cap, the per-client limit
+ * of new hosts, a full queue, or a read not made in time keeps it out. A host in the checked pool, one the count doesn't store, costs the check's
  * client one of 20 a day, once a day, whenever a check lists or refreshes it, new or not; while Redis fails, no
  * such host is listed. The check waits for this at most `answerMs`, and the listing goes on after it. Never throws.
  */
@@ -107,11 +107,12 @@ export const createCheckListing = ({
     while (kept.size > maxEntries)
       kept.delete(kept.keys().next().value!);
   };
-  // How the listing ended: a cap or the blocklist stands until the answer is stale; anything but a listing is tried again
-  const heard = (key: string) => (outcome: ListingOutcome): void => {
+  // How the listing ended: a cap stands until the answer is stale; anything but a listing is tried again. An endpoint
+  // listed before stays listed whatever became of its refresh.
+  const heard = (key: string, listedBefore: boolean) => (outcome: ListingOutcome): void => {
     if (outcome === 'capped')
-      keep(key, false);
-    else if (outcome !== 'listed')
+      keep(key, listedBefore);
+    else if (outcome !== 'listed' && !listedBefore)
       kept.delete(key);
   };
 
@@ -137,25 +138,33 @@ export const createCheckListing = ({
 
       return false;
     }
-    // A host the blocklist names, or names a parent domain of; or a new endpoint on a host that holds its 20, or its 1,000 paid
-    if (state.blocked || (state.status === undefined && (state.checkedEndpoints >= maxCheckedEndpointsPerHost || state.paidCapped))) {
+    // A host the blocklist names, or names a parent domain of: never
+    if (state.blocked) {
       keep(key, false);
 
       return false;
+    }
+    // Listed already, by a paid call or a check: it is, whatever this check may add
+    const listedBefore = state.status !== undefined;
+    // A new endpoint on a host that holds its 20, or its 1,000 paid; or any of a name a check lists nothing of
+    if (hostLabels(host) > maxCheckedHostLabels || (!listedBefore && (state.checkedEndpoints >= maxCheckedEndpointsPerHost || state.paidCapped))) {
+      keep(key, listedBefore);
+
+      return listedBefore;
     }
     const client = rateLimitClient(request.ip);
     // In the checked pool, whether a check reached it before or not: the client pays for it
     const pooled = !state.stored;
     if (pooled && !await admits(client, host, log))
-      return false;
+      return listedBefore;
     const queued = registrar.list(
       { host, path, quote: request.quote, method: request.method, mayAddHost: pooled },
-      { client, requestId: request.requestId, onOutcome: heard(key) },
+      { client, requestId: request.requestId, onOutcome: heard(key, listedBefore) },
     );
     if (queued)
       keep(key, true);
 
-    return queued;
+    return queued || listedBefore;
   };
 
   // The decision, or false once the check has waited long enough: the decision goes on
@@ -170,7 +179,7 @@ export const createCheckListing = ({
 
   const list = async (request: ListingRequest): Promise<boolean> => {
     const { host, path } = request;
-    if (!registrar.lists() || host.length > maxHostLength || hostLabels(host) > maxCheckedHostLabels || path.length > maxCheckedPathLength || !listablePath.test(path))
+    if (!registrar.lists() || host.length > maxHostLength || path.length > maxCheckedPathLength || !listablePath.test(path))
       return false;
     const key = createHash('sha256').update(`${host} ${path}`).digest('hex');
     const hit = kept.get(key);
