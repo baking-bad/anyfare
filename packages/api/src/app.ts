@@ -26,6 +26,7 @@ import { registerInternalRoutes } from './internal/routes.js';
 import { registerKeyRoutes } from './keys/routes.js';
 import { createPaymentKeyService } from './keys/service.js';
 import { registerLedgerRoutes } from './ledger/routes.js';
+import { registerOpenApiRoute } from './public/openapi.js';
 import { registerStatsRoutes } from './stats/routes.js';
 import { registerTopupRoutes } from './topups/routes.js';
 import { createTopupsCounter, createTopupService } from './topups/service.js';
@@ -182,6 +183,8 @@ export const createApp = ({
     db: postgres.db, config, limit: publicReadsLimit, clock, logger, ...callStreamTimings === undefined ? {} : { timings: callStreamTimings },
   });
   registerStatsRoutes(app, { db: statsPostgres.db, config, limit: publicReadsLimit, clock, ...statsReadCap === undefined ? {} : { readCap: statsReadCap } });
+  // Of this listener's routes only, under the documents' limit
+  registerOpenApiRoute(app, { config, limit: documentsLimit, logger });
 
   // The internal API on a listener of its own, with the same request IDs, logs, and error envelope
   const internal = createServer({ logger, errorStatuses, requestIds });

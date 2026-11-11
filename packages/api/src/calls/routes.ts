@@ -8,7 +8,7 @@ import { NotFoundError } from '../errors.js';
 import { publicCors, publicReadMethods } from '../public/cors.js';
 import { createCallFeed } from './feed.js';
 import {
-  countCap, errorSchema, listQuerySchema, listResponseSchema, receiptParamsSchema, receiptSchema, streamQuerySchema, streamResponseSchema,
+  countCap, errorSchema, listQuerySchema, listResponseSchema, receiptParamsSchema, receiptSchema, streamEvents, streamQuerySchema, streamResponseSchema,
 } from './schemas.js';
 import { createCallStreams } from './stream.js';
 import { createCallViews, type CallStatus, type CallView, type PaidWith } from './view.js';
@@ -40,7 +40,9 @@ interface ListQuery extends Filters {
 // An empty filter is no filter
 const given = (value: string | undefined): string | undefined => value === undefined || value === '' ? undefined : value;
 
-const errors = { 400: errorSchema, 404: errorSchema, 429: errorSchema } as const;
+// The error answers of the list and the stream; a receipt can also be not found
+const errors = { 400: errorSchema, 429: errorSchema } as const;
+const receiptErrors = { ...errors, 404: errorSchema } as const;
 // Hosts are kept lowercase, as routing writes them
 const hostOf = (value: string | undefined): string | undefined => given(value)?.toLowerCase();
 
@@ -62,7 +64,14 @@ export const registerCallRoutes = (app: FastifyInstance, { db, config, limit, cl
     method: [...publicReadMethods],
     url: '/v1/calls',
     onRequest: [publicCors, limit],
-    schema: { querystring: listQuerySchema, response: { 200: listResponseSchema, ...errors } },
+    schema: {
+      summary: 'Finished calls, newest first, a page at a time',
+      description: 'No key. Limited per address. A call never names a Credits buyer, nor shows the query string, the body or the headers it carried.',
+      tags: ['calls'],
+      errors: ['rate_limited'],
+      querystring: listQuerySchema,
+      response: { 200: listResponseSchema, ...errors },
+    },
     handler: async (request, reply) => {
       const { page, size, status } = request.query;
       const service = given(request.query.service);
@@ -91,7 +100,15 @@ export const registerCallRoutes = (app: FastifyInstance, { db, config, limit, cl
     method: [...publicReadMethods],
     url: '/v1/calls/stream',
     onRequest: [publicCors, limit],
-    schema: { querystring: streamQuerySchema, response: { ...streamResponseSchema, ...errors, 503: errorSchema } },
+    schema: {
+      summary: 'Finished calls as they happen, as server-sent events',
+      description: 'No key. Limited per address, and in how many streams an address keeps open. The filters are those of the list.',
+      tags: ['calls'],
+      errors: ['rate_limited', 'shutting_down'],
+      events: streamEvents,
+      querystring: streamQuerySchema,
+      response: { ...streamResponseSchema, ...errors, 503: errorSchema },
+    },
     handler: async (request: FastifyRequest<{ Querystring: Filters }>, reply: FastifyReply) => {
       const { paidWith, status } = request.query;
       const service = given(request.query.service)?.toLowerCase();
@@ -111,7 +128,14 @@ export const registerCallRoutes = (app: FastifyInstance, { db, config, limit, cl
     method: [...publicReadMethods],
     url: '/v1/calls/:id',
     onRequest: [publicCors, limit],
-    schema: { params: receiptParamsSchema, response: { 200: receiptSchema, ...errors } },
+    schema: {
+      summary: 'A finished call\'s receipt: who was paid what, and when',
+      description: 'No key. Limited per address.',
+      tags: ['calls'],
+      errors: ['rate_limited', 'not_found'],
+      params: receiptParamsSchema,
+      response: { 200: receiptSchema, ...receiptErrors },
+    },
     handler: async (request, reply) => {
       const { id } = request.params;
       const record = id.startsWith('pay_') ? await calls.find(id) : undefined;

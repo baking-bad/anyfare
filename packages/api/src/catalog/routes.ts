@@ -1,11 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest, onRequestHookHandler } from 'fastify';
 
 import { formatUsd, parseUsd, usdAmountPattern, type Clock, type MicroUsd } from '@anyfare/common';
-import { paymentMethodsFor, type PlatformConfig } from '@anyfare/core';
+import { listedStatuses, paymentMethodsFor, type PlatformConfig } from '@anyfare/core';
 import { createCatalogRepository, type Database } from '@anyfare/db';
 
 import { InvalidRequestError } from '../errors.js';
 import { publicCors, publicReadMethods } from '../public/cors.js';
+import { boolean, list, object, string, time, usdString } from '../schemas.js';
 import { createKeyedCache } from '../stats/live.js';
 
 const defaultLimit = 20;
@@ -27,6 +28,25 @@ const listQuerySchema = {
   },
   additionalProperties: false,
 } as const;
+
+// An endpoint as `read` makes it
+const catalogSchema = object({
+  endpoints: list(object({
+    id: string,
+    host: string,
+    path: string,
+    title: string,
+    summary: string,
+    priceFrom: { ...usdString, description: 'The last price seen, in USD: "0" when none' },
+    currency: { type: 'string', enum: ['USD'] },
+    methods: { ...list(string), description: 'How a buyer may pay for a call at this price' },
+    verified: { ...boolean, description: 'Always false: the API\'s owner hasn\'t registered it' },
+    status: { type: 'string', enum: [...listedStatuses], description: '`paid`: a paid call reached it. `checked`: only a payable check listed it' },
+    updatedAt: time,
+    link: { type: 'string', description: 'The link to call through the pay host' },
+  })),
+  next: { type: ['string', 'null'], description: 'The next page\'s `cursor`. Null: the last page' },
+});
 
 interface CatalogPage {
   readonly endpoints: readonly Record<string, unknown>[];
@@ -106,6 +126,17 @@ export const registerCatalogRoutes = (app: FastifyInstance, { db, config, limit,
   };
   // Any origin may read it
   app.route<{ Querystring: ListQuery }>({
-    method: [...publicReadMethods], url: '/v1/catalog', onRequest: [publicCors, limit], schema: { querystring: listQuerySchema }, handler: list,
+    method: [...publicReadMethods],
+    url: '/v1/catalog',
+    onRequest: [publicCors, limit],
+    schema: {
+      summary: 'The paid APIs Anyfare routes payments to, oldest first',
+      description: 'No key. Limited per address. The endpoints are unverified: their owners haven\'t registered them.',
+      tags: ['catalog'],
+      errors: ['rate_limited', 'invalid_request'],
+      querystring: listQuerySchema,
+      response: { 200: catalogSchema },
+    },
+    handler: list,
   });
 };

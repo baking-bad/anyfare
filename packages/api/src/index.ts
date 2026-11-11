@@ -2,7 +2,7 @@ export { createApp } from './app.js';
 export type { ApiAddresses, ApiDependencies, ApiListenOptions, ApiServer } from './app.js';
 export { errorStatuses, InvalidRequestError, NotFoundError, StatsUnavailableError } from './errors.js';
 export { defaultInternalPort, defaultMetricsPort, defaultPort, startApi, statsConnections } from './start.js';
-export { authenticatedAccount, createMasterKeyAuth, decorateAccount } from './accounts/auth.js';
+export { authenticatedAccount, createMasterKeyAuth, decorateAccount, masterKeyScheme, masterKeySecurity } from './accounts/auth.js';
 export type { AuthenticatedAccount, MasterKeyAuthOptions } from './accounts/auth.js';
 export { accountIdPrefix, createAccountService, keyIdPrefix } from './accounts/service.js';
 export type { AccountService, AccountServiceOptions, CreatedAccount } from './accounts/service.js';
@@ -23,6 +23,8 @@ export { internalSecretVariable, minimumInternalSecretLength, readInternalSecret
 export { registerCallRoutes } from './calls/routes.js';
 export type { CallRoutesOptions } from './calls/routes.js';
 export { publicCors, publicReadMethods } from './public/cors.js';
+export { createApiDocument, registerOpenApiRoute } from './public/openapi.js';
+export type { OpenApiRouteOptions } from './public/openapi.js';
 export { registerStatsRoutes } from './stats/routes.js';
 export type { StatsRoutesOptions } from './stats/routes.js';
 export { createKeyedCache, createLiveCache, liveCacheMs, liveRetryMs } from './stats/live.js';

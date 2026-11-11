@@ -42,6 +42,8 @@ export const errorStatuses = {
   payment_unavailable: 503,
   // Redis is down, such as for an x402 payment's claim: nothing was paid
   redis_not_ready: 503,
+  // The OpenAPI document couldn't be built at start: paid calls and every other route work
+  document_unavailable: 503,
 } as const satisfies ErrorStatusTable;
 
 /** An x402 or MPP buyer's answer over the buffer limit. It isn't sent, and the buyer's payment is cancelled. */

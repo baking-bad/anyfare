@@ -13,7 +13,10 @@ export type { LimitName, ProxyLimits, ProxyLimitsOptions } from './payments/limi
 export { minimumMppSecretKeyBytes, mppSecretKeyVariable, readMppSecretKey } from './payments/mpp.js';
 export { createPaymentStep, paymentIdPrefix } from './payments/step.js';
 export type { PaidCall, PaidCallTrace, PaymentStart, PaymentStep, PaymentStepOptions, RoutedCallInput, TargetOutcome } from './payments/step.js';
-export { keyPath, registerKeyRoute } from './platform/key.js';
+export { keyPath, paymentKeyScheme, registerKeyRoute } from './platform/key.js';
+export { createPayDocument, openApiPath, registerOpenApiRoute } from './platform/openapi.js';
+export type { OpenApiRouteOptions } from './platform/openapi.js';
+export { paymentRequiredSchema, routedCallSchema } from './routing/routedCall.js';
 export type { KeyRouteOptions } from './platform/key.js';
 export {
   createRoutingLinkRewriter, filterResponseHeaders, forwardedRequestHeaders, forwardedResponseHeaders, rewriteLinkHeader, routedRequestHeaders,

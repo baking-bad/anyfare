@@ -1,3 +1,5 @@
+import { errorBodySchema } from '@anyfare/common';
+
 import { paidWithValues } from './view.js';
 
 // Fastify schemas of the public reads of calls. A response schema also keeps out any field it doesn't name.
@@ -10,7 +12,7 @@ const object = <TProperties extends Record<string, unknown>>(properties: TProper
 }) as const;
 
 /** The error envelope, for the statuses a public read answers with. */
-export const errorSchema = object({ error: object({ code: string, message: string }) });
+export const errorSchema = errorBodySchema;
 
 // Text without a NUL, which Postgres can't take
 const noNul = '^[^\\u0000]*$';
@@ -124,7 +126,11 @@ export const receiptSchema = object({
 // finished call, and a `: ping` comment every 15 s
 export const streamResponseSchema = {
   200: {
-    description: 'Server-sent events of finished calls',
+    description: 'Server-sent events of finished calls: first a `retry`, then an `event: call` for each call finished after the stream opened, '
+      + 'its `data` the call as one line of JSON, as `x-events` describes it, and a `: ping` comment every 15 seconds.',
     content: { 'text/event-stream': { schema: { type: 'string' } } },
   },
 } as const;
+
+/** The stream's events, by name, with the schema of their data. */
+export const streamEvents = { call: callSchema } as const;

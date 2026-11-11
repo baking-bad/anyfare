@@ -9,6 +9,7 @@ import { randomIdGenerator, type IdGenerator } from '../ports.js';
 import { createErrorHandler, notFoundResponse, type ErrorStatusTable } from './errors.js';
 import { registerHealthRoutes, type ReadinessCheck } from './health.js';
 import { createMetricsRegistry, registerHttpMetrics, registerMetricsRoute } from './metrics.js';
+import { trackRoutes } from './openapi.js';
 import { createRequestIdGenerator, requestIdHeader } from './requestId.js';
 import { recordErrorCode, RequestLogController } from './requestLog.js';
 
@@ -147,6 +148,8 @@ const createFastify = ({
     requestIdHeader: false,
     genReqId: createRequestIdGenerator(requestIds),
   });
+  // Before any route: the OpenAPI document is built from them
+  trackRoutes(app);
   setValidators(app);
   closeConnectionsOnClose(app, closeGraceMs);
   app.setErrorHandler(createErrorHandler(errorStatuses));
@@ -193,6 +196,7 @@ export const createMetricsServer = ({
  * - the error envelope, with statuses from the app's table, and `404 not_found` for unknown routes;
  * - no automatic HEAD routes;
  * - `/_/health` and `/_/ready`;
+ * - every route it registers kept with its schema, for the OpenAPI document;
  * - request count and latency on the metrics listener;
  * - a `close` that waits for requests in flight, `closeGraceMs` at most, never for idle connections.
  */

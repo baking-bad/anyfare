@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 
 import {
-  BlockedAddressError, DnsLookupError, formatUsd, isRecord, isSameAddress, outboundErrorCode, OutboundTimeoutError, parseIpAddress, publicAddressPolicy,
-  type IpAddress, type MicroUsd,
+  BlockedAddressError, DnsLookupError, errorBodySchema, formatUsd, isRecord, isSameAddress, outboundErrorCode, OutboundTimeoutError, parseIpAddress,
+  publicAddressPolicy, type IpAddress, type MicroUsd,
 } from '@anyfare/common';
 import { assetToken, createPaidWith, paidWithValues, type PlatformConfig } from '@anyfare/core';
 import { NotPayableError, parseTargetChallenge, UnsupportedPaymentError } from '@anyfare/payments';
@@ -466,12 +466,12 @@ const refusedSchema = object({
   upstream: object({ status: integer }),
 }, ['payable', 'method', 'reason', 'message']);
 
-const errorSchema = object({ error: object({ code: string, message: string }) });
+const errorSchema = errorBodySchema;
 
+// A check's failures to reach the API, its cache, or its listing are answers or are let through, never a 503
 export const checkResponseSchema = {
   200: { anyOf: [payableSchema, refusedSchema] },
   400: errorSchema,
   429: errorSchema,
   500: errorSchema,
-  503: errorSchema,
 } as const;

@@ -28,6 +28,8 @@ export const errorStatuses = {
   shutting_down: 503,
   // A public number couldn't be read in its bounds just now: try again shortly
   stats_unavailable: 503,
+  // The OpenAPI document couldn't be built at start: every other route works
+  document_unavailable: 503,
 } as const satisfies ErrorStatusTable;
 
 /** A request the route can't take: the message says what's wrong, never quoting a value it carried. */

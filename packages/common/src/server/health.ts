@@ -54,10 +54,22 @@ export const checkReadiness = async ({
   };
 };
 
-/** `/_/health` answers while the process runs. `/_/ready` answers 200 or 503 from the checks. */
+const healthSchema = {
+  type: 'object',
+  properties: { status: { type: 'string', enum: ['ok'] } },
+  required: ['status'],
+  additionalProperties: false,
+} as const;
+
+/**
+ * `/_/health` answers while the process runs. `/_/ready` answers 200 or 503 from the checks, and names the
+ * dependencies it checks, so it stays out of the OpenAPI document.
+ */
 export const registerHealthRoutes = (app: FastifyInstance, { checks, timeoutMs }: Omit<ReadinessOptions, 'logger'>): void => {
-  app.get(healthPath, async () => ({ status: 'ok' }));
-  app.get(readinessPath, async (request, reply) => {
+  app.get(healthPath, {
+    schema: { summary: 'Whether the server runs', tags: ['health'], response: { 200: healthSchema } },
+  }, async () => ({ status: 'ok' }));
+  app.get(readinessPath, { schema: { hide: true } }, async (request, reply) => {
     const { ready, checks: statuses } = await checkReadiness({ checks, logger: request.log, timeoutMs });
 
     return reply

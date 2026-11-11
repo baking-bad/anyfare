@@ -66,7 +66,13 @@ const liveReadTimeoutMs = 2_000;
 const dayMs = 86_400_000;
 const minuteMs = 60_000;
 
-const errors = { 400: errorSchema, 404: errorSchema, 429: errorSchema, 503: errorSchema } as const;
+// The error answers of a public number: a query it can't take, over the limit, or a read that couldn't finish. A route
+// without a query takes any, and only a service's page can be not found.
+const errors = { 400: errorSchema, 429: errorSchema, 503: errorSchema } as const;
+const noQueryErrors = { 429: errorSchema, 503: errorSchema } as const;
+const serviceErrors = { ...errors, 404: errorSchema } as const;
+// What a public number may answer beside it: over the limit per address, or a read that couldn't finish in its bounds
+const readErrors = ['rate_limited', 'stats_unavailable'] as const;
 // Hosts are kept lowercase, as routing writes them
 const lowercase = (host: string): string => host.toLowerCase();
 const iso = (time: Date | undefined): string | null => time?.toISOString() ?? null;
@@ -257,7 +263,13 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
   app.route({
     ...read,
     url: '/v1/stats',
-    schema: { querystring: noQuerySchema, response: { 200: platformSchema, ...errors } },
+    schema: {
+      summary: 'The platform\'s numbers: calls, volume, buyers and services, today, over 7 and 30 days, and all time',
+      tags: ['stats'],
+      errors: readErrors,
+      querystring: noQuerySchema,
+      response: { 200: platformSchema, ...noQueryErrors },
+    },
     handler: async (_request, reply) => {
       const { recent, all } = await bounded(() => store.platform());
       reply.header('cache-control', countedCache);
@@ -269,7 +281,13 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
   app.route({
     ...read,
     url: '/v1/stats/live',
-    schema: { querystring: noQuerySchema, response: { 200: liveSchema, ...errors } },
+    schema: {
+      summary: 'Today\'s numbers and the last 24 hours\', with the calls of the last minutes',
+      tags: ['stats'],
+      errors: readErrors,
+      querystring: noQuerySchema,
+      response: { 200: liveSchema, ...noQueryErrors },
+    },
     handler: async (_request, reply) => {
       const answer = await bounded(() => live.get());
       reply.header('cache-control', liveCache);
@@ -281,7 +299,13 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
   app.route<{ Querystring: { readonly period: StatsPeriod } }>({
     ...read,
     url: '/v1/stats/top',
-    schema: { querystring: periodQuerySchema, response: { 200: topSchema, ...errors } },
+    schema: {
+      summary: 'The most called services and endpoints, the ways calls were paid, and the tokens of top-ups, over a period',
+      tags: ['stats'],
+      errors: readErrors,
+      querystring: periodQuerySchema,
+      response: { 200: topSchema, ...errors },
+    },
     handler: async (request, reply) => {
       const { period } = request.query;
       const stored = await bounded(() => store.top(period));
@@ -294,7 +318,14 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
   app.route<{ Querystring: { readonly q?: string; readonly sort: ServicesSort; readonly page: number; readonly size: number } }>({
     ...read,
     url: '/v1/services',
-    schema: { querystring: servicesQuerySchema, response: { 200: servicesSchema, ...errors } },
+    schema: {
+      summary: 'The listed services, a page at a time, with their numbers over 30 days and the totals',
+      description: 'No key. Limited per address. A service is listed once a paid call reached it or a payable check found it.',
+      tags: ['stats'],
+      errors: readErrors,
+      querystring: servicesQuerySchema,
+      response: { 200: servicesSchema, ...errors },
+    },
     handler: async (request, reply) => {
       const { sort, page, size } = request.query;
       // An empty search is none, and a search is without case
@@ -313,7 +344,16 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
   app.route<{ Params: { readonly '*': string }; Querystring: { readonly period: StatsPeriod } }>({
     ...read,
     url: '/v1/services/*',
-    schema: { params: serviceParamsSchema, querystring: periodQuerySchema, response: { 200: serviceSchema, ...errors } },
+    schema: {
+      summary: 'A service\'s page: its numbers over a period, and its endpoints',
+      description: 'No key. Limited per address. A host no paid call or payable check has listed answers 404.',
+      tags: ['stats'],
+      errors: [...readErrors, 'not_found'],
+      wildcard: 'host',
+      params: serviceParamsSchema,
+      querystring: periodQuerySchema,
+      response: { 200: serviceSchema, ...serviceErrors },
+    },
     handler: async (request, reply) => {
       const host = lowercase(request.params['*']);
       const { period } = request.query;
@@ -367,7 +407,13 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
   app.route<{ Querystring: { readonly host: string; readonly path: string; readonly period: StatsPeriod } }>({
     ...read,
     url: '/v1/endpoints/stats',
-    schema: { querystring: endpointQuerySchema, response: { 200: endpointSchema, ...errors } },
+    schema: {
+      summary: 'An endpoint\'s numbers over a period, and its calls of the last 14 days',
+      tags: ['stats'],
+      errors: readErrors,
+      querystring: endpointQuerySchema,
+      response: { 200: endpointSchema, ...errors },
+    },
     handler: async (request, reply) => {
       const { path, period } = request.query;
       const host = lowercase(request.query.host);

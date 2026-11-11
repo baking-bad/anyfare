@@ -18,10 +18,12 @@ import { createKeyCache, type KeyCacheSettings } from './payments/keyCache.js';
 import { createProxyLimits } from './payments/limits.js';
 import { createPaymentStep } from './payments/step.js';
 import { registerKeyRoute } from './platform/key.js';
+import { openApiPath, registerOpenApiRoute } from './platform/openapi.js';
 import { createCallDetailsRecorder } from './routing/callDetails.js';
 import { checkHeadersSchema, checkQuerySchema, checkResponseSchema, createPayWays, type CheckQuery } from './routing/check.js';
 import { createEndpointStats } from './routing/checkStats.js';
 import { createCheckListing, createNewHostLimit, type NewHostLimit } from './routing/listing.js';
+import { routedCallSchema } from './routing/routedCall.js';
 import { createRouting, type Routing } from './routing/routes.js';
 import { createEndpointRegistrar, createOptOutCheck, type SignerClient } from './routing/support.js';
 
@@ -104,8 +106,9 @@ const preflightHeaders = {
 } as const;
 
 // First path segments the platform keeps for itself. Browsers ask for /favicon.ico and crawlers for
-// /robots.txt on their own: neither is a routing link to a host of that name.
-const platformSegments = new Set(['_', '.well-known', 'favicon.ico', 'robots.txt']);
+// /robots.txt on their own: neither is a routing link to a host of that name. Nor is /openapi.json, the
+// document of this host: GET has a route of its own, and anything else under it answers 404.
+const platformSegments = new Set(['_', '.well-known', 'favicon.ico', 'robots.txt', 'openapi.json']);
 // Crawlers stay off the pay host: every path on it is a routing link to someone else's API
 const robotsTxt = 'User-agent: *\nDisallow: /\n';
 
@@ -120,6 +123,8 @@ const checkPreflightHeaders = (origin: string, website: string): Record<string, 
   'access-control-max-age': '600',
   vary: 'Origin',
 });
+// The preflight of the OpenAPI document: GET, with no header of its own
+const documentPreflightHeaders = { 'access-control-allow-methods': 'GET', 'access-control-max-age': '600' } as const;
 
 const registerResponseHeaders = (app: FastifyInstance, website: string): void => {
   // A CORS preflight is answered here, before any route: it never reaches a target
@@ -127,8 +132,11 @@ const registerResponseHeaders = (app: FastifyInstance, website: string): void =>
     const { origin } = request.headers;
     if (request.method !== 'OPTIONS' || origin === undefined || request.headers['access-control-request-method'] === undefined)
       return undefined;
-    if (request.url.split('?', 1)[0] === '/_/check')
+    const path = request.url.split('?', 1)[0];
+    if (path === '/_/check')
       return reply.status(204).headers(checkPreflightHeaders(origin, website)).send();
+    if (path === openApiPath)
+      return reply.status(204).headers(documentPreflightHeaders).send();
 
     return reply.status(204).headers(preflightHeaders).send();
   });
@@ -152,9 +160,19 @@ const registerResponseHeaders = (app: FastifyInstance, website: string): void =>
 /** `/<host>/<path>` for every method, with request bodies as bytes; the platform's own paths answer 404. */
 const registerRoutingRoutes = (app: FastifyInstance, routing: Routing): void => {
   app.get<{ Querystring: CheckQuery }>('/_/check', {
-    schema: { headers: checkHeadersSchema, querystring: checkQuerySchema, response: checkResponseSchema },
+    schema: {
+      summary: 'Check a paid link: is it payable, at what price, and our quote, without paying',
+      description: 'No key. Limited per address, as a routed call is. A link that can\'t be paid is still a 200, with `payable: false` and the reason. '
+        + 'A payable link joins the listed services.',
+      tags: ['check'],
+      errors: ['invalid_request', 'rate_limited'],
+      headers: checkHeadersSchema,
+      querystring: checkQuerySchema,
+      response: checkResponseSchema,
+    },
   }, async request => routing.check(request));
-  app.get('/robots.txt', async (_request, reply) => reply.type('text/plain; charset=utf-8').send(robotsTxt));
+  // For crawlers, not for agents: left out of the document
+  app.get('/robots.txt', { schema: { hide: true } }, async (_request, reply) => reply.type('text/plain; charset=utf-8').send(robotsTxt));
 
   const dispatch = async (request: FastifyRequest, reply: FastifyReply): Promise<FastifyReply> => {
     const first = (request.raw.url ?? '/').split('?', 1)[0]!.split('/')[1] ?? '';
@@ -171,8 +189,9 @@ const registerRoutingRoutes = (app: FastifyInstance, routing: Routing): void => 
     scope.addContentTypeParser('*', { parseAs: 'buffer' }, (_request, body, done) => {
       done(null, body);
     });
-    scope.route({ method: [...routedMethods], url: '/*', handler: dispatch });
-    scope.route({ method: [...routedMethods], url: '/', handler: dispatch });
+    scope.route({ method: [...routedMethods], url: '/*', schema: routedCallSchema, handler: dispatch });
+    // A link without a host: always 400 invalid_target, so it stays out of the document
+    scope.route({ method: [...routedMethods], url: '/', schema: { hide: true }, handler: dispatch });
   });
 };
 
@@ -341,6 +360,7 @@ export const createApp = ({
     logger,
   });
   registerRoutingRoutes(app, routing);
+  registerOpenApiRoute(app, { config, limiter: rateLimiter, logger, metrics });
   // Shutdown finishes or releases the holds of the last answers, and lets the last details writes end
   app.addHook('onClose', async () => {
     await Promise.all([payments.drain(), callDetails.drain()]);

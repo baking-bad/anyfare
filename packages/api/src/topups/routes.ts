@@ -5,9 +5,10 @@ import { RateLimitedError, topupMessages, type RateLimit, type RateLimiter } fro
 import type { Topup } from '@anyfare/db';
 import { formatTokenAmount } from '@anyfare/topups';
 
-import { authenticatedAccount } from '../accounts/auth.js';
+import { authenticatedAccount, masterKeySecurity } from '../accounts/auth.js';
 import { errorStatuses } from '../errors.js';
 import { publicCors, publicReadMethods } from '../public/cors.js';
+import { idParamsSchema, integer, list, nullableString, nullableTime, nullableUsdString, object, string, time, usdString } from '../schemas.js';
 import { TopupMismatchError, TopupsUnavailableError, type TopupService } from './service.js';
 
 export interface TopupRoutesOptions {
@@ -47,6 +48,50 @@ interface CreateBody {
 interface TopupParams {
   readonly id: string;
 }
+
+const topupParamsSchema = idParamsSchema('The top-up\'s ID');
+
+// The options as the route makes them: a network's tokens only when 1Click's list could be read, a token's address
+// only when it has a contract. The serializer writes the required fields first, so a token's `decimals`, after the
+// address it may not have, isn't listed as required: listed, it would move before the address.
+const optionsSchema = object({
+  asset: { type: 'string', description: 'What a top-up adds to the balance' },
+  networks: list(object({
+    name: string,
+    minimum: { ...usdString, description: 'The least a top-up on it must be worth, in USD' },
+    tokens: list(object({ symbol: string, address: string, decimals: { ...integer, description: 'Always there' } }, ['symbol'])),
+  }, ['name', 'minimum'])),
+});
+
+// A top-up as `toTopupBody` makes it: amounts in the token's units, Credits in USD, and null for what it doesn't have yet
+const nullableTokenUnits = { type: ['string', 'null'], description: 'In the token\'s units' } as const;
+const topupSchema = object({
+  id: string,
+  status: string,
+  message: string,
+  network: string,
+  token: string,
+  amount: { type: 'string', description: 'In the token\'s units' },
+  depositAddress: nullableString,
+  depositMemo: nullableString,
+  send: nullableTokenUnits,
+  sendAtLeast: nullableTokenUnits,
+  estimatedCredits: nullableUsdString,
+  payBy: time,
+  addressExpiresAt: nullableTime,
+  createdAt: time,
+  updatedAt: time,
+  deposited: nullableTokenUnits,
+  credited: nullableUsdString,
+  transaction: { type: ['string', 'null'], description: 'The delivery\'s transaction on NEAR, once credited' },
+  refunded: nullableTokenUnits,
+  refundReason: nullableString,
+});
+
+const createErrors = [
+  'rate_limited', 'topups_unavailable', 'unsupported_network', 'unknown_token', 'ambiguous_token', 'invalid_amount', 'amount_too_small', 'topup_refused',
+  'topup_mismatch',
+] as const;
 
 /**
  * An expected 5xx, such as 1Click not answering: the service logged it at its own level, so it is
@@ -124,13 +169,36 @@ export const registerTopupRoutes = (app: FastifyInstance, { topups, enabled, aut
     };
   };
   // Keyless, so any origin may read it
-  app.route({ method: [...publicReadMethods], url: '/v1/topups/options', onRequest: [publicCors, whenEnabled, documentsLimit], handler: options });
+  app.route({
+    method: [...publicReadMethods],
+    url: '/v1/topups/options',
+    onRequest: [publicCors, whenEnabled, documentsLimit],
+    schema: {
+      summary: 'The networks and tokens a top-up can come from',
+      description: 'No key. Limited per address. Without 1Click\'s token list, the networks come without `tokens`.',
+      tags: ['topups'],
+      errors: ['rate_limited', 'topups_unavailable'],
+      response: { 200: optionsSchema },
+    },
+    handler: options,
+  });
 
   app.register(async scope => {
     scope.addHook('onRequest', authenticate);
     scope.addHook('onRequest', whenEnabled);
 
-    scope.post<{ Body: CreateBody }>('/v1/topups', { onRequest: accountLimit, schema: { body: createBodySchema } }, async (request, reply) => {
+    scope.post<{ Body: CreateBody }>('/v1/topups', {
+      onRequest: accountLimit,
+      schema: {
+        summary: 'Ask for a deposit address that turns a token into Credits',
+        description: 'Send the amount of the token to the deposit address before `payBy`. The Credits arrive once the swap is done.',
+        tags: ['topups'],
+        security: masterKeySecurity,
+        errors: createErrors,
+        body: createBodySchema,
+        response: { 201: topupSchema },
+      },
+    }, async (request, reply) => {
       const { accountId } = authenticatedAccount(request);
       try {
         const topup = await topups.create({ accountId, requestId: request.id, ...request.body, log: request.log });
@@ -144,7 +212,16 @@ export const registerTopupRoutes = (app: FastifyInstance, { topups, enabled, aut
       }
     });
 
-    scope.get<{ Params: TopupParams }>('/v1/topups/:id', async (request, reply) => {
+    scope.get<{ Params: TopupParams }>('/v1/topups/:id', {
+      schema: {
+        summary: 'A top-up, and where it stands',
+        tags: ['topups'],
+        security: masterKeySecurity,
+        errors: ['topups_unavailable', 'not_found'],
+        params: topupParamsSchema,
+        response: { 200: topupSchema },
+      },
+    }, async (request, reply) => {
       const topup = await topups.get({ accountId: authenticatedAccount(request).accountId, id: request.params.id });
 
       return reply.header('cache-control', 'no-store').send(toTopupBody(topup));

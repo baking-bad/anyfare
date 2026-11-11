@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
-import { Secret } from '@anyfare/common';
+import { Secret, type KeyScheme } from '@anyfare/common';
 import {
   hashApiKey, InvalidKeyError, isWellFormedKey, keyKindOf, UnauthorizedError, WrongKeyTypeError, type ApiKeyRepository,
   type KeyPrefixes,
@@ -23,6 +23,15 @@ export interface MasterKeyAuthOptions {
   readonly keyPrefixes: KeyPrefixes;
   readonly apiKeys: Pick<ApiKeyRepository, 'findActiveByHash'>;
 }
+
+/** The master key in the OpenAPI document, and the codes the hook below answers without a good one. */
+export const masterKeyScheme = {
+  description: 'An account\'s master key, as Authorization: Bearer <key>. Signing up returns it, once. It works on this API only: paid calls take a payment key.',
+  errors: ['unauthorized', 'invalid_key', 'wrong_key_type'],
+} as const satisfies KeyScheme;
+
+/** The `security` of a route behind the master key hook. */
+export const masterKeySecurity = [{ masterKey: [] }] as const;
 
 const bearerPattern = /^Bearer[ \t]+(\S+)[ \t]*$/i;
 

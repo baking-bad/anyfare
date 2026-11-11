@@ -3,8 +3,9 @@ import type { FastifyInstance, onRequestHookHandler } from 'fastify';
 import { formatUsd, parseUsd, usdAmountPattern, type Clock, type MicroUsd } from '@anyfare/common';
 import type { PaymentKeyChanges } from '@anyfare/core';
 
-import { authenticatedAccount } from '../accounts/auth.js';
+import { authenticatedAccount, masterKeySecurity } from '../accounts/auth.js';
 import { InvalidRequestError } from '../errors.js';
+import { idParamsSchema, list, nullableTime, nullableUsdString, object, string, time, usdString } from '../schemas.js';
 import type { PaymentKeyService, PaymentKeyView } from './service.js';
 
 export interface KeyRoutesOptions {
@@ -31,6 +32,26 @@ const updateBodySchema = {
   properties: { label: nullable(label), allowance: nullable(usd), dailyBudget: usd, maxPrice: nullable(usd), expiresAt: nullable(expiresAt) },
   additionalProperties: false,
 } as const;
+
+const keyParamsSchema = idParamsSchema('The payment key\'s ID');
+
+// A key as `toKeyBody` makes it
+const keyProperties = {
+  id: string,
+  label: { type: ['string', 'null'] },
+  allowance: { ...nullableUsdString, description: 'The most the key may spend in all, in USD. Null: no such limit' },
+  dailyBudget: { ...usdString, description: 'The most the key may spend in a UTC day, in USD' },
+  maxPrice: { ...nullableUsdString, description: 'The most one call may cost, in USD. Null: no such limit' },
+  expiresAt: nullableTime,
+  createdAt: time,
+  revokedAt: nullableTime,
+  spent: object({ today: usdString, total: usdString }),
+  remaining: object({ allowance: nullableUsdString, dailyBudget: usdString }),
+} as const;
+const keySchema = object(keyProperties);
+const newKeySchema = object({ ...keyProperties, key: { type: 'string', description: 'The payment key: shown this once' } });
+const keysSchema = object({ keys: list(keySchema) });
+const revokedKeySchema = object({ id: string, revokedAt: time });
 
 interface LimitsBody {
   readonly label?: string | null;
@@ -110,7 +131,15 @@ export const registerKeyRoutes = (app: FastifyInstance, { keys, authenticate, cl
       preValidation: async request => {
         request.body ??= {};
       },
-      schema: { body: createBodySchema },
+      schema: {
+        summary: 'Make a payment key with limits. The key is shown once',
+        description: 'Amounts are USD decimal strings. No body: a key with the default daily budget and no other limit.',
+        tags: ['keys'],
+        security: masterKeySecurity,
+        errors: ['invalid_request'],
+        body: createBodySchema,
+        response: { 201: newKeySchema },
+      },
     }, async (request, reply) => {
       const { accountId } = authenticatedAccount(request);
       const changes = toChanges(request.body ?? {}, clock.now());
@@ -123,13 +152,31 @@ export const registerKeyRoutes = (app: FastifyInstance, { keys, authenticate, cl
       return reply.status(201).header('cache-control', 'no-store').send({ ...toKeyBody(view), key: value });
     });
 
-    scope.get('/v1/keys', async request => {
+    scope.get('/v1/keys', {
+      schema: {
+        summary: 'The account\'s payment keys, with what each has spent and has left',
+        tags: ['keys'],
+        security: masterKeySecurity,
+        response: { 200: keysSchema },
+      },
+    }, async request => {
       const { accountId } = authenticatedAccount(request);
 
       return { keys: (await keys.list(accountId)).map(toKeyBody) };
     });
 
-    scope.patch<{ Params: KeyParams; Body: LimitsBody }>('/v1/keys/:id', { schema: { body: updateBodySchema } }, async request => {
+    scope.patch<{ Params: KeyParams; Body: LimitsBody }>('/v1/keys/:id', {
+      schema: {
+        summary: 'Change a payment key\'s label or limits',
+        description: 'A field left out stays as it is; null clears an optional limit. A revoked key can\'t be changed.',
+        tags: ['keys'],
+        security: masterKeySecurity,
+        errors: ['invalid_request', 'not_found'],
+        params: keyParamsSchema,
+        body: updateBodySchema,
+        response: { 200: keySchema },
+      },
+    }, async request => {
       const { accountId } = authenticatedAccount(request);
       const changes = toChanges(request.body, clock.now());
       const updated = await keys.update({ accountId, requestId: request.id, keyId: request.params.id, changes });
@@ -138,7 +185,16 @@ export const registerKeyRoutes = (app: FastifyInstance, { keys, authenticate, cl
       return toKeyBody(updated);
     });
 
-    scope.delete<{ Params: KeyParams }>('/v1/keys/:id', async request => {
+    scope.delete<{ Params: KeyParams }>('/v1/keys/:id', {
+      schema: {
+        summary: 'Revoke a payment key at once',
+        tags: ['keys'],
+        security: masterKeySecurity,
+        errors: ['not_found'],
+        params: keyParamsSchema,
+        response: { 200: revokedKeySchema },
+      },
+    }, async request => {
       const { accountId } = authenticatedAccount(request);
       const key = await keys.revoke({ accountId, requestId: request.id, keyId: request.params.id });
       request.log.info({ accountId, keyId: key.id }, 'A payment key was revoked');

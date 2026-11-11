@@ -3,7 +3,8 @@ import type { FastifyInstance, onRequestHookHandler } from 'fastify';
 import { formatUsd } from '@anyfare/common';
 import { InvalidKeyError, type Account } from '@anyfare/core';
 
-import { authenticatedAccount } from './auth.js';
+import { object, string, time, usdString } from '../schemas.js';
+import { authenticatedAccount, masterKeySecurity } from './auth.js';
 import type { FreeCreditsDecider } from './freeCredits.js';
 import type { AccountService } from './service.js';
 
@@ -16,6 +17,16 @@ const signupBodySchema = {
   type: 'object',
   maxProperties: 0,
 } as const;
+
+const accountSchema = object({ id: string, createdAt: time });
+const signupSchema = object({
+  id: string,
+  createdAt: time,
+  masterKey: { type: 'string', description: 'The master key: shown this once' },
+  freeCredits: { ...usdString, description: 'The Credits the account was given, in USD: "0" when none' },
+  notice: string,
+});
+const rotateSchema = object({ masterKey: { type: 'string', description: 'The new master key: shown this once' } });
 
 export interface AccountRoutesOptions {
   readonly accounts: AccountService;
@@ -44,7 +55,14 @@ export const registerAccountRoutes = (app: FastifyInstance, { accounts, authenti
     preValidation: async request => {
       request.body ??= {};
     },
-    schema: { body: signupBodySchema },
+    schema: {
+      summary: 'Sign up: a new account and its master key, shown once',
+      description: 'No key, and no body. Limited per address. A new account may be given free Credits: `freeCredits` says how many.',
+      tags: ['accounts'],
+      errors: ['rate_limited'],
+      body: signupBodySchema,
+      response: { 201: signupSchema },
+    },
   }, async (request, reply) => {
     // Decided once the signup limit and the body let the request through, so a refused sign-up uses up no gift
     const gift = await freeCredits(request);
@@ -63,7 +81,9 @@ export const registerAccountRoutes = (app: FastifyInstance, { accounts, authenti
   app.register(async scope => {
     scope.addHook('onRequest', authenticate);
 
-    scope.get('/v1/account', async request => {
+    scope.get('/v1/account', {
+      schema: { summary: 'The account the master key belongs to', tags: ['accounts'], security: masterKeySecurity, response: { 200: accountSchema } },
+    }, async request => {
       const account = await accounts.get(authenticatedAccount(request).accountId);
       // An active key always has its account
       if (!account)
@@ -72,7 +92,14 @@ export const registerAccountRoutes = (app: FastifyInstance, { accounts, authenti
       return toAccountBody(account);
     });
 
-    scope.post('/v1/account/master-key/rotate', async (request, reply) => {
+    scope.post('/v1/account/master-key/rotate', {
+      schema: {
+        summary: 'A new master key: the one used stops working at once',
+        tags: ['accounts'],
+        security: masterKeySecurity,
+        response: { 200: rotateSchema },
+      },
+    }, async (request, reply) => {
       const { accountId, keyId } = authenticatedAccount(request);
       const masterKey = await accounts.rotateMasterKey({ accountId, keyId, requestId: request.id });
       const key = masterKey.expose();
