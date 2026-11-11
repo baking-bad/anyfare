@@ -1,10 +1,16 @@
 // The command line: what to run, and the exit code.
 
 import type { Readable, Writable } from 'node:stream';
+import { readNearBalance, walletBlock } from './balances.ts';
+import { loadConfig } from './config.ts';
+import { createContext } from './context.ts';
+import type { Context } from './context.ts';
+import type { Fetch } from './http.ts';
 import { parseRequest } from './request.ts';
 import type { HttpRequest } from './request.ts';
 import { createStyle } from './style.ts';
 import { NotSupported, Stop, UsageError } from './util.ts';
+import { readNearAccount } from './wallet.ts';
 
 export interface Io {
   readonly stdout: Writable;
@@ -13,7 +19,7 @@ export interface Io {
   /** True when both stdin and stdout are terminals. */
   readonly isTerminal: boolean;
   readonly env: Readonly<Record<string, string | undefined>>;
-  readonly fetch: typeof globalThis.fetch;
+  readonly fetch: Fetch;
 }
 
 export interface AppOptions {
@@ -110,33 +116,46 @@ export function parseCommand(argv: readonly string[]): Command {
 
 /** One handler per command. It returns the exit code. */
 export type Handlers = {
-  readonly [K in Command['kind']]: (command: Extract<Command, { kind: K }>, io: Io) => Promise<number>;
+  readonly [K in Command['kind']]: (command: Extract<Command, { kind: K }>, ctx: Context) => Promise<number>;
 };
+
+/** `balance`: the wallet's USDC and NEAR. It needs the account only, never the key. */
+async function balanceCommand(_command: { readonly kind: 'balance' }, ctx: Context): Promise<number> {
+  const { accountId, rpc } = readNearAccount(ctx.env);
+  const config = loadConfig(ctx.env);
+  const balance = await readNearBalance(ctx.io.fetch, accountId, rpc, { withNear: true });
+  ctx.print(walletBlock(ctx, config, accountId, balance));
+  if (balance.kind === 'failed') throw new Stop(`Could not read the balance: ${balance.reason}.`);
+  return 0;
+}
 
 const notBuilt = (): Promise<number> => Promise.reject(new Stop('Not built yet'));
 
 export const HANDLERS: Handlers = {
-  help: (_command, io) => {
-    io.stdout.write(HELP_TEXT);
+  help: (_command, ctx) => {
+    ctx.io.stdout.write(HELP_TEXT);
     return Promise.resolve(0);
   },
   interactive: notBuilt,
-  balance: notBuilt,
+  balance: balanceCommand,
   request: notBuilt,
 };
 
 /** Runs the app and returns the exit code: 0 answered, 1 failed, 2 bad usage, 3 not supported. */
 export async function runCli(argv: readonly string[], io: Io, handlers: Handlers = HANDLERS): Promise<number> {
   const style = createStyle(io.stderr);
+  const ctx = createContext(io);
   try {
     const command = parseCommand(argv);
-    const handler = handlers[command.kind] as (command: Command, io: Io) => Promise<number>;
-    return await handler(command, io);
+    const handler = handlers[command.kind] as (command: Command, ctx: Context) => Promise<number>;
+    return await handler(command, ctx);
   } catch (error) {
     const message = error instanceof Stop ? error.line() : error instanceof Error ? error.message : String(error);
     io.stderr.write(`${style.fail(message)}\n`);
     if (error instanceof UsageError) return 2;
     if (error instanceof NotSupported) return 3;
     return 1;
+  } finally {
+    ctx.close();
   }
 }

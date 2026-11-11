@@ -1,8 +1,10 @@
 import { PassThrough, Writable } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { HANDLERS, HELP_TEXT, parseCommand, runCli } from '../src/cli.ts';
 import type { Handlers, Io } from '../src/cli.ts';
 import { NotSupported, UsageError } from '../src/util.ts';
+import { startFakeNearRpc } from './fakeNearRpc.ts';
+import type { FakeNearRpc } from './fakeNearRpc.ts';
 
 const URL_OK = 'https://api.example.com/x';
 const parse = (line: string) => parseCommand(line === '' ? [] : line.split(' '));
@@ -82,7 +84,7 @@ describe('parseCommand', () => {
   });
 });
 
-function fakeIo(): { io: Io; out: () => string; err: () => string } {
+function fakeIo(env: Record<string, string> = {}): { io: Io; out: () => string; err: () => string } {
   let out = '';
   let err = '';
   const sink = (append: (text: string) => void) =>
@@ -97,7 +99,7 @@ function fakeIo(): { io: Io; out: () => string; err: () => string } {
     stderr: sink((text) => (err += text)),
     stdin: new PassThrough(),
     isTerminal: false,
-    env: {},
+    env,
     fetch: globalThis.fetch,
   };
   return { io, out: () => out, err: () => err };
@@ -120,7 +122,7 @@ describe('runCli', () => {
   });
 
   it('returns 1 with one line from each stub', async () => {
-    for (const argv of [[], ['balance'], [URL_OK]]) {
+    for (const argv of [[], [URL_OK]]) {
       const { io, err } = fakeIo();
       expect(await runCli(argv, io)).toBe(1);
       expect(err()).toBe('✘ Not built yet\n');
@@ -139,5 +141,65 @@ describe('runCli', () => {
     const second = fakeIo();
     expect(await runCli([], second.io, handlers)).toBe(1);
     expect(second.err()).toBe('✘ Made up\n');
+  });
+});
+
+describe('balance', () => {
+  // Made up: the account, its balances, and a key that is no key
+  const ACCOUNT = 'alice.near';
+  let rpc: FakeNearRpc;
+  beforeAll(async () => {
+    rpc = await startFakeNearRpc();
+  });
+  afterAll(async () => {
+    await rpc.close();
+  });
+  beforeEach(() => {
+    rpc.failing = undefined;
+    rpc.calls.length = 0;
+    rpc.setBalance(ACCOUNT, 990_000n, 120_000_000_000_000_000_000_000n);
+  });
+
+  const run = async (env: Record<string, string>) => {
+    const { io, out, err } = fakeIo(env);
+    const code = await runCli(['balance'], io);
+    return { code, out: out(), err: err() };
+  };
+
+  it('prints the wallet block and returns 0', async () => {
+    const { code, out, err } = await run({ NEAR_ACCOUNT_ID: ACCOUNT, NEAR_RPC_URL: rpc.url });
+    expect(code).toBe(0);
+    expect(err).toBe('');
+    expect(out).toBe(
+      ['Wallet    alice.near', 'Balance   0.990000 USDC · 0.1200 NEAR', 'Cap       $0.02 a call (MAX_PAYMENT_USD)', ''].join('\n'),
+    );
+    expect(rpc.balanceReads()).toHaveLength(2);
+  });
+
+  it('works with a NEAR_PRIVATE_KEY that is garbage, and never reads it', async () => {
+    const { code, out, err } = await run({ NEAR_ACCOUNT_ID: ACCOUNT, NEAR_RPC_URL: rpc.url, NEAR_PRIVATE_KEY: 'garbage-made-up-key' });
+    expect(code).toBe(0);
+    expect(out).toContain('0.990000 USDC');
+    expect(out + err).not.toContain('garbage-made-up-key');
+  });
+
+  it('shows the cap from MAX_PAYMENT_USD', async () => {
+    const { out } = await run({ NEAR_ACCOUNT_ID: ACCOUNT, NEAR_RPC_URL: rpc.url, MAX_PAYMENT_USD: '0.5' });
+    expect(out).toContain('Cap       $0.5 a call (MAX_PAYMENT_USD)');
+  });
+
+  it('prints the wallet and cap, then one ✘ line and returns 1, when the RPC fails', async () => {
+    rpc.failing = { status: 503 };
+    const { code, out, err } = await run({ NEAR_ACCOUNT_ID: ACCOUNT, NEAR_RPC_URL: rpc.url });
+    expect(code).toBe(1);
+    expect(out).toBe(['Wallet    alice.near', 'Cap       $0.02 a call (MAX_PAYMENT_USD)', ''].join('\n'));
+    expect(err).toBe(`✘ Could not read the balance: the NEAR RPC at ${new URL(rpc.url).host} answered 503.\n`);
+  });
+
+  it('says so in one line and returns 1 when NEAR_ACCOUNT_ID is not set', async () => {
+    const { code, out, err } = await run({});
+    expect(code).toBe(1);
+    expect(out).toBe('');
+    expect(err).toBe('✘ NEAR_ACCOUNT_ID is not set. Set it in .env.local or the shell, such as NEAR_ACCOUNT_ID=alice.near\n');
   });
 });
