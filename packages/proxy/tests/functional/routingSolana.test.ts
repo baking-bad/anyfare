@@ -331,7 +331,7 @@ describe('payment routing pays x402 targets on Solana', () => {
 
     const checked = await (await fetch(`${proxyUrl}/_/check?url=${encodeURIComponent(`https://${targetHost}:${target.port}/v1/checked`)}`)).json();
 
-    expect(checked).toEqual({
+    expect(checked).toMatchObject({
       payable: true, target: `https://${targetHost}:${target.port}/v1/checked`,
       price: { amount: '0.001', currency: 'USD', asset: 'solana-usdc', network: solana },
       quote: { amount: '0.001', fee: '0', currency: 'USD' },

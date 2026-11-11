@@ -1,5 +1,5 @@
 import { formatUsd } from '@anyfare/common';
-import { createPaidWith, type PaidWith, type PlatformConfig } from '@anyfare/core';
+import { assetToken, createPaidWith, type PaidWith, type PlatformConfig } from '@anyfare/core';
 import { finalCallStatuses, paidCallStatuses, type CallFilter, type CallLeg, type CallRecord } from '@anyfare/db';
 
 export { paidWithValues, type PaidWith } from '@anyfare/core';
@@ -94,14 +94,6 @@ export const explorerUrl = (network: string | undefined, hash: string | undefine
   return explorer !== undefined && hash !== undefined && explorer.hash.test(hash) ? explorer.url(hash) : null;
 };
 
-// The token a registry asset name ends in, such as base-usdc: USDC
-const tokenNames: Readonly<Record<string, string>> = { usdc: 'USDC', usdce: 'USDC.e', pathusd: 'pathUSD' };
-const tokenOf = (asset: string): string => {
-  const token = asset.slice(asset.indexOf('-') + 1);
-
-  return tokenNames[token] ?? token.toUpperCase();
-};
-
 const isPaid = (status: CallRecord['status']): boolean => (paidCallStatuses as readonly string[]).includes(status);
 const isFinal = (status: CallRecord['status']): boolean => (finalCallStatuses as readonly string[]).includes(status);
 const iso = (time: Date): string => time.toISOString();
@@ -170,7 +162,7 @@ export const createCallViews = (config: PlatformConfig) => {
       buyer: {
         paidWith: call.paidWith,
         network: credits ? null : record.network ?? null,
-        asset: credits ? 'Credits' : record.asset === undefined ? null : tokenOf(record.asset),
+        asset: credits ? 'Credits' : record.asset === undefined ? null : assetToken(record.asset),
         amount: call.amount,
         payer: call.payer,
         transaction: credits ? null : record.transactionHash ?? null,
@@ -181,7 +173,7 @@ export const createCallViews = (config: PlatformConfig) => {
         ? {
           paidWith: call.apiPaidWith ?? leg.protocol,
           network: leg.network,
-          asset: tokenOf(leg.asset),
+          asset: assetToken(leg.asset),
           amount: formatUsd(leg.amount),
           payTo: leg.payTo,
           transaction: leg.transactionHash ?? null,

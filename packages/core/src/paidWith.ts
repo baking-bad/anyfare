@@ -26,6 +26,16 @@ export interface PaidWithRules {
 // x402 is paid on these chains, MPP on Tempo
 const x402Chains: ReadonlySet<Chain> = new Set(['near', 'base', 'solana']);
 
+// The token a registry asset name ends in, as people write it
+const tokenNames: Readonly<Record<string, string>> = { usdc: 'USDC', usdce: 'USDC.e', pathusd: 'pathUSD' };
+
+/** The token of a registry asset, by its name, as a page shows it: `base-usdc` is USDC, `tempo-usdce` USDC.e. */
+export const assetToken = (asset: string): string => {
+  const token = asset.slice(asset.indexOf('-') + 1);
+
+  return tokenNames[token] ?? token.toUpperCase();
+};
+
 /** How payments were paid, from the rail and the platform config's networks. */
 export const createPaidWith = (config: Pick<PlatformConfig, 'assets' | 'mpp'>): PaidWithRules => {
   const chains = new Map<string, Chain>([

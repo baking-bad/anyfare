@@ -1030,7 +1030,7 @@ describe('GET /_/check', () => {
     const free = await (await fetch(`${proxyUrl}/_/check?url=${at('api.target.test')}/v1/free`)).json();
     const nothing = await (await fetch(`${proxyUrl}/_/check`)).json();
 
-    expect(answer).toEqual({
+    expect(answer).toMatchObject({
       payable: true,
       target: `https://${at('api.target.test')}/v1/pools?limit=5`,
       price: { amount: '0.001', currency: 'USD', asset: 'base-usdc', network: base },

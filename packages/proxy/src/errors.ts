@@ -1,10 +1,13 @@
 import { AnyfareError, type ErrorStatusTable } from '@anyfare/common';
+import { HostNotAllowedError } from '@anyfare/payments';
 
 // Every AnyfareError code the proxy answers with, and its status. A code missing here answers an
 // opaque 500.
 export const errorStatuses = {
   // The link isn't /<host>/<path> with a DNS host
   invalid_target: 400,
+  // A request the route can't take, such as GET /_/check?method=POST without its header
+  invalid_request: 400,
   // A host we don't route to, and a target that asks for no payment
   host_not_allowed: 400,
   not_payable: 400,
@@ -68,6 +71,32 @@ export class UpstreamUnavailableError extends AnyfareError {
 
   constructor(options?: ErrorOptions) {
     super('The upstream is unavailable', options);
+  }
+}
+
+/** Why routing refuses a host: one of ours by name or by address, the blocklist, or its own opt-out. */
+export type HostRefusal = 'own_host' | 'own_address' | 'blocklisted' | 'opted_out';
+
+/**
+ * A host routing refuses, and why. A routed call answers it as any `host_not_allowed`, with the same
+ * message; only `GET /_/check` reads the reason.
+ */
+export class HostRefusedError extends HostNotAllowedError {
+  readonly refusal: HostRefusal;
+
+  constructor(refusal: HostRefusal) {
+    super();
+
+    this.refusal = refusal;
+  }
+}
+
+/** `GET /_/check?method=POST` without `X-Anyfare-Check: 1`: a plain link never makes us send a POST. */
+export class CheckHeaderRequiredError extends AnyfareError {
+  readonly code = 'invalid_request';
+
+  constructor() {
+    super('A check with method=POST needs the header X-Anyfare-Check: 1');
   }
 }
 

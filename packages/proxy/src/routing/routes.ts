@@ -3,21 +3,28 @@ import { Transform, type Readable } from 'node:stream';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
 import {
-  formatUsd, isRecord, outboundErrorCode, OutboundHttpError, outboundFields, OutboundTimeoutError, OwnHostError, recordErrorCode,
-  ResponseTooLargeError as OutboundResponseTooLargeError, upstreamRequestIdOf, type Clock, type Logger, type LogSink, type MicroUsd, type OutboundHttp,
-  type OutboundResponse,
+  formatUsd, isRecord, outboundErrorCode, OutboundHttpError, outboundFields, OutboundTimeoutError, OwnHostError, parseIpAddress, recordErrorCode,
+  ResponseTooLargeError as OutboundResponseTooLargeError, upstreamRequestIdOf, type Clock, type IpAddress, type Logger, type LogSink, type MicroUsd,
+  type OutboundHttp, type OutboundResponse,
 } from '@anyfare/common';
-import { findAsset, type PlatformConfig } from '@anyfare/core';
+import { createPaidWith, findAsset, type PlatformConfig } from '@anyfare/core';
 import type { Ledger, Redis, RoutingRepository } from '@anyfare/db';
 import {
-  chooseOption, HostNotAllowedError, mppRefusals, NotPayableError, parseRoutingTarget, parseTargetChallenge, QuoteExceededError, routingQuote,
-  targetReceipt, UnsupportedPaymentError, x402Refusals, type ChosenOption, type RoutingTarget, type TargetChallenge,
+  chooseOption, HostNotAllowedError, InvalidTargetError, mppRefusals, NotPayableError, parseRoutingTarget, parseTargetChallenge, QuoteExceededError,
+  routingQuote, targetReceipt, UnsupportedPaymentError, x402Refusals, type ChosenOption, type RoutingTarget, type TargetChallenge,
 } from '@anyfare/payments';
 
-import { NearPaymentInFlightError, ResponseTooLargeError, UpstreamUnavailableError } from '../errors.js';
+import {
+  CheckHeaderRequiredError, HostRefusedError, NearPaymentInFlightError, ResponseTooLargeError, UpstreamUnavailableError, type HostRefusal,
+} from '../errors.js';
 import type { ProxyMetrics } from '../metrics.js';
 import type { PaidCall, PaymentStep } from '../payments/step.js';
 import type { CallDetailsRecorder } from './callDetails.js';
+import {
+  addressRefusal, asksOf, checkEntryKey, checkHeader, checkMethods, checkRefusalOf, invalidHost, notAUrl, parseProbeView, probeViewOf, upstreamOf,
+  type Asks, type CheckMethod, type CheckQuery, type CheckRefusal, type PayWay, type PayWays, type ProbeView, type UpstreamAnswer,
+} from './check.js';
+import type { CheckStats, EndpointStats } from './checkStats.js';
 import { routedRequestHeaders, routedResponseHeaders } from './headers.js';
 import { isOwnHost, ownDomainsOf, SignerUnavailableError, type EndpointRegistrar, type SignerClient, type X402Requirement } from './support.js';
 
@@ -47,6 +54,10 @@ export interface RoutingOptions {
   readonly limitIp: (ip: string) => Promise<void>;
   // The per-IP limit of probes: a call whose quote isn't cached, paid or not
   readonly limitProbe: (ip: string) => Promise<void>;
+  // The ways the combined 402 offers a quote, for `GET /_/check`
+  readonly payWays: PayWays;
+  // An endpoint's counted numbers over 30 days, for `GET /_/check`: null when they can't be read now
+  readonly endpointStats: EndpointStats['get'];
   readonly metrics: Pick<ProxyMetrics, 'upstream' | 'routing'>;
   // Whether an MPP challenge has expired, and how long a buyer's payment has left
   readonly clock: Clock;
@@ -183,20 +194,55 @@ const readAll = async (body: Readable): Promise<Buffer> => {
   return Buffer.concat(chunks);
 };
 
+/** A quote as a check reads it: with the view of the probe that made it. */
+interface CheckedQuote {
+  readonly quote: RoutingQuote;
+  readonly view: ProbeView;
+}
+
+/** `GET /_/check`'s answer for a payable link. */
+export interface PayableCheck {
+  readonly payable: true;
+  readonly method: CheckMethod;
+  readonly target: string;
+  readonly price: { readonly amount: string; readonly currency: 'USD'; readonly asset: string; readonly network: string | null };
+  readonly quote: { readonly amount: string; readonly fee: string; readonly currency: 'USD' };
+  readonly link: string;
+  readonly protocol: 'x402' | 'mpp';
+  readonly asks: Asks;
+  readonly upstream: UpstreamAnswer;
+  readonly payWith: readonly PayWay[];
+  readonly stats: CheckStats | null;
+  readonly checkedAt: string;
+  readonly ms: number;
+}
+
+/** `GET /_/check`'s answer for a link it won't quote: still a 200. */
+export interface RefusedCheck {
+  readonly payable: false;
+  readonly method: CheckMethod;
+  readonly reason: string;
+  readonly message: string;
+  readonly detail?: string;
+  readonly upstream?: { readonly status: number };
+}
+
 /** Payment routing: `/<host>/<path>` pays any x402 or MPP API for the buyer, and `GET /_/check` quotes one. */
 export const createRouting = ({
-  config, http, redis, payments, routing, ledger, signer, optedOut, registrar, callDetails, limitIp, limitProbe, metrics, clock,
+  config, http, redis, payments, routing, ledger, signer, optedOut, registrar, callDetails, limitIp, limitProbe, payWays, endpointStats, metrics, clock,
 }: RoutingOptions) => {
   const payUrl = config.urls.pay.replace(/\/+$/, '');
   const ownDomains = ownDomainsOf(config);
+  const ownAddresses = config.ownHosts.map(host => parseIpAddress(host)).filter((address): address is IpAddress => address !== undefined);
+  const { paidWithOf } = createPaidWith(config);
   const maxResponseBytes = config.sizeLimits.bufferedResponseBytes;
   const quoteKey = (method: string, target: RoutingTarget): string => `${redis.prefix}quote:${method} ${target.url}`;
 
   // Why a host is refused, at info: the buyer picked it
-  const refuseHost = (log: LogSink, target: RoutingTarget, reason: string): never => {
+  const refuseHost = (log: LogSink, target: RoutingTarget, reason: HostRefusal): never => {
     metrics.routing('refused_host');
     log.info({ host: target.host, code: 'host_not_allowed', reason }, 'Routing refused the host');
-    throw new HostNotAllowedError();
+    throw new HostRefusedError(reason);
   };
 
   const refuseOwnHost = (target: RoutingTarget, log: LogSink): void => {
@@ -259,9 +305,15 @@ export const createRouting = ({
     }
   };
 
-  /** The probe, the option, and the quote, cached by method and URL. */
-  const probeFor = async (target: RoutingTarget, method: string, headers: RequestHeaders, body: Buffer | undefined, log: LogSink): Promise<RoutingQuote> => {
+  /**
+   * The probe, the option, and the quote, with how long the quote may be cached. `observe`, for a check's
+   * own probe only, hears what the probe saw, its status and the headers a check shows, whatever its outcome.
+   */
+  const probeQuote = async (
+    target: RoutingTarget, method: string, headers: RequestHeaders, body: Buffer | undefined, log: LogSink, observe?: (view: ProbeView) => void,
+  ): Promise<{ readonly quote: RoutingQuote; readonly cacheSeconds: number }> => {
     const started = performance.now();
+    const probedAt = observe && clock.now();
     const response = await send(target, method, headers, body, log, 1);
     // The probe's options are in its headers: its body is never read
     response.body.on('error', () => undefined);
@@ -270,6 +322,8 @@ export const createRouting = ({
       host: target.host, path: target.path, targetStatus: response.status, targetRequestId: upstreamRequestIdOf(response.headers),
       durationMs: Math.round(performance.now() - started),
     };
+    if (observe)
+      observe(probeViewOf(response.status, response.headers, probedAt!, probe.durationMs));
     if (response.status !== 402) {
       metrics.routing('not_payable');
       log.info({ ...probe, code: 'not_payable' }, 'The routed target didn\'t ask for a payment');
@@ -300,7 +354,13 @@ export const createRouting = ({
       ? { protocol: 'x402', x402Version: challenge.x402Version, requirement: chosen.requirement, resource: challenge.resource, ...amounts }
       : { protocol: 'mpp', challenge: chosen.challenge, ...amounts };
     log.info({ ...probe, ...quoteFields(result), cached: false }, 'Routing quote');
-    const cacheSeconds = cacheSecondsOf(chosen, now);
+
+    return { quote: result, cacheSeconds: cacheSecondsOf(chosen, now) };
+  };
+
+  /** The probe, the option, and the quote, cached by method and URL. */
+  const probeFor = async (target: RoutingTarget, method: string, headers: RequestHeaders, body: Buffer | undefined, log: LogSink): Promise<RoutingQuote> => {
+    const { quote: result, cacheSeconds } = await probeQuote(target, method, headers, body, log);
     try {
       if (cacheSeconds > 0)
         await redis.client.set(quoteKey(method, target), serializeQuote(result), { expiration: { type: 'EX', value: cacheSeconds } });
@@ -650,37 +710,145 @@ export const createRouting = ({
   // The refusals `GET /_/check` answers as `payable: false`
   const unpayable = new Set(['invalid_target', 'host_not_allowed', 'not_payable', 'unsupported_payment', 'upstream_unavailable']);
 
-  /** `GET /_/check?url=`: is the link payable, at what price, and our quote, without paying. */
-  const check = async (request: FastifyRequest<{ Querystring: { readonly url?: string } }>): Promise<Record<string, unknown>> => {
+  // A check's own cache entry: its quote and its probe's view, under one key. Only a check writes it, and
+  // only a check reads it. The key is a digest of the method and URL, never the text a buyer sent.
+  const checkKey = (method: string, target: RoutingTarget): string => checkEntryKey(redis.prefix, method, target.url);
+
+  /** The check's cached entry, or undefined. Never a quote a routed call cached: its probe carried that buyer's headers and body. */
+  const cachedCheck = async (target: RoutingTarget, method: string, log: LogSink): Promise<CheckedQuote | undefined> => {
+    try {
+      const text = await redis.client.get(checkKey(method, target));
+      const entry: unknown = text === null ? undefined : JSON.parse(text);
+      const view = isRecord(entry) ? parseProbeView(entry['view']) : undefined;
+      if (!isRecord(entry) || typeof entry['quote'] !== 'string' || view === undefined)
+        return undefined;
+      const quote = parseQuote(entry['quote']);
+      log.debug({ host: target.host, path: target.path, ...quoteFields(quote), cached: true }, 'Routing quote');
+
+      return { quote, view };
+    }
+    catch (error) {
+      log.warn({ error }, 'The check\'s cache is unavailable');
+
+      return undefined;
+    }
+  };
+
+  /**
+   * Caches a check's quote with its view, for checks. Paid calls may use the quote only when none is
+   * cached: it is set if absent, so a routed call's quote is never replaced, extended or shortened. Best
+   * effort: a check that can't cache still answers.
+   */
+  const keepCheck = async (target: RoutingTarget, method: string, checked: CheckedQuote, seconds: number, log: LogSink): Promise<void> => {
+    const serialized = serializeQuote(checked.quote);
+    const expiration = { type: 'EX', value: seconds } as const;
+    const writes = [
+      () => redis.client.set(checkKey(method, target), JSON.stringify({ quote: serialized, view: checked.view }), { expiration }),
+      () => redis.client.set(quoteKey(method, target), serialized, { condition: 'NX', expiration }),
+    ];
+    await Promise.all(writes.map(async write => {
+      try {
+        await write();
+      }
+      catch (error) {
+        log.warn({ error }, 'Failed to cache a check\'s quote');
+      }
+    }));
+  };
+
+  /**
+   * The host checks and the quote of a check, as a routed call makes them, from a probe of its own. A
+   * quote not cached costs a probe, counted first; `seen` hears the probe's view, whatever the outcome.
+   */
+  const quoteForCheck = async (target: RoutingTarget, method: CheckMethod, request: FastifyRequest, seen: { view?: ProbeView }): Promise<CheckedQuote> => {
+    refuseOwnHost(target, request.log);
+    const cached = await cachedCheck(target, method, request.log);
+    if (!cached)
+      await limitProbe(request.ip);
+    await checkHost(target, request.log);
+    if (cached)
+      return cached;
+    // Only what the check sets: no body, and no header but its own request ID
+    const { quote, cacheSeconds } = await probeQuote(target, method, routedRequestHeaders({}, request.id), undefined, request.log, view => {
+      seen.view = view;
+    });
+    const checked = { quote, view: seen.view! };
+    if (cacheSeconds > 0)
+      await keepCheck(target, method, checked, cacheSeconds, request.log);
+
+    return checked;
+  };
+
+  /**
+   * `GET /_/check?url=&method=`: is the link payable, at what price, our quote, the target's 402 as it
+   * came, the ways we take the quote, and the endpoint's numbers, without paying. The probe goes with
+   * `method`, GET or POST, and no body, under every check and limit a routed call has. POST needs the
+   * header `X-Anyfare-Check: 1`, which a link, a prefetch or an image tag never sends. A link it won't
+   * quote is a 200 with the reason, and a detail the page can word.
+   */
+  const check = async (request: FastifyRequest<{ Querystring: CheckQuery }>): Promise<PayableCheck | RefusedCheck> => {
+    // The schema takes only these, GET when none is given
+    const method: CheckMethod = checkMethods.find(item => item === request.query.method) ?? 'GET';
+    if (method === 'POST' && request.headers[checkHeader] !== '1')
+      throw new CheckHeaderRequiredError();
     await limitIp(request.ip);
+    const refused = ({ reason, detail, message, status }: CheckRefusal): RefusedCheck => ({
+      payable: false, method, reason, message, ...detail === undefined ? {} : { detail }, ...status === undefined ? {} : { upstream: { status } },
+    });
     const link = request.query.url ?? '';
     let parsed: URL;
     try {
       parsed = new URL(link.includes('://') ? link : `https://${link}`);
     }
     catch {
-      return { payable: false, reason: 'invalid_target', message: 'The link isn\'t a URL' };
+      return refused(notAUrl);
     }
+    const address = addressRefusal(parsed.hostname, ownAddresses);
+    if (address)
+      return refused(address);
+    let target: RoutingTarget;
     try {
-      const target = parseRoutingTarget(`/${parsed.host}${parsed.pathname}${parsed.search}`);
-      const quoted = await quoteFor(target, 'GET', routedRequestHeaders({}, request.id), undefined, { ip: request.ip, log: request.log });
-      const asset = findAsset(config, quoted.asset);
-      metrics.routing('quoted');
-
-      return {
-        payable: true,
-        target: target.url,
-        price: { amount: formatUsd(quoted.price), currency: 'USD', asset: quoted.asset, network: asset?.network.id ?? null },
-        quote: { amount: formatUsd(quoted.quote), fee: formatUsd(quoted.fee), currency: 'USD' },
-        link: `${payUrl}/${target.host}${target.path}${target.search}`,
-      };
+      target = parseRoutingTarget(`/${parsed.host}${parsed.pathname}${parsed.search}`);
     }
     catch (error) {
-      const code = (error as { code?: unknown }).code;
-      if (typeof code === 'string' && unpayable.has(code))
-        return { payable: false, reason: code, message: (error as Error).message };
+      if (error instanceof InvalidTargetError)
+        return refused(invalidHost);
       throw error;
     }
+
+    const seen: { view?: ProbeView } = {};
+    let quoted: RoutingQuote;
+    let view: ProbeView;
+    try {
+      ({ quote: quoted, view } = await quoteForCheck(target, method, request, seen));
+    }
+    catch (error) {
+      const refusal = checkRefusalOf(error, seen.view);
+      if (refusal)
+        return refused(refusal);
+      const code = (error as { code?: unknown }).code;
+      if (typeof code === 'string' && unpayable.has(code))
+        return refused({ reason: code as CheckRefusal['reason'], message: (error as Error).message });
+      throw error;
+    }
+    const asset = findAsset(config, quoted.asset);
+    metrics.routing('quoted');
+
+    return {
+      payable: true,
+      method,
+      target: target.url,
+      price: { amount: formatUsd(quoted.price), currency: 'USD', asset: quoted.asset, network: asset?.network.id ?? null },
+      quote: { amount: formatUsd(quoted.quote), fee: formatUsd(quoted.fee), currency: 'USD' },
+      link: `${payUrl}/${target.host}${target.path}${target.search}`,
+      protocol: quoted.protocol,
+      asks: asksOf(quoted, paidWithOf),
+      upstream: upstreamOf(view),
+      payWith: payWays(quoted.quote),
+      stats: await endpointStats(target.host, target.path, request.log),
+      checkedAt: view.probedAt,
+      ms: view.ms,
+    };
   };
 
   return { serve, check };

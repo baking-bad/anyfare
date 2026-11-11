@@ -6,7 +6,7 @@ import {
 import { RateLimitedError, type InvalidationBus, type PlatformConfig, type RateLimiter } from '@anyfare/core';
 import {
   createCallRepository, createKeyStore, createLedger, createPaymentRepository, createRedisInvalidationBus, createRedisRateLimiter, createRedisReplayStore,
-  createRoutingRepository, type CallRepository, type Postgres, type Redis, type RoutingRepository,
+  createRoutingRepository, createStatsRepository, type CallRepository, type Postgres, type Redis, type RoutingRepository, type StatsRepository,
 } from '@anyfare/db';
 import {
   createCreditsRail, createMppRail, createX402Rail, detectMpp, detectX402, type ClaimStore, type MppSetup, type PaymentRail, type X402Setup,
@@ -19,6 +19,8 @@ import { createProxyLimits } from './payments/limits.js';
 import { createPaymentStep } from './payments/step.js';
 import { registerKeyRoute } from './platform/key.js';
 import { createCallDetailsRecorder } from './routing/callDetails.js';
+import { checkHeadersSchema, checkQuerySchema, checkResponseSchema, createPayWays, type CheckQuery } from './routing/check.js';
+import { createEndpointStats } from './routing/checkStats.js';
 import { createRouting, type Routing } from './routing/routes.js';
 import { createEndpointRegistrar, createOptOutCheck, type SignerClient } from './routing/support.js';
 
@@ -71,6 +73,8 @@ export interface ProxyDependencies {
   readonly routingRepository?: Pick<RoutingRepository, 'isBlocked' | 'endpointFee' | 'recordTargetPayment' | 'updateTargetPayment'>;
   // Where a paid call's method, payer and arrival are kept, best effort. Default: the call_details table.
   readonly callDetails?: Pick<CallRepository, 'recordDetails'>;
+  // The endpoints' counted numbers `GET /_/check` shows. Default: the stats tables.
+  readonly stats?: Pick<StatsRepository, 'endpoint'>;
 }
 
 export interface ProxyServer extends Server {
@@ -103,13 +107,25 @@ const robotsTxt = 'User-agent: *\nDisallow: /\n';
 // A 401 names the scheme it expects
 const keyErrorCodes = new Set(['unauthorized', 'invalid_key', 'wrong_key_type']);
 
-const registerResponseHeaders = (app: FastifyInstance): void => {
+// The preflight of `GET /_/check`: GET only, and its header, which a POST check needs, only for our
+// website. No other site's script may add it, so no other page can make us send a POST.
+const checkPreflightHeaders = (origin: string, website: string): Record<string, string> => ({
+  'access-control-allow-methods': 'GET',
+  ...origin === website ? { 'access-control-allow-headers': 'X-Anyfare-Check' } : {},
+  'access-control-max-age': '600',
+  vary: 'Origin',
+});
+
+const registerResponseHeaders = (app: FastifyInstance, website: string): void => {
   // A CORS preflight is answered here, before any route: it never reaches a target
   app.addHook('onRequest', async (request, reply) => {
-    if (request.method === 'OPTIONS' && request.headers.origin !== undefined && request.headers['access-control-request-method'] !== undefined)
-      return reply.status(204).headers(preflightHeaders).send();
+    const { origin } = request.headers;
+    if (request.method !== 'OPTIONS' || origin === undefined || request.headers['access-control-request-method'] === undefined)
+      return undefined;
+    if (request.url.split('?', 1)[0] === '/_/check')
+      return reply.status(204).headers(checkPreflightHeaders(origin, website)).send();
 
-    return undefined;
+    return reply.status(204).headers(preflightHeaders).send();
   });
   // Headers that belong to an error: Retry-After on 429 and on a 503 worth retrying soon, the scheme on 401
   app.addHook('onError', async (_request, reply, error) => {
@@ -130,8 +146,8 @@ const registerResponseHeaders = (app: FastifyInstance): void => {
 
 /** `/<host>/<path>` for every method, with request bodies as bytes; the platform's own paths answer 404. */
 const registerRoutingRoutes = (app: FastifyInstance, routing: Routing): void => {
-  app.get<{ Querystring: { readonly url?: string } }>('/_/check', {
-    schema: { querystring: { type: 'object', properties: { url: { type: 'string', maxLength: 8_192 } } } },
+  app.get<{ Querystring: CheckQuery }>('/_/check', {
+    schema: { headers: checkHeadersSchema, querystring: checkQuerySchema, response: checkResponseSchema },
   }, async request => routing.check(request));
   app.get('/robots.txt', async (_request, reply) => reply.type('text/plain; charset=utf-8').send(robotsTxt));
 
@@ -153,6 +169,26 @@ const registerRoutingRoutes = (app: FastifyInstance, routing: Routing): void => 
     scope.route({ method: [...routedMethods], url: '/*', handler: dispatch });
     scope.route({ method: [...routedMethods], url: '/', handler: dispatch });
   });
+};
+
+// What a check needs to know of node-postgres's pool, which drizzle keeps as `$client`
+interface PoolCounts {
+  readonly waitingCount: number;
+  readonly idleCount: number;
+  readonly totalCount: number;
+  readonly options?: { readonly max?: number };
+}
+
+/**
+ * Whether the database pool has no connection to spare: a query waits for one, or would. A check then
+ * reads no numbers, so it never queues beside paid calls. Never busy without a pool to count.
+ */
+const poolBusy = (postgres: Postgres) => (): boolean => {
+  const pool = (postgres.db as unknown as { readonly $client?: Partial<PoolCounts> }).$client;
+  if (typeof pool?.waitingCount !== 'number' || typeof pool.idleCount !== 'number' || typeof pool.totalCount !== 'number')
+    return false;
+
+  return pool.waitingCount > 0 || (pool.idleCount === 0 && pool.totalCount >= (pool.options?.max ?? 10));
 };
 
 /**
@@ -180,6 +216,7 @@ export const createApp = ({
   internalApi,
   routingRepository = createRoutingRepository({ db: postgres.db, clock }),
   callDetails: callDetailsStore = createCallRepository({ db: postgres.db }),
+  stats = createStatsRepository({ db: postgres.db }),
 }: ProxyDependencies): ProxyServer => {
   const server = createServer({
     logger,
@@ -203,7 +240,7 @@ export const createApp = ({
   });
   const { app } = server;
   const metrics = createProxyMetrics(server.metrics.registry);
-  registerResponseHeaders(app);
+  registerResponseHeaders(app, new URL(config.urls.website).origin);
 
   let targets = http;
   if (!targets) {
@@ -273,6 +310,9 @@ export const createApp = ({
     callDetails,
     limitIp: ip => limits.unpaid(ip),
     limitProbe: ip => limits.probe(ip),
+    // As the combined 402 offers them: the assets of the rails that take payments here
+    payWays: createPayWays(config, { x402: x402?.assets ?? [], mpp: mpp && { network: mpp.network, assets: mpp.assets } }),
+    endpointStats: createEndpointStats({ stats, busy: poolBusy(postgres), clock }).get,
     metrics,
     clock,
     logger,
