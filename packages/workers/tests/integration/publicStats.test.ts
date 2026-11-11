@@ -236,11 +236,11 @@ describe('the public numbers\' counts', () => {
     expect(month.endpoints).toEqual([
       {
         path: '/v1/quote', method: 'GET', priceNow: '0.01', calls: 8, buyers: 5, volume: '0.08', successRate: 0.8, p50Ms: 140,
-        link: 'https://pay.anyfare.test/alpha.example.com/v1/quote',
+        link: 'https://pay.anyfare.test/alpha.example.com/v1/quote', status: 'paid', checkedAt: null,
       },
       {
         path: '/v1/pools', method: 'GET', priceNow: '0.005', calls: 3, buyers: 3, volume: '0.02', successRate: 1, p50Ms: 250,
-        link: 'https://pay.anyfare.test/alpha.example.com/v1/pools',
+        link: 'https://pay.anyfare.test/alpha.example.com/v1/pools', status: 'paid', checkedAt: null,
       },
     ]);
     expect(today.endpoints.map(endpoint => [endpoint['path'], endpoint['calls']])).toEqual([['/v1/quote', 4], ['/v1/pools', 1]]);
@@ -270,16 +270,19 @@ describe('the public numbers\' counts', () => {
   it('keep one row per service with a paid call in 30 days, with its numbers, cheapest paid endpoint and trend, and the totals', async () => {
     const found = await read<{ services: Record<string, unknown>[]; total: number; totalCapped: boolean; totals: unknown }>('/v1/services');
     const trend = (values: Readonly<Record<string, number>>) => thirtyDays(values, 0).map(({ value }) => value);
+    // When each joined: its first routed endpoint
+    const listedAt = async (host: string) => (await database.db.execute<{ at: Date }>(sql`select min(created_at) as at from routed_endpoints where host = ${host}`))
+      .rows[0]!.at;
 
-    expect([found.total, found.totalCapped, found.totals]).toEqual([2, false, { services: 2, paidEndpoints: 3, calls30d: 14 }]);
+    expect([found.total, found.totalCapped, found.totals]).toEqual([2, false, { services: 2, paidServices: 2, paidEndpoints: 3, calls30d: 14 }]);
     expect(found.services).toEqual([
       {
-        host: alpha, paidEndpoints: 2, priceFrom: '0.005', currency: 'USD', calls: 11, buyers: 7, volume: '0.1', successRate: 0.8462, p50Ms: 150,
-        trend: trend({ '11-16': 1, '12-08': 1, '12-09': 2, '12-14': 2, '12-15': 5 }),
+        host: alpha, status: 'paid', paidEndpoints: 2, priceFrom: '0.005', currency: 'USD', calls: 11, buyers: 7, volume: '0.1', successRate: 0.8462, p50Ms: 150,
+        trend: trend({ '11-16': 1, '12-08': 1, '12-09': 2, '12-14': 2, '12-15': 5 }), listedAt: new Date(await listedAt(alpha)).toISOString(), checkedAt: null,
       },
       {
-        host: beta, paidEndpoints: 1, priceFrom: '0.02', currency: 'USD', calls: 3, buyers: 3, volume: '0.05', successRate: 0.75, p50Ms: 550,
-        trend: trend({ '12-12': 1, '12-15': 2 }),
+        host: beta, status: 'paid', paidEndpoints: 1, priceFrom: '0.02', currency: 'USD', calls: 3, buyers: 3, volume: '0.05', successRate: 0.75, p50Ms: 550,
+        trend: trend({ '12-12': 1, '12-15': 2 }), listedAt: new Date(await listedAt(beta)).toISOString(), checkedAt: null,
       },
     ]);
     // Free calls only: no service

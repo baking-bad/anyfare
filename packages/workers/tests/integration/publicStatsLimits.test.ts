@@ -226,6 +226,8 @@ describe('the public numbers\' counts, next to the payments', () => {
 
     expect([await count('stats_services'), await count('stats_service_pages', sql`period <> 'all'`)]).toEqual([1, 3]);
     expect(await count('stats_endpoints', sql`host_hash not in (select host_hash from stats_services)`)).toBe(0);
+    // Past the few seconds the API keeps a page of the list in its process
+    clock.advance(10_000);
     const listed = (await api.get<{ services: { host: string }[]; totalCapped: boolean; totals: { services: number } }>('/v1/services')).body;
     expect([listed.services.length, listed.totalCapped, listed.totals.services]).toEqual([1, true, before]);
     expect((await api.get('/v1/services/unknown.example.com?period=7d')).body).toMatchObject({ stats: { calls: 5, buyers: 3 }, exact: true });

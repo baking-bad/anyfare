@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { AnyfareError, formatUsd, parseUsd, Secret, usdAmountPattern, type Clock, type IdGenerator } from '@anyfare/common';
 import type { AuditLog } from '@anyfare/core';
 import {
-  createAccountRepository, createAuditLogRepository, createLedger, createRoutingRepository, createTreasuryRepository, withTransaction,
+  createAccountRepository, createAuditLogRepository, createLedger, createRoutingRepository, createTreasuryRepository, maxCheckedPathLength, withTransaction,
   type Database, type DatabaseTransaction,
 } from '@anyfare/db';
 
@@ -103,8 +103,17 @@ interface FundingBody {
   readonly note?: string;
 }
 
+interface RoutedEndpointBody {
+  readonly host: string;
+  readonly path: string;
+  readonly quote?: string;
+  readonly kind?: 'paid' | 'checked';
+  readonly method?: 'GET' | 'POST';
+  readonly mayAddHost?: boolean;
+}
+
 // A lowercase DNS name, as `new URL(...).hostname` gives it
-const hostPattern = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const hostPattern =/^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
 /** An internal call without the right shared secret. */
 class InternalUnauthorizedError extends AnyfareError {
@@ -204,23 +213,32 @@ export const registerInternalRoutes = (app: FastifyInstance, {
     });
   });
 
-  // The proxy registers an endpoint that answered 402, once, up to the cap per host
-  app.put<{ Body: { readonly host: string; readonly path: string; readonly quote?: string } }>('/internal/v1/routed-endpoints', {
+  // The proxy registers an endpoint a billable call reached, or one a payable check found, once, up to the caps
+  // per host. A host name and a path of printable ASCII only, each bounded, as the routed endpoints' key keeps them.
+  app.put<{ Body: RoutedEndpointBody }>('/internal/v1/routed-endpoints', {
     schema: { body: {
       type: 'object', required: ['host', 'path'], additionalProperties: false,
       properties: {
-        host: { type: 'string', maxLength: 253 },
-        path: { type: 'string', pattern: '^/', maxLength: 2048 },
+        host: { type: 'string', maxLength: 259 },
+        path: { type: 'string', pattern: '^/[\\x21-\\x7e]*$', maxLength: 2048 },
         // The last quote, in USD, for the catalog
         quote: { type: 'string', pattern: usdAmountPattern, maxLength: 26 },
+        // `checked`: a payable check listed it, with the method it probed with. Default: a billable call reached it.
+        kind: { type: 'string', enum: ['paid', 'checked'] },
+        method: { type: 'string', enum: ['GET', 'POST'] },
+        // The check's client was counted for a new host: it may add one
+        mayAddHost: { type: 'boolean' },
       },
     } },
   }, async (request, reply) => {
-    const { host, path, quote } = request.body;
+    const { host, path, quote, kind = 'paid', method, mayAddHost = false } = request.body;
     // The host as the routing link names it: a lowercase DNS name, with a port when one was given
     const [hostname = '', port] = host.split(':');
     if (!hostPattern.test(hostname) || (port !== undefined && !/^\d{1,5}$/.test(port)) || host.split(':').length > 2)
       throw new InvalidRequestError('host must be a lowercase DNS name, with an optional port');
+    // A check lists a path only, of a length the public reads list
+    if (kind === 'checked' && (method === undefined || path.length > maxCheckedPathLength || path.includes('?')))
+      throw new InvalidRequestError(`A checked endpoint needs its method, and a path without a query of at most ${maxCheckedPathLength} characters`);
     let lastPrice: bigint | undefined;
     try {
       lastPrice = quote === undefined ? undefined : parseUsd(quote);
@@ -228,11 +246,14 @@ export const registerInternalRoutes = (app: FastifyInstance, {
     catch {
       throw new InvalidRequestError('quote is too large');
     }
-    const result = await routing.registerEndpoint({ host, path, ...lastPrice === undefined ? {} : { lastPrice } });
-    if (result === 'created')
+    const result = await routing.registerEndpoint({
+      host, path, ...lastPrice === undefined ? {} : { lastPrice }, ...kind === 'checked' ? { checked: { method: method!, mayAddHost } } : {},
+    });
+    // A check's listing is bounded by its caps, and is logged, never audited: the audit log keeps what lasts
+    if (result === 'created' && kind === 'paid')
       await audit(request, 'routing.endpoint_register', { kind: 'routed_endpoint', id: `${host}${path}` }, { host, path });
     // Under the routed call's request ID, which the proxy sends along
-    request.log[result === 'created' ? 'info' : 'debug']({ caller: callerOf(request), host, path, result }, 'A routed endpoint was registered');
+    request.log[result === 'created' ? 'info' : 'debug']({ caller: callerOf(request), host, path, kind, result }, 'A routed endpoint was registered');
 
     return reply.status(result === 'created' ? 201 : 200).send({ host, path, result });
   });

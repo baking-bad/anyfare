@@ -10,6 +10,7 @@ import { createApp, type ApiServer } from '../../src/app.js';
 
 const internalSecret = 'internal-secret-0123456789abcdef-xyz';
 const clock = createFakeClock(fixtureTime(0, 9, 0, 0, 0, 0));
+const checkedNoon = '2026-11-12T12:00:00.000Z';
 
 let database: TestDatabase;
 let redis: TestRedis;
@@ -79,6 +80,54 @@ describe('routed endpoints and the blocklist on the internal API', () => {
     expect((await call('PUT', '/internal/v1/routed-endpoints', { host: 'a.example.com', path: 'v1' })).status).toBe(400);
     expect((await call('PUT', '/internal/v1/routed-endpoints', { host: 'a.example.com', path: '/v1', quote: 'free' })).status).toBe(400);
     expect((await call('PUT', '/internal/v1/routed-endpoints', { host: 'a.example.com', path: '/v1', extra: 1 })).status).toBe(400);
+  });
+
+  it('lists a check\'s endpoint as checked, with its method, unaudited; a second check updates its time, and a host only a counted check adds', async () => {
+    clock.set(checkedNoon);
+    const first = await call('PUT', '/internal/v1/routed-endpoints', { host: 'checked.example.com', path: '/v1/found', quote: '0.0011', kind: 'checked', method: 'POST', mayAddHost: true });
+    clock.advance(60_000);
+    const again = await call('PUT', '/internal/v1/routed-endpoints', { host: 'checked.example.com', path: '/v1/found', quote: '0.0012', kind: 'checked', method: 'GET' });
+    const uncounted = await call('PUT', '/internal/v1/routed-endpoints', { host: 'uncounted.example.com', path: '/v1/x', quote: '0.0011', kind: 'checked', method: 'GET' });
+
+    expect(first).toEqual({ status: 201, body: { host: 'checked.example.com', path: '/v1/found', result: 'created' } });
+    expect(again).toEqual({ status: 200, body: { host: 'checked.example.com', path: '/v1/found', result: 'exists' } });
+    expect(uncounted).toEqual({ status: 200, body: { host: 'uncounted.example.com', path: '/v1/x', result: 'limited' } });
+    expect(await database.db.select().from(routedEndpoints).where(eq(routedEndpoints.host, 'checked.example.com'))).toEqual([{
+      host: 'checked.example.com', path: '/v1/found', feeBps: null, lastPrice: 1_200n, createdAt: new Date(checkedNoon), status: 'checked',
+      checkedAt: new Date(Date.parse(checkedNoon) + 60_000), checkMethod: 'GET',
+    }]);
+    expect(await database.db.select().from(routedEndpoints).where(eq(routedEndpoints.host, 'uncounted.example.com'))).toEqual([]);
+    // Bounded by its caps, never by the audit log
+    expect(await auditOf('checked.example.com/v1/found')).toEqual([]);
+    // An endpoint listed only by a check has no fee to set, as one never listed
+    expect(await call('PUT', '/internal/v1/routed-endpoints/checked.example.com/fee', { path: '/v1/found', feeBps: 150 })).toMatchObject({
+      status: 404, body: { error: { code: 'not_found' } },
+    });
+    // A host the blocklist names a parent domain of is never listed
+    await call('PUT', '/internal/v1/blocklist/blocked-parent.example.com', { reason: 'abuse' });
+    expect(await call('PUT', '/internal/v1/routed-endpoints', { host: 'api.blocked-parent.example.com', path: '/v1/x', kind: 'checked', method: 'GET', mayAddHost: true }))
+      .toEqual({ status: 200, body: { host: 'api.blocked-parent.example.com', path: '/v1/x', result: 'blocked' } });
+    clock.set(fixtureTime(0, 9, 0, 0, 0, 0));
+  });
+
+  it('stores a host and a path only: never a check\'s query, a path past its bound, or one that isn\'t printable ASCII', async () => {
+    const checked = (path: string, extra: Record<string, unknown> = {}) => call('PUT', '/internal/v1/routed-endpoints', {
+      host: 'bounds.example.com', path, kind: 'checked', method: 'GET', mayAddHost: true, ...extra,
+    });
+
+    // At the bound of a check's path, and one past it
+    expect((await checked(`/${'a'.repeat(511)}`)).status).toBe(201);
+    expect((await checked(`/${'b'.repeat(512)}`)).status).toBe(400);
+    expect((await checked('/v1/x?token=secret')).status).toBe(400);
+    expect((await checked(`/${'c'.repeat(2_999)}`)).status).toBe(400);
+    expect((await checked('/v1/x', { method: undefined })).status).toBe(400);
+    expect((await checked('/v1/x', { method: 'PUT' })).status).toBe(400);
+    // Any routed path: printable ASCII, at most 2,048 characters, so at most 2,048 bytes
+    for (const path of ['/v1/é', '/v1/a b', '/v1/\u0000', `/${'d'.repeat(2_048)}`])
+      expect((await call('PUT', '/internal/v1/routed-endpoints', { host: 'bounds.example.com', path })).status, path.slice(0, 20)).toBe(400);
+    const rows = await database.db.select({ path: routedEndpoints.path }).from(routedEndpoints).where(eq(routedEndpoints.host, 'bounds.example.com'));
+    expect(rows.map(row => row.path.length)).toEqual([512]);
+    expect(JSON.stringify(rows)).not.toContain('token=secret');
   });
 
   it('needs the shared secret', async () => {

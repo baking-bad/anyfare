@@ -2,18 +2,21 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createLogger } from '@anyfare/common';
 import { loadPlatformConfig, type PlatformConfig } from '@anyfare/core';
-import { routedEndpoints } from '@anyfare/db';
+import { createRoutingRepository, routedEndpoints } from '@anyfare/db';
 import { createFakeClock, createTestDatabase, createTestRedis, fixtureTime, type TestDatabase, type TestRedis } from '@anyfare/testing';
 
 import { createApp, type ApiServer } from '../../src/app.js';
+import { catalogCacheMs } from '../../src/catalog/routes.js';
 
 let database: TestDatabase;
 let redis: TestRedis;
 let config: PlatformConfig;
 const servers: ApiServer[] = [];
 
+const clock = createFakeClock('2026-11-12T10:00:00.000Z');
+
 const start = async (platform: PlatformConfig): Promise<string> => {
-  const server = createApp({ config: platform, logger: createLogger({ level: 'silent' }), postgres: database.postgres, redis, clock: createFakeClock() });
+  const server = createApp({ config: platform, logger: createLogger({ level: 'silent' }), postgres: database.postgres, redis, clock });
   servers.push(server);
 
   return `http://127.0.0.1:${(await server.listen({ host: '127.0.0.1', port: 0, metricsPort: 0 })).port}`;
@@ -29,6 +32,7 @@ interface Item {
   readonly currency: string;
   readonly methods: readonly string[];
   readonly verified: boolean;
+  readonly status: string;
   readonly updatedAt: string;
   readonly link: string;
 }
@@ -88,6 +92,7 @@ describe('GET /v1/catalog', () => {
       currency: 'USD',
       methods: ['credits', 'x402', 'mpp'],
       verified: false,
+      status: 'paid',
       updatedAt: fixtureTime(0, 9, 8, 0, 0, 0),
       link: `${config.urls.pay.replace(/\/+$/, '')}/weather.example.com/v1/forecast`,
     });
@@ -107,6 +112,36 @@ describe('GET /v1/catalog', () => {
     expect((await list(url, '?q=v1_f')).body.endpoints).toEqual([]);
     expect((await list(url, '?maxPrice=0.5')).body.endpoints.map(item => item.host)).toEqual(['weather.example.com']);
     expect((await list(url, '?maxPrice=3&q=example.com')).body.endpoints).toHaveLength(2);
+  });
+
+  it('lists an endpoint a check found payable as checked, and leaves out a blocked host\'s at once, with its port too', async () => {
+    const url = await start(config);
+    const routing = createRoutingRepository({ db: database.db, clock: createFakeClock('2026-11-12T10:00:00.000Z') });
+    await routing.registerEndpoint({ host: 'checked.example.dev', path: '/v1/found', lastPrice: 1_100n, checked: { method: 'POST', mayAddHost: true } });
+    await routing.registerEndpoint({ host: 'spam.example.dev', path: '/v1/x', lastPrice: 1_100n, checked: { method: 'GET', mayAddHost: true } });
+    await routing.registerEndpoint({ host: 'spam.example.dev:8443', path: '/v1/paid', lastPrice: 1_100n });
+
+    const before = await list(url, '?q=example.dev');
+    await routing.block({ host: 'spam.example.dev', reason: 'abuse' });
+    const cached = await list(url, '?q=EXAMPLE.dev');
+    // Past the 10 seconds a page is kept in the process
+    clock.advance(catalogCacheMs);
+    const after = await list(url, '?q=example.dev');
+    // A parent domain's entry covers its subdomains
+    await routing.registerEndpoint({ host: 'a.parent.example.dev', path: '/v1/x', checked: { method: 'GET', mayAddHost: true } });
+    await routing.registerEndpoint({ host: 'parent.example.dev', path: '/v1/x', lastPrice: 1_000n });
+    await routing.block({ host: 'parent.example.dev', reason: 'abuse' });
+    clock.advance(catalogCacheMs);
+    const parentBlocked = await list(url, '?q=parent.example.dev');
+
+    expect(before.body.endpoints.map(item => [item.host, item.status])).toEqual([
+      ['checked.example.dev', 'checked'], ['spam.example.dev', 'checked'], ['spam.example.dev:8443', 'paid'],
+    ]);
+    expect(before.body.endpoints[0]).toMatchObject({ path: '/v1/found', priceFrom: '0.0011', verified: false, summary: expect.stringContaining('No paid call has reached it yet') });
+    // The same page, whatever the search's case, from the process until it is stale
+    expect(cached.body).toEqual(before.body);
+    expect(after.body.endpoints.map(item => item.host)).toEqual(['checked.example.dev']);
+    expect(parentBlocked.body.endpoints).toEqual([]);
   });
 
   it('offers MPP only when the config has a recipient, and x402 only for a price an asset accepts', async () => {
@@ -135,5 +170,7 @@ describe('GET /v1/catalog', () => {
     for (const query of ['?limit=0', '?limit=101', '?cursor=-1', '?cursor=1234567890', '?maxPrice=free', `?q=${'a'.repeat(201)}`])
       expect((await list(url, query)).status, query).toBe(400);
     expect((await list(url, '?limit=100')).status).toBe(200);
+    // Pages reach 10,000 endpoints deep, no further
+    expect((await list(url, '?cursor=10000')).body).toEqual({ endpoints: [], next: null });
   });
 });

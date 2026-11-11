@@ -158,7 +158,7 @@ export const createApp = ({
   registerLedgerRoutes(app, { db: postgres.db, clock, ids, authenticate });
   // Public documents share one limit per client IP
   const documentsLimit = createIpLimit({ limiter, limit: config.rateLimits.documents, name: 'documents' });
-  registerCatalogRoutes(app, { db: postgres.db, config, limit: documentsLimit });
+  registerCatalogRoutes(app, { db: postgres.db, config, limit: documentsLimit, clock });
   registerTopupRoutes(app, {
     topups: createTopupService({
       db: postgres.db,

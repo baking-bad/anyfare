@@ -128,7 +128,7 @@ describe('the public numbers before any count', () => {
     });
     expect((await get('/v1/stats/top')).body).toEqual({ period: '30d', updatedAt: null, services: [], endpoints: [], paidWith: [], topupTokens: [] });
     expect((await get('/v1/services')).body).toEqual({
-      services: [], page: 1, size: 20, total: 0, totalCapped: false, totals: { services: 0, paidEndpoints: 0, calls30d: 0 }, updatedAt: null,
+      services: [], page: 1, size: 20, total: 0, totalCapped: false, totals: { services: 0, paidServices: 0, paidEndpoints: 0, calls30d: 0 }, updatedAt: null,
     });
     expect((await get('/v1/endpoints/stats?host=one.example.com&path=/v1/one&period=7d')).body).toEqual({
       host: 'one.example.com', path: '/v1/one', period: '7d', updatedAt: noon, stats: { calls: 0, buyers: 0, volume: '0', successRate: null, p50Ms: null },
@@ -150,6 +150,8 @@ describe('the stored public numbers', () => {
   const counted = new Date('2026-12-15T11:00:00.000Z');
 
   beforeAll(async () => {
+    // A server of its own: the list read before any count is kept in the other's process for a few seconds
+    url = await start(config);
     const stats = store();
     // Written by an earlier count, and vouched for by the last complete one
     await stats.putServices({
@@ -196,11 +198,15 @@ describe('the stored public numbers', () => {
     };
 
     const answer = await get('/v1/services');
-    expect(answer.headers.get('cache-control')).toBe('public, max-age=60');
+    // A newly checked host shows within a minute: 5 s in the process, 55 in a cache in front
+    expect(answer.headers.get('cache-control')).toBe('public, max-age=55');
     // Five services had a paid call in 30 days and four are kept: a search may miss one
-    expect(answer.body).toMatchObject({ page: 1, size: 20, total: 4, totalCapped: true, totals: { services: 5, paidEndpoints: 7, calls30d: 11 }, updatedAt: marked.toISOString() });
+    expect(answer.body).toMatchObject({
+      page: 1, size: 20, total: 4, totalCapped: true, totals: { services: 5, paidServices: 5, paidEndpoints: 7, calls30d: 11 }, updatedAt: marked.toISOString(),
+    });
     expect((answer.body?.['services'] as unknown[])[0]).toEqual({
-      host: 'one.example.com', paidEndpoints: 1, priceFrom: '0.01', currency: 'USD', calls: 4, buyers: 1, volume: '0.04', successRate: 1, p50Ms: 100, trend: [],
+      host: 'one.example.com', status: 'paid', paidEndpoints: 1, priceFrom: '0.01', currency: 'USD', calls: 4, buyers: 1, volume: '0.04', successRate: 1, p50Ms: 100,
+      trend: [], listedAt: null, checkedAt: null,
     });
     expect((await hosts('')).hosts).toEqual(['one.example.com', 'three.example.org', 'two.example.com', 'four.example.net']);
     expect((await hosts('?sort=buyers')).hosts).toEqual(['two.example.com', 'four.example.net', 'one.example.com', 'three.example.org']);
@@ -221,15 +227,22 @@ describe('the stored public numbers', () => {
   it('answer a stored service\'s page with its stored endpoints by the period\'s calls, links made at the time, any case of the host', async () => {
     const answer = await get('/v1/services/ONE.Example.com?period=today');
 
-    expect(answer.headers.get('cache-control')).toBe('public, max-age=60');
+    // What checks list of it shows within seconds
+    expect(answer.headers.get('cache-control')).toBe('public, max-age=3');
     expect(answer.body).toEqual({
-      host: 'one.example.com', period: 'today', paidEndpoints: 2, exact: true,
+      host: 'one.example.com', period: 'today', paidEndpoints: 2, exact: true, status: 'paid', listedAt: null, checkedAt: null,
       // Its rows were written at 11:00 and vouched for by the count completed at 11:55
       updatedAt: marked.toISOString(),
       stats: { calls: 4, callsBefore: 0, volume: '0.04', buyers: 1, returningShare: 0, successRate: 1, failedCalls: 0, p50Ms: 250, p95Ms: 385 },
       endpoints: [
-        { path: '/v1/one', method: 'GET', priceNow: '0.01', calls: 3, buyers: 1, volume: '0.03', successRate: 1, p50Ms: 100, link: 'https://pay.anyfare.test/one.example.com/v1/one' },
-        { path: '/v1/two', method: 'GET', priceNow: '0.01', calls: 1, buyers: 1, volume: '0.01', successRate: 1, p50Ms: 100, link: 'https://pay.anyfare.test/one.example.com/v1/two' },
+        {
+          path: '/v1/one', method: 'GET', priceNow: '0.01', calls: 3, buyers: 1, volume: '0.03', successRate: 1, p50Ms: 100, link: 'https://pay.anyfare.test/one.example.com/v1/one',
+          status: 'paid', checkedAt: null,
+        },
+        {
+          path: '/v1/two', method: 'GET', priceNow: '0.01', calls: 1, buyers: 1, volume: '0.01', successRate: 1, p50Ms: 100, link: 'https://pay.anyfare.test/one.example.com/v1/two',
+          status: 'paid', checkedAt: null,
+        },
       ],
       daily: daysTo15(30).map(day => (day === '2026-12-15' ? { day, calls: 4, volume: '0.04', buyers: 1 } : { day, calls: 0, volume: '0', buyers: 0 })),
       byPaidWith: [{ paidWith: 'credits', calls: 4, share: 1, buyers: 1, volume: '0.04' }],
@@ -374,7 +387,7 @@ describe('the public numbers\' queries', () => {
       expect(errorCode(await get(`/v1/endpoints/stats?host=${encodeURIComponent(host)}&path=/v1/one`)), host).toBe('invalid_request');
     }
     // The route itself answers, not the router: no paid call reached it
-    expect(await get(`/v1/services/${longest}`)).toMatchObject({ status: 404, body: { error: { code: 'not_found', message: 'No paid call has reached this host' } } });
+    expect(await get(`/v1/services/${longest}`)).toMatchObject({ status: 404, body: { error: { code: 'not_found', message: 'No paid call or payable check has listed this host' } } });
     expect(errorCode(await get('/v1/services/'))).toBe('invalid_request');
     expect((await get(`/v1/endpoints/stats?host=${longest}&path=/v1/one`)).status).toBe(200);
     for (const query of [
@@ -548,8 +561,11 @@ describe('the shared parts of the public numbers', () => {
   it('are kept by a cache only when they succeed: an error is no-store', async () => {
     for (const path of ['/v1/services/nothing.example.com', '/v1/stats/top?period=90d', '/v1/endpoints/stats?host=a..b&path=/x'])
       expect((await get(path)).headers.get('cache-control'), path).toBe('no-store');
-    for (const path of ['/v1/stats', '/v1/stats/top', '/v1/services', '/v1/services/asked.example.com', '/v1/endpoints/stats?host=asked.example.com&path=/v1/a'])
+    for (const path of ['/v1/stats', '/v1/stats/top', '/v1/endpoints/stats?host=asked.example.com&path=/v1/a'])
       expect((await get(path)).headers.get('cache-control'), path).toBe('public, max-age=60');
+    expect((await get('/v1/services')).headers.get('cache-control')).toBe('public, max-age=55');
+    // A service's page shows a newly checked link within seconds
+    expect((await get('/v1/services/asked.example.com')).headers.get('cache-control')).toBe('public, max-age=3');
   });
 
   it('answer any origin, on errors too, and the preflight', async () => {

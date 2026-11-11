@@ -185,10 +185,12 @@ export const createRecentStats = ({
     const days = await step(ms => counter.serviceDays({ scope: { ...scope, from: monthFrom }, timeoutMs: ms }));
     const before = await step(ms => counter.callsIn({ scope, windows: recentPeriods.map(period => ({ period, ...periodBefore(period, countedAt) })), timeoutMs: ms }));
     const prices = await step(ms => counter.priceFrom({ hostHashes, from: monthFrom, to, timeoutMs: ms }));
+    const listed = await step(ms => counter.listedAt({ hosts: batch.map(service => service.host), timeoutMs: ms }));
 
     const rows = batch.map(service => buildServiceRow({
       hostHash: service.hostHash, host: service.host, month: counted.counts.find(row => row.hostHash === service.hostHash && row.period === '30d'),
       priceFrom: prices.get(service.hostHash), daily: days.filter(day => day.hostHash === service.hostHash), now: countedAt,
+      listedAt: listed.get(service.host),
     }));
     const pages = batch.flatMap(service => recentPeriods.map(period => ({
       hostHash: service.hostHash,

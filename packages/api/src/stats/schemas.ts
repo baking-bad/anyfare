@@ -1,4 +1,4 @@
-import { statsPeriods } from '@anyfare/core';
+import { listedStatuses, statsPeriods } from '@anyfare/core';
 
 // Fastify schemas of the public numbers. A response schema also keeps out any field it doesn't name.
 
@@ -29,7 +29,10 @@ export const noNul = '^[^\\u0000]*$';
 // Pages of services reach this far
 export const maxServicesPage = 10_000;
 
-export const servicesSorts = ['calls', 'buyers', 'volume', 'endpoints', 'price'] as const;
+// `newest`: the most recently listed first
+export const servicesSorts = ['calls', 'buyers', 'volume', 'endpoints', 'price', 'newest'] as const;
+// `paid`: a paid call through Anyfare reached it, or one of the service's endpoints. `checked`: only a payable check listed it.
+const listedStatus = { type: 'string', enum: [...listedStatuses] } as const;
 
 // The platform's numbers and the live ones take no query
 export const noQuerySchema = { type: 'object', properties: {}, additionalProperties: false } as const;
@@ -87,6 +90,8 @@ export const topSchema = object({
 export const servicesSchema = object({
   services: list(object({
     host: string,
+    status: listedStatus,
+    // Its listed endpoints, of paid calls and of checks
     paidEndpoints: integer,
     priceFrom: nullable('string'),
     currency: { type: 'string', enum: ['USD'] },
@@ -96,13 +101,17 @@ export const servicesSchema = object({
     successRate: nullable('number'),
     p50Ms: nullable('integer'),
     trend: list(integer),
+    // When its first endpoint was listed, and when a check last confirmed one: null when never
+    listedAt: nullableTime,
+    checkedAt: nullableTime,
   })),
   page: integer,
   size: integer,
   total: integer,
   // More services had a paid call in 30 days than the list keeps: a search may miss some
   totalCapped: { type: 'boolean' },
-  totals: object({ services: integer, paidEndpoints: integer, calls30d: integer }),
+  // `services`: every listed one; `paidServices`: those a paid call reached in 30 days
+  totals: object({ services: integer, paidServices: integer, paidEndpoints: integer, calls30d: integer }),
   updatedAt: nullableTime,
 });
 
@@ -110,6 +119,10 @@ export const serviceSchema = object({
   host: string,
   period: string,
   updatedAt: time,
+  status: listedStatus,
+  listedAt: nullableTime,
+  checkedAt: nullableTime,
+  // Its listed endpoints, of paid calls and of checks
   paidEndpoints: integer,
   stats: object({
     calls: integer,
@@ -122,6 +135,7 @@ export const serviceSchema = object({
     p50Ms: nullable('integer'),
     p95Ms: nullable('integer'),
   }),
+  // Those of paid calls, then those listed only by a check
   endpoints: list(object({
     path: string,
     method: nullable('string'),
@@ -132,6 +146,8 @@ export const serviceSchema = object({
     successRate: nullable('number'),
     p50Ms: nullable('integer'),
     link: string,
+    status: listedStatus,
+    checkedAt: nullableTime,
   })),
   daily: list(object({ day, calls: integer, volume: string, buyers: integer })),
   byPaidWith: list(object({ paidWith: string, calls: integer, share: number, buyers: integer, volume: string })),
