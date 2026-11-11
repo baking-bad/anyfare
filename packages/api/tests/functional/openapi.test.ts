@@ -155,14 +155,18 @@ describe('the document\'s routes', () => {
   it('are every public route the listener registers, and only those: a route missing from the document fails here', () => {
     const registered = registeredRoutes(server.app);
     const shown = registered.filter(route => !route.schema?.hide);
-    // OPTIONS is only ever a public read's CORS preflight
+    // OPTIONS is only ever a CORS preflight: a public read's, or the console's on a route behind the master key
     const expected = shown.flatMap(route => route.methods.filter(method => method !== 'OPTIONS').map(method => `${method} ${pathOf(route)}`));
     const documented = operations(document).map(({ method, path }) => `${method} ${path}`);
 
     expect(documented.sort()).toEqual([...new Set(expected)].sort());
     // Readiness, and the host's own robots.txt
     expect(registered.filter(route => route.schema?.hide).map(route => `${route.methods.join(',')} ${route.url}`).sort()).toEqual(['GET /_/ready', 'GET /robots.txt']);
-    expect(registered.filter(route => route.methods.includes('OPTIONS')).every(route => route.methods.includes('GET'))).toBe(true);
+    // A public read's beside its GET; the console's on its own, at the URL of a route that takes the master key, or signs up
+    const keyed = new Set(shown.filter(route => route.schema?.security !== undefined || route.url === '/v1/accounts').map(route => route.url));
+    const preflights = registered.filter(route => route.methods.includes('OPTIONS'));
+    expect(preflights.filter(route => !route.methods.includes('GET') && !(route.methods.length === 1 && keyed.has(route.url)))).toEqual([]);
+    expect(preflights.filter(route => !route.methods.includes('GET')).map(route => route.url).sort()).toEqual([...keyed].sort());
     // Exactly these: a route registered on the public listener by mistake fails here
     expect(documented.sort()).toEqual([
       'DELETE /v1/keys/{id}', 'GET /_/health', 'GET /openapi.json', 'GET /v1/account', 'GET /v1/balance', 'GET /v1/calls', 'GET /v1/calls/stream',

@@ -28,7 +28,7 @@ export const createApiDocument = (app: FastifyInstance, config: PlatformConfig):
   errorStatuses,
   keys: { masterKey: masterKeyScheme },
   bodyErrors: ['invalid_request', 'request_too_large', 'unsupported_media_type'],
-  // Every OPTIONS on this host is a public read's CORS preflight
+  // Every OPTIONS on this host is a CORS preflight: a public read's, or the console's on a route behind the master key
   omitMethods: ['OPTIONS'],
 });
 

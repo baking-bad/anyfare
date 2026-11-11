@@ -6,6 +6,7 @@ import type { Topup } from '@anyfare/db';
 import { formatTokenAmount } from '@anyfare/topups';
 
 import { authenticatedAccount, masterKeySecurity } from '../accounts/auth.js';
+import type { AllowConsole } from '../accounts/consoleCors.js';
 import { errorStatuses } from '../errors.js';
 import { publicCors, publicReadMethods } from '../public/cors.js';
 import { idParamsSchema, integer, list, nullableString, nullableTime, nullableUsdString, object, string, time, usdString } from '../schemas.js';
@@ -22,6 +23,8 @@ export interface TopupRoutesOptions {
   // Counts top-ups per account
   readonly limiter: RateLimiter;
   readonly limit: RateLimit;
+  // The console's CORS, first in the scope behind the master key
+  readonly allowConsole: AllowConsole;
 }
 
 // What top-ups add to the balance
@@ -134,10 +137,10 @@ const toTopupBody = (topup: Topup) => ({
 
 /**
  * `GET /v1/topups/options` without a key, limited per client IP and readable from any origin, and behind the master key,
- * `POST /v1/topups` and `GET /v1/topups/{id}`. While top-ups are off, each answers
+ * `POST /v1/topups` and `GET /v1/topups/{id}`, which the console's origin may call. While top-ups are off, each answers
  * `503 topups_unavailable`.
  */
-export const registerTopupRoutes = (app: FastifyInstance, { topups, enabled, authenticate, documentsLimit, limiter, limit }: TopupRoutesOptions): void => {
+export const registerTopupRoutes = (app: FastifyInstance, { topups, enabled, authenticate, documentsLimit, limiter, limit, allowConsole }: TopupRoutesOptions): void => {
   const whenEnabled = async (request: FastifyRequest, reply: FastifyReply): Promise<FastifyReply | undefined> =>
     enabled ? undefined : answer(request, reply, new TopupsUnavailableError('Top-ups are off'));
 
@@ -184,6 +187,7 @@ export const registerTopupRoutes = (app: FastifyInstance, { topups, enabled, aut
   });
 
   app.register(async scope => {
+    allowConsole(scope);
     scope.addHook('onRequest', authenticate);
     scope.addHook('onRequest', whenEnabled);
 

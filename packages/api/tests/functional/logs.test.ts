@@ -130,7 +130,7 @@ describe('the API\'s startup', () => {
       commit: 'abcdef1',
       logLevel: 'debug',
       environment: 'staging',
-      urls: { website: 'https://anyfare.test', api: 'https://api.anyfare.test', pay: 'https://pay.anyfare.test' },
+      urls: { website: 'https://anyfare.test', api: 'https://api.anyfare.test', pay: 'https://pay.anyfare.test', console: 'https://console.anyfare.test' },
       assets: [
         { name: 'base-usdc', network: 'eip155:84532' },
         { name: 'solana-usdc', network: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1' },

@@ -10,6 +10,7 @@ urls:
   website: https://anyfare.agents.bakingbad.dev
   api: https://api.anyfare.agents.bakingbad.dev
   pay: https://pay.anyfare.agents.bakingbad.dev
+  console: https://console.anyfare.agents.bakingbad.dev
 
 # Extra hosts and IP addresses we own. The hosts of urls are always included.
 ownHosts: []

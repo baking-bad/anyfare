@@ -4,6 +4,8 @@ export { errorStatuses, InvalidRequestError, NotFoundError, StatsUnavailableErro
 export { defaultInternalPort, defaultMetricsPort, defaultPort, startApi, statsConnections } from './start.js';
 export { authenticatedAccount, createMasterKeyAuth, decorateAccount, masterKeyScheme, masterKeySecurity } from './accounts/auth.js';
 export type { AuthenticatedAccount, MasterKeyAuthOptions } from './accounts/auth.js';
+export { createConsoleCors } from './accounts/consoleCors.js';
+export type { AllowConsole } from './accounts/consoleCors.js';
 export { accountIdPrefix, createAccountService, keyIdPrefix } from './accounts/service.js';
 export type { AccountService, AccountServiceOptions, CreatedAccount } from './accounts/service.js';
 export { lostKeyNotice, registerAccountRoutes } from './accounts/routes.js';

@@ -45,7 +45,7 @@ export const platformConfigSchema: SchemaObject = {
     version: constant(1),
     environment: oneOfValues(['staging', 'production']),
     logger: object({ level: oneOfValues(['trace', 'debug', 'info', 'warn', 'error', 'fatal']) }),
-    urls: object({ website: httpsOrigin, api: httpsOrigin, pay: httpsOrigin }, ['website', 'api', 'pay']),
+    urls: object({ website: httpsOrigin, api: httpsOrigin, pay: httpsOrigin, console: httpsOrigin }, ['website', 'api', 'pay']),
     ownHosts: array(host, { uniqueItems: true }),
     keyPrefixes: object({ master: keyPrefix, payment: keyPrefix }, ['master', 'payment']),
     paymentKeyDefaults: object({ dailyBudget: usdAmount }),

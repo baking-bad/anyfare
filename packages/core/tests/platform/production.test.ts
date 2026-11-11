@@ -69,7 +69,9 @@ describe('config/production.yaml', () => {
       website: 'https://anyfare.agents.bakingbad.dev',
       api: 'https://api.anyfare.agents.bakingbad.dev',
       pay: 'https://pay.anyfare.agents.bakingbad.dev',
+      console: 'https://console.anyfare.agents.bakingbad.dev',
     });
+    expect(config.ownHosts).toContain('console.anyfare.agents.bakingbad.dev');
     expect(config.rateLimits.signup).toEqual({ requests: 200, windowSeconds: 3600 });
     expect(config.rateLimits.paymentKey).toEqual({ requests: 600, windowSeconds: 60 });
     expect(config.rateLimits.unpaidIp).toEqual({ requests: 60, windowSeconds: 60 });

@@ -4,6 +4,7 @@ import { formatUsd, parseUsd, usdAmountPattern, type Clock, type MicroUsd } from
 import type { PaymentKeyChanges } from '@anyfare/core';
 
 import { authenticatedAccount, masterKeySecurity } from '../accounts/auth.js';
+import type { AllowConsole } from '../accounts/consoleCors.js';
 import { InvalidRequestError } from '../errors.js';
 import { idParamsSchema, list, nullableTime, nullableUsdString, object, string, time, usdString } from '../schemas.js';
 import type { PaymentKeyService, PaymentKeyView } from './service.js';
@@ -13,6 +14,8 @@ export interface KeyRoutesOptions {
   // The master key hook
   readonly authenticate: onRequestHookHandler;
   readonly clock: Clock;
+  // The console's CORS, first in the scope
+  readonly allowConsole: AllowConsole;
 }
 
 const maxLabelLength = 60;
@@ -120,10 +123,11 @@ const toKeyBody = ({ key, spent }: PaymentKeyView) => ({
 
 /**
  * Behind the master key: `POST /v1/keys`, `GET /v1/keys`, `PATCH /v1/keys/{id}`, and
- * `DELETE /v1/keys/{id}`. Amounts are USD decimal strings.
+ * `DELETE /v1/keys/{id}`. Amounts are USD decimal strings. The console's origin may call each.
  */
-export const registerKeyRoutes = (app: FastifyInstance, { keys, authenticate, clock }: KeyRoutesOptions): void => {
+export const registerKeyRoutes = (app: FastifyInstance, { keys, authenticate, clock, allowConsole }: KeyRoutesOptions): void => {
   app.register(async scope => {
+    allowConsole(scope);
     scope.addHook('onRequest', authenticate);
 
     scope.post<{ Body: LimitsBody | undefined }>('/v1/keys', {

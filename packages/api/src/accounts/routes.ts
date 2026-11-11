@@ -5,6 +5,7 @@ import { InvalidKeyError, type Account } from '@anyfare/core';
 
 import { object, string, time, usdString } from '../schemas.js';
 import { authenticatedAccount, masterKeySecurity } from './auth.js';
+import type { AllowConsole } from './consoleCors.js';
 import type { FreeCreditsDecider } from './freeCredits.js';
 import type { AccountService } from './service.js';
 
@@ -36,6 +37,8 @@ export interface AccountRoutesOptions {
   readonly signupLimit: onRequestHookHandler;
   // The free Credits a new account gets
   readonly freeCredits: FreeCreditsDecider;
+  // The console's CORS, first in each scope
+  readonly allowConsole: AllowConsole;
 }
 
 const toAccountBody = (account: Account) => ({
@@ -46,39 +49,44 @@ const toAccountBody = (account: Account) => ({
 /**
  * `POST /v1/accounts`, and behind the master key, `GET /v1/account` and
  * `POST /v1/account/master-key/rotate`. A key appears once, in the response that creates it. A new
- * account's answer says what free Credits it got, `"0"` when none.
+ * account's answer says what free Credits it got, `"0"` when none. The console's origin may call each.
  */
-export const registerAccountRoutes = (app: FastifyInstance, { accounts, authenticate, signupLimit, freeCredits }: AccountRoutesOptions): void => {
-  app.post<{ Body: Record<string, never> | undefined }>('/v1/accounts', {
-    onRequest: signupLimit,
-    // No body is the same as an empty one
-    preValidation: async request => {
-      request.body ??= {};
-    },
-    schema: {
-      summary: 'Sign up: a new account and its master key, shown once',
-      description: 'No key, and no body. Limited per address. A new account may be given free Credits: `freeCredits` says how many.',
-      tags: ['accounts'],
-      errors: ['rate_limited'],
-      body: signupBodySchema,
-      response: { 201: signupSchema },
-    },
-  }, async (request, reply) => {
-    // Decided once the signup limit and the body let the request through, so a refused sign-up uses up no gift
-    const gift = await freeCredits(request);
-    const { account, masterKey, freeCredits: given } = await accounts.create({ requestId: request.id, freeCredits: gift });
-    const key = masterKey.expose();
-    masterKey.destroy();
-    // The account's ID only, never the key
-    request.log.info({ accountId: account.id, freeCredits: formatUsd(given) }, 'An account was created');
+export const registerAccountRoutes = (app: FastifyInstance, { accounts, authenticate, signupLimit, freeCredits, allowConsole }: AccountRoutesOptions): void => {
+  app.register(async scope => {
+    allowConsole(scope);
 
-    return reply
-      .status(201)
-      .header('cache-control', 'no-store')
-      .send({ ...toAccountBody(account), masterKey: key, freeCredits: formatUsd(given), notice: lostKeyNotice });
+    scope.post<{ Body: Record<string, never> | undefined }>('/v1/accounts', {
+      onRequest: signupLimit,
+      // No body is the same as an empty one
+      preValidation: async request => {
+        request.body ??= {};
+      },
+      schema: {
+        summary: 'Sign up: a new account and its master key, shown once',
+        description: 'No key, and no body. Limited per address. A new account may be given free Credits: `freeCredits` says how many.',
+        tags: ['accounts'],
+        errors: ['rate_limited'],
+        body: signupBodySchema,
+        response: { 201: signupSchema },
+      },
+    }, async (request, reply) => {
+      // Decided once the signup limit and the body let the request through, so a refused sign-up uses up no gift
+      const gift = await freeCredits(request);
+      const { account, masterKey, freeCredits: given } = await accounts.create({ requestId: request.id, freeCredits: gift });
+      const key = masterKey.expose();
+      masterKey.destroy();
+      // The account's ID only, never the key
+      request.log.info({ accountId: account.id, freeCredits: formatUsd(given) }, 'An account was created');
+
+      return reply
+        .status(201)
+        .header('cache-control', 'no-store')
+        .send({ ...toAccountBody(account), masterKey: key, freeCredits: formatUsd(given), notice: lostKeyNotice });
+    });
   });
 
   app.register(async scope => {
+    allowConsole(scope);
     scope.addHook('onRequest', authenticate);
 
     scope.get('/v1/account', {

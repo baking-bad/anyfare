@@ -15,6 +15,7 @@ import {
 import { createOneClickClient, createTokenCatalog, type OneClickClient, type TokenCatalog } from '@anyfare/topups';
 
 import { createMasterKeyAuth, decorateAccount } from './accounts/auth.js';
+import { createConsoleCors } from './accounts/consoleCors.js';
 import { createFreeCredits, createFreeCreditsCounter } from './accounts/freeCredits.js';
 import { registerAccountRoutes } from './accounts/routes.js';
 import { createAccountService } from './accounts/service.js';
@@ -139,11 +140,14 @@ export const createApp = ({
   acceptEmptyJson(app);
 
   const authenticate = createMasterKeyAuth({ keyPrefixes: config.keyPrefixes, apiKeys });
+  // The console's page calls the routes behind the master key from the browser: they answer its origin, and no other
+  const allowConsole = createConsoleCors(config.urls.console);
   registerAccountRoutes(app, {
     accounts: createAccountService({ db: postgres.db, clock, ids, random, keyPrefixes: config.keyPrefixes }),
     authenticate,
     signupLimit: createSignupLimit({ limiter, limit: config.rateLimits.signup }),
     freeCredits: createFreeCredits({ config: config.freeCredits, limiter, clock, record: createFreeCreditsCounter(server.metrics.registry) }),
+    allowConsole,
   });
   registerKeyRoutes(app, {
     keys: createPaymentKeyService({
@@ -158,8 +162,9 @@ export const createApp = ({
     }),
     authenticate,
     clock,
+    allowConsole,
   });
-  registerLedgerRoutes(app, { db: postgres.db, clock, ids, authenticate });
+  registerLedgerRoutes(app, { db: postgres.db, clock, ids, authenticate, allowConsole });
   // Public documents share one limit per client IP
   const documentsLimit = createIpLimit({ limiter, limit: config.rateLimits.documents, name: 'documents' });
   // The public reads of what routing listed, on the public reads' pool, with one read of the blocklist every few seconds
@@ -181,6 +186,7 @@ export const createApp = ({
     documentsLimit,
     limiter,
     limit: config.rateLimits.topups,
+    allowConsole,
   });
   // Public reads of calls and numbers share one limit per client IP
   const publicReadsLimit = createIpLimit({ limiter, limit: config.rateLimits.publicReads, name: 'publicReads' });

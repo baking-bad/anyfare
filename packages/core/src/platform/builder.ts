@@ -210,6 +210,7 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
     hostOf(document.urls.website),
     hostOf(document.urls.api),
     hostOf(document.urls.pay),
+    ...document.urls.console === undefined ? [] : [hostOf(document.urls.console)],
     ...(document.ownHosts ?? []).map(item => item.toLowerCase()),
   ]);
   const assets = document.assets.map((asset): Asset => ({

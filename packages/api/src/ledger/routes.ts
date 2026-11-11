@@ -5,6 +5,7 @@ import type { Payment } from '@anyfare/core';
 import { createLedger, createPaymentRepository, type Database } from '@anyfare/db';
 
 import { authenticatedAccount, masterKeySecurity } from '../accounts/auth.js';
+import type { AllowConsole } from '../accounts/consoleCors.js';
 import { list, nullableString, object, string, time, usdString } from '../schemas.js';
 
 export interface LedgerRoutesOptions {
@@ -13,6 +14,8 @@ export interface LedgerRoutesOptions {
   readonly ids: IdGenerator;
   // The master key hook
   readonly authenticate: onRequestHookHandler;
+  // The console's CORS, first in the scope
+  readonly allowConsole: AllowConsole;
 }
 
 const defaultPageSize = 50;
@@ -66,12 +69,16 @@ const toPaymentBody = (payment: Payment) => ({
   updatedAt: payment.updatedAt.toISOString(),
 });
 
-/** Behind the master key: `GET /v1/balance` and `GET /v1/payments`. Amounts are USD decimal strings. */
-export const registerLedgerRoutes = (app: FastifyInstance, { db, clock, ids, authenticate }: LedgerRoutesOptions): void => {
+/**
+ * Behind the master key: `GET /v1/balance` and `GET /v1/payments`. Amounts are USD decimal strings. The console's
+ * origin may call each.
+ */
+export const registerLedgerRoutes = (app: FastifyInstance, { db, clock, ids, authenticate, allowConsole }: LedgerRoutesOptions): void => {
   const ledger = createLedger({ db, clock, ids });
   const payments = createPaymentRepository({ db, clock });
 
   app.register(async scope => {
+    allowConsole(scope);
     scope.addHook('onRequest', authenticate);
 
     scope.get('/v1/balance', {

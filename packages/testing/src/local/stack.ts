@@ -84,6 +84,9 @@ export interface StackOptions {
   readonly scratch?: boolean;
   // A port of 0 takes a free one. Default: defaultStackPorts.
   readonly ports?: Partial<StackPorts>;
+  // The console's origin, which the Platform API answers CORS for: the website's server under another host name.
+  // Default: CONSOLE_URL of the environment, else http://127.0.0.1:<the website's port>.
+  readonly console?: string;
   // Default: CONFIG_PATH of the environment, else config/example.yaml
   readonly configPath?: string;
   // Default: warnings only
@@ -98,6 +101,7 @@ export interface LocalStack {
     readonly api: string;
     readonly pay: string;
     readonly website: string;
+    readonly console: string;
     readonly paidApi: string;
     readonly facilitator: string;
     readonly oneClick: string;
@@ -148,6 +152,16 @@ const hostOf = (url: string): string => {
   return parsed.port === '' ? parsed.hostname : `${parsed.hostname}:${parsed.port}`;
 };
 
+// The console's origin: the option, else CONSOLE_URL, else the website's server under 127.0.0.1
+const consoleOriginOf = (option: string | undefined, env: Readonly<Record<string, string | undefined>>, websitePort: number): string => {
+  const value = option?.trim() || env['CONSOLE_URL']?.trim() || `http://127.0.0.1:${websitePort}`;
+  const url = URL.parse(value);
+  if (url === null || (url.protocol !== 'http:' && url.protocol !== 'https:'))
+    throw new StackPrerequisiteError(`The console's origin must be an HTTP or HTTPS origin, such as http://127.0.0.1:${websitePort}. Check CONSOLE_URL.`);
+
+  return url.origin;
+};
+
 /**
  * Starts everything, in order, and returns once each app listens. A failure closes what had started. The
  * proxy reaches the fake paid API the way the proxy's own functional tests do: its Outbound HTTP gets a
@@ -164,6 +178,7 @@ export const startLocalStack = async (options: StackOptions): Promise<LocalStack
   const ports: StackPorts = Object.fromEntries(
     await Promise.all(Object.entries(requested).map(async ([name, port]) => [name, port === 0 ? await freePort() : port] as const)),
   ) as unknown as StackPorts;
+  const consoleOrigin = consoleOriginOf(options.console, env, ports.website);
 
   const closers: (() => Promise<unknown>)[] = [];
   const closeAll = async (): Promise<void> => {
@@ -230,7 +245,9 @@ export const startLocalStack = async (options: StackOptions): Promise<LocalStack
     }, env);
     const urls = {
       website: `http://localhost:${ports.website}`, api: `http://localhost:${ports.api}`, pay: `http://localhost:${ports.proxy}`,
+      console: consoleOrigin,
     };
+    // The console's host, 127.0.0.1 by default, stays out of the own hosts here: the fake paid API is on it too
     const config: PlatformConfig = { ...loaded, urls, ownHosts: [...new Set([...loaded.ownHosts, 'localhost'])] };
 
     const paidApi = own(await startFakePaidApi({ config, host: fakeApiHost, port: ports.paidApi, tempoRpcUrl: tempoRpc.url }));
@@ -292,7 +309,7 @@ export const startLocalStack = async (options: StackOptions): Promise<LocalStack
       ports,
       config,
       urls: {
-        api: urls.api, pay: urls.pay, website: urls.website, paidApi: `https://${fakeApiHost}:${paidApi.port}`, facilitator: facilitator.url, oneClick: oneClick.url,
+        api: urls.api, pay: urls.pay, website: urls.website, console: urls.console, paidApi: `https://${fakeApiHost}:${paidApi.port}`, facilitator: facilitator.url, oneClick: oneClick.url,
         nearRpc: nearRpc.url, tempoRpc: tempoRpc.url,
       },
       paidApiHost: `${fakeApiHost}:${paidApi.port}`,

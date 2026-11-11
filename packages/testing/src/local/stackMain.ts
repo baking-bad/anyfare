@@ -6,13 +6,14 @@ import { startLocalStack, StackPrerequisiteError, type LocalStack } from './stac
 
 const stackUsage = 'Usage: npm run stack:local [-- --scratch]\n'
   + '  --scratch  runs on a new empty database next to the local one, so every page starts at zero, and drops it when the stack stops\n'
-  + 'Needs Postgres and Redis from docker-compose.yml, and DATABASE_URL and REDIS_URL in .env. LOG_LEVEL sets the apps\' log level (default: warn).';
+  + 'Needs Postgres and Redis from docker-compose.yml, and DATABASE_URL and REDIS_URL in .env. LOG_LEVEL sets the apps\' log level (default: warn).\n'
+  + 'CONSOLE_URL sets the console\'s origin, the only one the Platform API answers CORS for (default: http://127.0.0.1:3000, the website\'s server).';
 
 const json = (field: string): string => `node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).${field}'`;
 
 /** The text printed once the stack is up: its ports, and the commands that try it by hand. */
 export const describeStack = (stack: LocalStack): string => {
-  const { api, pay, website, paidApi } = stack.urls;
+  const { api, pay, website, console: consoleOrigin, paidApi } = stack.urls;
   const check = (path: string): string => `curl -s '${pay}/_/check?url=${paidApi}${path}'`;
 
   return [
@@ -25,6 +26,7 @@ export const describeStack = (stack: LocalStack): string => {
     `  Signer         http://127.0.0.1:${stack.ports.signer}   (metrics on ${stack.ports.signerMetrics})`,
     `  Workers        http://127.0.0.1:${stack.ports.workers}   (health and metrics)`,
     `  Website        ${website}   (not started here: the commands to start it are below)`,
+    `  Console        ${consoleOrigin}   (the website's server under this name; the only origin the Platform API answers CORS for)`,
     '',
     'Fakes',
     `  Paid API       ${paidApi}   (self-signed certificate; the proxy trusts it)`,
@@ -40,10 +42,11 @@ export const describeStack = (stack: LocalStack): string => {
     '',
     'Start the website against this stack, from the repository root, in another shell:',
     '',
-    `  export SITE_URL=${website} CONSOLE_URL=http://localhost:${stack.ports.website + 1} API_URL=${api} PAY_URL=${pay}`,
+    `  export SITE_URL=${website} CONSOLE_URL=${consoleOrigin} API_URL=${api} PAY_URL=${pay}`,
     '  npm run build -w @anyfare/web',
     '  cp -R packages/web/.next/static packages/web/.next/standalone/packages/web/.next/',
-    `  PORT=${stack.ports.website} HOSTNAME=localhost node packages/web/.next/standalone/packages/web/server.js`,
+    // On 127.0.0.1, where both names reach it: Node would listen on ::1 alone for localhost, and the console's name is 127.0.0.1
+    `  PORT=${stack.ports.website} HOSTNAME=127.0.0.1 node packages/web/.next/standalone/packages/web/server.js`,
     '',
     'Try it, in one shell:',
     '',

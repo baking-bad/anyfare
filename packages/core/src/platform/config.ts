@@ -62,6 +62,9 @@ export interface PlatformConfig {
     readonly website: string;
     readonly api: string;
     readonly pay: string;
+    // The console's origin, which the routes behind the master key answer CORS for. Undefined: no browser page may
+    // call them.
+    readonly console?: string;
   };
   // Lowercase hostnames and IP addresses, including the hosts of `urls`
   readonly ownHosts: readonly string[];

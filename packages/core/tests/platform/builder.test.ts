@@ -44,7 +44,7 @@ describe('buildPlatformConfig', () => {
     expect(findAsset(config, 'tempo-pathusd')).toMatchObject({
       network: { id: 'eip155:42431', chain: 'tempo', testnet: true }, address: '0x20c0000000000000000000000000000000000000', decimals: 6, minPrice: 0n,
     });
-    expect(config.ownHosts).toEqual(['anyfare.test', 'api.anyfare.test', 'pay.anyfare.test']);
+    expect(config.ownHosts).toEqual(['anyfare.test', 'api.anyfare.test', 'pay.anyfare.test', 'console.anyfare.test']);
     // Secrets by name only
     expect(findFacilitator(config, 'eip155:84532')?.auth).toEqual({ type: 'cdp', apiKeyId: 'CDP_API_KEY_ID', apiKeySecret: 'CDP_API_KEY_SECRET' });
     expect(findFacilitator(config, 'near:testnet')).toMatchObject({ name: 'near', url: 'http://127.0.0.1:8084', auth: { type: 'api-key', apiKey: 'FACILITATOR_SECRET' } });
@@ -133,6 +133,17 @@ describe('buildPlatformConfig', () => {
     expect(config.timeouts).toEqual({ connectMs: 1_000, requestMs: 30_000, settleMs: 30_000 });
     expect(config.ownHosts).toContain('edge.anyfare.test');
     expect(config.ownHosts).toContain('203.0.113.7');
+  });
+
+  it('takes the console\'s origin, optional, whose host is one of the own hosts', () => {
+    const elsewhere = buildPlatformConfig(document({ urls: { console: 'https://console.elsewhere.test' } }));
+    const without = buildPlatformConfig(document({ urls: { console: undefined } }));
+
+    expect(buildPlatformConfig(document()).urls.console).toBe('https://console.anyfare.test');
+    expect(elsewhere.urls.console).toBe('https://console.elsewhere.test');
+    expect(elsewhere.ownHosts).toEqual(['anyfare.test', 'api.anyfare.test', 'pay.anyfare.test', 'console.elsewhere.test']);
+    expect(without.urls).toEqual({ website: 'https://anyfare.test', api: 'https://api.anyfare.test', pay: 'https://pay.anyfare.test' });
+    expect(without.ownHosts).toEqual(['anyfare.test', 'api.anyfare.test', 'pay.anyfare.test']);
   });
 
   it('is deeply frozen and doesn\'t change the document', () => {
@@ -494,7 +505,7 @@ describe('platformSummary', () => {
 
     expect(summary).toEqual({
       environment: 'staging',
-      urls: { website: 'https://anyfare.test', api: 'https://api.anyfare.test', pay: 'https://pay.anyfare.test' },
+      urls: { website: 'https://anyfare.test', api: 'https://api.anyfare.test', pay: 'https://pay.anyfare.test', console: 'https://console.anyfare.test' },
       assets: [
         { name: 'base-usdc', network: 'eip155:84532' },
         { name: 'solana-usdc', network: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1' },
@@ -538,6 +549,10 @@ describe('assertValidPlatformConfigDocument', () => {
     ['an unknown version', { version: 2 }, '/version', 'must be 1'],
     ['a URL with a path', { urls: { api: 'https://api.anyfare.test/v1' } }, '/urls/api', 'must be an HTTPS origin, such as https://example.com, without a path or a trailing slash'],
     ['an HTTP origin', { urls: { pay: 'http://pay.anyfare.test' } }, '/urls/pay', 'must be an HTTPS origin, such as https://example.com, without a path or a trailing slash'],
+    ['a console URL with a trailing slash', { urls: { console: 'https://console.anyfare.test/' } }, '/urls/console', 'must be an HTTPS origin, such as https://example.com, without a path or a trailing slash'],
+    ['an HTTP console origin', { urls: { console: 'http://console.anyfare.test' } }, '/urls/console', 'must be an HTTPS origin, such as https://example.com, without a path or a trailing slash'],
+    ['a console origin with capitals', { urls: { console: 'https://Console.anyfare.test' } }, '/urls/console', 'must be an HTTPS origin, such as https://example.com, without a path or a trailing slash'],
+    ['a console host without a scheme', { urls: { console: 'console.anyfare.test' } }, '/urls/console', 'must be an HTTPS origin, such as https://example.com, without a path or a trailing slash'],
     ['a key prefix with capitals', { keyPrefixes: { master: 'AFM_' } }, '/keyPrefixes/master', 'must be 2–32 lowercase letters, digits, or underscores, such as af_live_'],
     ['a numeric amount', { paymentKeyDefaults: { dailyBudget: 5 } }, '/paymentKeyDefaults/dailyBudget', 'must be a USD amount as a string with at most 6 decimal places, such as "0.001"'],
     ['an empty asset registry', { assets: [] }, '/assets', 'must have at least 1 item'],

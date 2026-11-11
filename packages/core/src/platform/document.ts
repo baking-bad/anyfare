@@ -7,6 +7,8 @@ export interface PlatformUrlsDocument {
   readonly website: string;
   readonly api: string;
   readonly pay: string;
+  // The console's origin: the routes behind the master key answer CORS for it, and for no other. Absent: for none.
+  readonly console?: string;
 }
 
 export interface KeyPrefixesDocument {
