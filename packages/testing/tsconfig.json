@@ -18,6 +18,24 @@
     },
     {
       "path": "../db"
+    },
+    {
+      "path": "../payments"
+    },
+    {
+      "path": "../topups"
+    },
+    {
+      "path": "../api"
+    },
+    {
+      "path": "../signer"
+    },
+    {
+      "path": "../proxy"
+    },
+    {
+      "path": "../workers"
     }
   ]
 }

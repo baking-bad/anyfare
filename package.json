@@ -18,7 +18,9 @@
     "test:functional": "vitest run --project '*:functional'",
     "test:all": "vitest run",
     "db:generate": "npm run db:generate -w @anyfare/db",
-    "db:migrate": "tsc -b packages/db && node --env-file-if-exists=.env packages/db/dist/migrate.js"
+    "db:migrate": "tsc -b packages/db && node --env-file-if-exists=.env packages/db/dist/migrate.js",
+    "seed:local": "tsc -b packages/testing && node --env-file-if-exists=.env packages/testing/dist/local/seedMain.js",
+    "stack:local": "tsc -b packages/testing && node --env-file-if-exists=.env packages/testing/dist/local/stackMain.js"
   },
   "devDependencies": {
     "@types/node": "^24.19.1",

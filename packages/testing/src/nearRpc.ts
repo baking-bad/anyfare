@@ -134,6 +134,8 @@ export interface FakeNearRpcOptions {
   readonly timeoutMs?: number;
   // The height before the first block. Default: a testnet-like height.
   readonly height?: bigint;
+  // The port to listen on. Default: a free one.
+  readonly port?: number;
 }
 
 // NEAR's access key nonce range: a key starts at (height - 1) × 10^6, and a nonce must stay under height × 10^6
@@ -272,7 +274,7 @@ const panic = (message: string) => actionError({ FunctionCallError: { ExecutionE
  * - `tx` and `EXPERIMENTAL_tx_status`, by `wait_until`: with `NONE`, the outcome of a transaction it
  *   holds or `UNKNOWN_TRANSACTION`; with another level, an unknown one waits, then a 408.
  */
-export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2_000, height: startHeight = defaultHeight }: FakeNearRpcOptions = {}): Promise<FakeNearRpc> => {
+export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2_000, height: startHeight = defaultHeight, port: listenPort = 0 }: FakeNearRpcOptions = {}): Promise<FakeNearRpc> => {
   const calls: NearRpcCall[] = [];
   const transactions: NearTransaction[] = [];
   const held = new Map<string, NearTransaction>();
@@ -659,7 +661,7 @@ export const startFakeNearRpc = async ({ network = 'near:testnet', timeoutMs = 2
       })();
     });
   });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>(resolve => server.listen(listenPort, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
 
   return {

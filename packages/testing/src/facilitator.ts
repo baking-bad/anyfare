@@ -51,6 +51,8 @@ export interface FakeFacilitatorOptions {
   // The Solana transaction message versions it advertises in `/supported`. Clients build the highest
   // one they can. Default: version 0 and version 1.
   readonly transactionVersions?: readonly number[];
+  // The port to listen on. Default: a free one.
+  readonly port?: number;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -111,7 +113,7 @@ export const facilitatorAnswers = {
  * facilitator does: the resource server copies both into the requirements.
  */
 export const startFakeFacilitator = async ({
-  networks, feePayer, transactionVersions = defaultSolanaTransactionVersions,
+  networks, feePayer, transactionVersions = defaultSolanaTransactionVersions, port: listenPort = 0,
 }: FakeFacilitatorOptions): Promise<FakeFacilitator> => {
   const requests: FacilitatorRequest[] = [];
   const defaults: Record<FacilitatorPath, FacilitatorScript> = {
@@ -168,7 +170,7 @@ export const startFakeFacilitator = async ({
         send();
     });
   });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>(resolve => server.listen(listenPort, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
 
   return {

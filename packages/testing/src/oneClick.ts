@@ -92,6 +92,8 @@ export interface FakeOneClickOptions {
   readonly minAmount?: bigint;
   // For timestamps. Default: the system clock.
   readonly now?: () => Date;
+  // The port to listen on. Default: a free one.
+  readonly port?: number;
 }
 
 const priceUpdatedAt = '2026-11-09T01:23:00.857Z';
@@ -209,7 +211,7 @@ const pendingDetails = (): Readonly<Record<string, unknown>> => ({
  * origin chain's form and is remembered, with its status at PENDING_DEPOSIT until `setStatus` moves it.
  * A dry quote has no address and is forgotten.
  */
-export const startFakeOneClick = async ({ tokens = defaultOneClickTokens, minAmount = 150_000n, now = () => new Date() }: FakeOneClickOptions = {}): Promise<FakeOneClick> => {
+export const startFakeOneClick = async ({ tokens = defaultOneClickTokens, minAmount = 150_000n, now = () => new Date(), port: listenPort = 0 }: FakeOneClickOptions = {}): Promise<FakeOneClick> => {
   const requests: FakeOneClickRequest[] = [];
   const remembered = new Map<string, Remembered>();
   let scripts: Partial<Record<FakeOneClickPath, FakeOneClickScript>> = {};
@@ -417,7 +419,7 @@ export const startFakeOneClick = async ({ tokens = defaultOneClickTokens, minAmo
         send(request, response, answer);
     });
   });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>(resolve => server.listen(listenPort, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
 
   return {

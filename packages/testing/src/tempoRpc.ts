@@ -78,6 +78,8 @@ export interface FakeTempoRpcOptions {
   readonly timeoutMs?: number;
   // Serve HTTPS with this certificate, as `mpp.rpcUrl` must be. See `trustTestCertificate`.
   readonly tls?: TestCertificate;
+  // The port to listen on. Default: a free one.
+  readonly port?: number;
 }
 
 // What a node checks before it takes a transaction. Unix seconds.
@@ -137,7 +139,7 @@ const transferLogs = (from: Address, call: { readonly to?: Address | null; reado
  * Methods it doesn't know are logged in `unknownMethods`. Raw transactions are decoded, so a receipt
  * carries the TIP-20 transfer logs the signed transaction makes.
  */
-export const startFakeTempoRpc = async ({ chainId = moderatoChainId, timeoutMs = 2_000, tls }: FakeTempoRpcOptions = {}): Promise<FakeTempoRpc> => {
+export const startFakeTempoRpc = async ({ chainId = moderatoChainId, timeoutMs = 2_000, tls, port: listenPort = 0 }: FakeTempoRpcOptions = {}): Promise<FakeTempoRpc> => {
   const calls: TempoRpcCall[] = [];
   const unknownMethods: string[] = [];
   const rawTransactions: Hex[] = [];
@@ -307,7 +309,7 @@ export const startFakeTempoRpc = async ({ chainId = moderatoChainId, timeoutMs =
     });
   };
   const server = tls ? createTlsServer({ cert: tls.cert, key: tls.key }, handle) : createServer(handle);
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>(resolve => server.listen(listenPort, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
 
   return {

@@ -33,6 +33,8 @@ export interface FakeUpstream {
 export interface FakeUpstreamOptions {
   // Names and addresses the certificate covers. Point them at 127.0.0.1 with a fake resolver.
   readonly hosts: readonly string[];
+  // The port to listen on. Default: a free one.
+  readonly port?: number;
 }
 
 const defaultHandler: UpstreamHandler = (_request, response) => {
@@ -40,7 +42,7 @@ const defaultHandler: UpstreamHandler = (_request, response) => {
 };
 
 /** A scripted HTTPS server on 127.0.0.1 that records every request it receives. */
-export const startFakeUpstream = async ({ hosts }: FakeUpstreamOptions): Promise<FakeUpstream> => {
+export const startFakeUpstream = async ({ hosts, port: listenPort = 0 }: FakeUpstreamOptions): Promise<FakeUpstream> => {
   const { cert, key } = createTestCertificate({ hosts });
   const requests: RecordedRequest[] = [];
   let handler = defaultHandler;
@@ -65,7 +67,7 @@ export const startFakeUpstream = async ({ hosts }: FakeUpstreamOptions): Promise
   server.on('secureConnection', () => {
     connections += 1;
   });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>(resolve => server.listen(listenPort, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
 
   return {
