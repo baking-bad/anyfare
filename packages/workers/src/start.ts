@@ -19,6 +19,8 @@ export const defaultMetricsPort = 9082;
 export const startupCheckTimeoutMs = 10_000;
 // Each balance read of the treasury jobs
 export const balanceReadTimeoutMs = 10_000;
+// The public numbers' pool: two counts, each with its lock's session and one statement at a time
+export const statsConnections = 4;
 
 // Public RPCs of the EVM networks the treasury reads. EVM_RPC_URLS overrides them, and mpp.rpcUrl Tempo's.
 const defaultEvmRpcUrls: Readonly<Record<string, string>> = {
@@ -176,8 +178,10 @@ export const startWorkers = async ({ env, logger }: AppContext): Promise<Running
     : undefined;
 
   const postgres = createPostgres({ url: databaseUrl, logger });
+  // The public numbers' two counts each hold their lock's session and one statement's connection at most
+  const statsPostgres = createPostgres({ url: databaseUrl, logger, maxConnections: statsConnections });
   const server = createApp({
-    config, logger, postgres, facilitators, balanceReaders, ...mppCheck ? { mppCheck } : {}, ...near ? { nearHeight: () => near.height() } : {},
+    config, logger, postgres, statsPostgres, facilitators, balanceReaders, ...mppCheck ? { mppCheck } : {}, ...near ? { nearHeight: () => near.height() } : {},
     ...oneClick ? { oneClick } : {},
   });
   let port;
@@ -185,7 +189,7 @@ export const startWorkers = async ({ env, logger }: AppContext): Promise<Running
     port = await server.listen(listen);
   }
   catch (error) {
-    await postgres.close();
+    await Promise.all([postgres.close(), statsPostgres.close()]);
     throw error;
   }
   // Once, what this replica runs. Network names and the Solana and NEAR RPCs' hosts only: an RPC URL can carry a key.
@@ -203,7 +207,7 @@ export const startWorkers = async ({ env, logger }: AppContext): Promise<Running
   return {
     close: async () => {
       await server.close();
-      await postgres.close();
+      await Promise.all([postgres.close(), statsPostgres.close()]);
     },
   };
 };

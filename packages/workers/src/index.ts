@@ -1,8 +1,14 @@
 export { createApp } from './app.js';
 export type { WorkersDependencies, WorkersServer } from './app.js';
-export { balanceReadTimeoutMs, checkEachFacilitator, defaultMetricsPort, readEvmRpcUrls, readNearRpcUrls, startupCheckTimeoutMs, startWorkers } from './start.js';
+export { balanceReadTimeoutMs, statsConnections, checkEachFacilitator, defaultMetricsPort, readEvmRpcUrls, readNearRpcUrls, startupCheckTimeoutMs, startWorkers } from './start.js';
 export { createHoldExpiry, holdExpiryIntervalMs, holdExpiryJobName, holdExpiryLockId, holdTtlMs, HoldExpiryFailedError } from './holdExpiry.js';
 export type { HoldExpiryOptions, HoldExpiryResult } from './holdExpiry.js';
+export {
+  allBudgetMs, allStatementTimeoutMs, createAllStats, createPublicStatsMetrics, createRecentStats, keptBuyersPerDay, PublicStatsBudgetError,
+  publicStatsAllIntervalMs, publicStatsAllJobName, publicStatsAllLockId, publicStatsIntervalMs, publicStatsJobName, publicStatsLockId, recentBudgetMs,
+  recentStatementTimeoutMs, servicesPerBatch,
+} from './publicStats.js';
+export type { PublicStatsMetrics, PublicStatsOptions, PublicStatsResult } from './publicStats.js';
 export { createScheduler } from './scheduler.js';
 export type { Job, JobOutcome, JobRunResult, Scheduler, SchedulerOptions } from './scheduler.js';
 export {

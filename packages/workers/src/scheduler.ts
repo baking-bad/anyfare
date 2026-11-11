@@ -26,12 +26,22 @@ export interface Job {
    * interval still runs across frequent restarts. Default: one interval. Zero or less: now.
    */
   firstRunDelayMs?(): Promise<number>;
+  /**
+   * Jobs whose first runs in this process must have ended, whatever their result, before this job's
+   * first run is scheduled: its delay counts from then. A name of no job here is ignored.
+   */
+  readonly after?: readonly string[];
+  // Its advisory lock's sessions. Default: the scheduler's.
+  readonly locks?: Pick<Postgres, 'tryAdvisoryLock'>;
 }
 
 export type JobRunResult = 'success' | 'failure' | 'skipped';
 
 export interface Scheduler {
-  /** Schedules every job's first run: one interval from now, or when its `firstRunDelayMs` says. */
+  /**
+   * Schedules every job's first run: one interval from now, or when its `firstRunDelayMs` says, counted
+   * from when the jobs it comes `after` first ran.
+   */
   start(): Promise<void>;
   /** Stops scheduling, and waits for the runs in progress. */
   stop(): Promise<void>;
@@ -86,8 +96,18 @@ export const createScheduler = ({ jobs, locks, clock, timers, logger, registry }
   const running = new Set<Promise<JobRunResult>>();
   let stopped = true;
 
+  // Each job's first run in this process, ended
+  const firstRuns = new Map(jobs.map(job => {
+    let ended!: () => void;
+    const promise = new Promise<void>(resolve => {
+      ended = resolve;
+    });
+
+    return [job.name, { promise, ended }] as const;
+  }));
+
   const runLocked = async (job: Job): Promise<JobRunResult> => {
-    const unlock = await locks.tryAdvisoryLock(job.lockId);
+    const unlock = await (job.locks ?? locks).tryAdvisoryLock(job.lockId);
     if (!unlock) {
       // Another replica runs it now: an ordinary outcome
       logger.debug({ job: job.name }, 'A job run was skipped: another replica holds its lock');
@@ -143,6 +163,7 @@ export const createScheduler = ({ jobs, locks, clock, timers, logger, registry }
     }
     finally {
       running.delete(promise);
+      firstRuns.get(job.name)?.ended();
     }
   };
 
@@ -178,10 +199,20 @@ export const createScheduler = ({ jobs, locks, clock, timers, logger, registry }
         return;
 
       stopped = false;
-      await Promise.all(jobs.map(async job => schedule(job, await firstDelayOf(job))));
+      await Promise.all(jobs.filter(job => !job.after?.some(name => byName.has(name))).map(async job => schedule(job, await firstDelayOf(job))));
+      // The others once the jobs they come after have run once
+      for (const job of jobs.filter(each => each.after?.some(name => byName.has(name)))) {
+        void (async () => {
+          await Promise.all(job.after!.filter(name => byName.has(name)).map(name => firstRuns.get(name)!.promise));
+          schedule(job, await firstDelayOf(job));
+        })();
+      }
     },
     stop: async () => {
       stopped = true;
+      // Nothing waits for a first run that won't come
+      for (const first of firstRuns.values())
+        first.ended();
       for (const handle of handles.values())
         timers.clearTimeout(handle);
       handles.clear();

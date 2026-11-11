@@ -235,6 +235,69 @@ describe('the job scheduler', () => {
     expect(timers.pending).toBe(0);
   });
 
+  it('schedules a job that comes after others once their first runs ended, failed ones too, its delay counted from then', async () => {
+    const order: string[] = [];
+    const timers = createManualTimers();
+    const gate = deferred();
+    const job = (name: string, changes: Partial<Job>, run: () => Promise<void> = async () => undefined): Job => {
+      lockId += 1;
+
+      return { name, lockId, intervalMs: 60_000, run: async () => {
+        order.push(name);
+        await run();
+      }, ...changes };
+    };
+    const jobs = [
+      job('first', { intervalMs: 30_000 }, async () => {
+        throw new Error('boom');
+      }),
+      job('second', {}, () => gate.promise),
+      job('later', { after: ['first', 'second', 'missing'], firstRunDelayMs: async () => 0 }),
+    ];
+    const scheduler = createScheduler({ jobs, locks: database.postgres, clock: createFakeClock(start), timers, logger, registry: new Registry() });
+
+    try {
+      await scheduler.start();
+      timers.advance(0);
+      timers.advance(30_000);
+      await vi.waitFor(() => expect(order).toEqual(['first']));
+      timers.advance(30_000);
+      await vi.waitFor(() => expect(order).toContain('second'));
+      timers.advance(0);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      // Still waiting for the second's first run to end
+      expect(order).not.toContain('later');
+      gate.resolve();
+      await vi.waitFor(() => {
+        timers.advance(0);
+        expect(order).toContain('later');
+      });
+    }
+    finally {
+      gate.resolve();
+      await scheduler.stop();
+    }
+  });
+
+  it('takes a job\'s lock on its own sessions when it names them', async () => {
+    lockId += 1;
+    let runs = 0;
+    const job: Job = { name: 'own_locks', lockId, intervalMs: 60_000, locks: replica, run: async () => {
+      runs += 1;
+    } };
+    const scheduler = createScheduler({ jobs: [job], locks: database.postgres, clock: createFakeClock(start), timers: createManualTimers(), logger, registry: new Registry() });
+    // Held on the scheduler's own sessions: the job's are another pool, so it skips
+    const unlock = (await database.postgres.tryAdvisoryLock(lockId))!;
+    try {
+      expect(await scheduler.runNow('own_locks')).toBe('skipped');
+    }
+    finally {
+      await unlock();
+    }
+    expect(await scheduler.runNow('own_locks')).toBe('success');
+    expect(runs).toBe(1);
+  });
+
   it('refuses to run a job it doesn\'t have', () => {
     const { scheduler } = setup(async () => undefined);
 

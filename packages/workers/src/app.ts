@@ -1,12 +1,19 @@
 import {
   createMetricsServer, randomIdGenerator, systemClock, systemTimers, type Clock, type IdGenerator, type Logger, type MetricsServer, type Timers,
 } from '@anyfare/common';
-import { treasuryWallets, type BalanceReader, type PlatformConfig } from '@anyfare/core';
-import { createLedger, createPaymentRepository, createRoutingRepository, createTopupRepository, createTreasuryRepository, type Postgres } from '@anyfare/db';
+import { createPaidWith, treasuryWallets, type BalanceReader, type PlatformConfig } from '@anyfare/core';
+import {
+  createLedger, createPaymentRepository, createRoutingRepository, createStatsCounter, createStatsRepository, createTopupRepository, createTreasuryRepository,
+  type Postgres,
+} from '@anyfare/db';
 import { createFacilitatorLookup, type Facilitator, type MppSettlementCheck } from '@anyfare/payments';
 import type { OneClickClient } from '@anyfare/topups';
 
 import { createHoldExpiry, holdExpiryIntervalMs, holdExpiryJobName, holdExpiryLockId, holdTtlMs } from './holdExpiry.js';
+import {
+  createAllStats, createPublicStatsMetrics, createRecentStats, publicStatsAllIntervalMs, publicStatsAllJobName, publicStatsAllLockId, publicStatsIntervalMs,
+  publicStatsJobName, publicStatsLockId,
+} from './publicStats.js';
 import { createRoutingLossMetrics, createRoutingLosses, routingLossesIntervalMs, routingLossesJobName, routingLossesLockId } from './routingLosses.js';
 import { createScheduler, type Job, type JobOutcome, type Scheduler } from './scheduler.js';
 import { createSettlementFollowUp, settlementFollowUpIntervalMs, settlementFollowUpJobName, settlementFollowUpLockId } from './settlementFollowUp.js';
@@ -21,6 +28,9 @@ export interface WorkersDependencies {
   readonly config: PlatformConfig;
   readonly logger: Logger;
   readonly postgres: Postgres;
+  // The public numbers' counts' own pool: their locks and statements never take the others' connections.
+  // Default: `postgres`.
+  readonly statsPostgres?: Postgres;
   // Job time. Default: the system clock.
   readonly clock?: Clock;
   // Job schedules. Default: Node's timers.
@@ -63,13 +73,15 @@ const outcomeOf = <TCounts extends { readonly [Name in keyof TCounts]: number }>
 /**
  * Workers have no public listener. Health, readiness (Postgres), and metrics share the metrics port.
  * Jobs start with the listener and stop before it closes: hold expiry, the settlement follow-up, routing
- * losses, with the top-ups section configured and a 1Click client, the top-up status job, and with a
- * balance reader, the treasury's balance monitor and the daily reconciliation.
+ * losses, the public numbers' two counts, after the first two have run once, with the top-ups section
+ * configured and a 1Click client, the top-up status job, and with a balance reader, the treasury's balance
+ * monitor and the daily reconciliation.
  */
 export const createApp = ({
   config,
   logger,
   postgres,
+  statsPostgres = postgres,
   clock = systemClock,
   timers = systemTimers,
   ids = randomIdGenerator,
@@ -101,6 +113,15 @@ export const createApp = ({
   const routingLosses = createRoutingLosses({
     routing: createRoutingRepository({ db: postgres.db, clock }), ledger, metrics: createRoutingLossMetrics(server.registry), logger,
   });
+  const stats = {
+    counter: createStatsCounter({ db: statsPostgres.db, ways: createPaidWith(config).ways }),
+    store: createStatsRepository({ db: statsPostgres.db }),
+    config,
+    metrics: createPublicStatsMetrics(server.registry, clock),
+    clock,
+  };
+  const recentStats = createRecentStats(stats);
+  const allStats = createAllStats(stats);
 
   // Each run returns its counts; `acted` names those that make its line info
   const jobs: Job[] = [{
@@ -119,6 +140,24 @@ export const createApp = ({
     lockId: routingLossesLockId,
     intervalMs: routingLossesIntervalMs,
     run: async () => outcomeOf(await routingLosses(), ['booked']),
+  }, {
+    name: publicStatsJobName,
+    lockId: publicStatsLockId,
+    locks: statsPostgres,
+    intervalMs: publicStatsIntervalMs(config),
+    // Every few minutes, with what it wrote: its line, with its duration, is info
+    run: async () => ({ ...outcomeOf(await recentStats(), []), acted: true }),
+    // Never at start: first the payments' own jobs, so a count that fails or takes the process down can't keep them from running
+    after: [holdExpiryJobName, settlementFollowUpJobName],
+    firstRunDelayMs: async () => 0,
+  }, {
+    name: publicStatsAllJobName,
+    lockId: publicStatsAllLockId,
+    locks: statsPostgres,
+    intervalMs: publicStatsAllIntervalMs(config),
+    run: async () => ({ ...outcomeOf(await allStats(), []), acted: true }),
+    after: [holdExpiryJobName, settlementFollowUpJobName, publicStatsJobName],
+    firstRunDelayMs: async () => 0,
   }];
 
   // Whether or not top-ups are on: open ones are still credited after new ones are switched off

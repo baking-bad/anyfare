@@ -27,9 +27,9 @@ const exampleConfig = { CONFIG_PATH: 'config/example.yaml' };
 const base = 'eip155:84532';
 const solana = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 const silent = createLogger({ level: 'silent' });
-const allJobs = ['hold_expiry', 'settlement_follow_up', 'routing_losses', 'treasury_balances', 'reconciliation'];
+const allJobs = ['hold_expiry', 'settlement_follow_up', 'routing_losses', 'public_stats', 'public_stats_all', 'treasury_balances', 'reconciliation'];
 // What startWorkers runs on the example config: its top-ups section names a recipient and an asset, so the status job runs though top-ups are off
-const startedJobs = ['hold_expiry', 'settlement_follow_up', 'routing_losses', 'topup_status', 'treasury_balances', 'reconciliation'];
+const startedJobs = ['hold_expiry', 'settlement_follow_up', 'routing_losses', 'public_stats', 'public_stats_all', 'topup_status', 'treasury_balances', 'reconciliation'];
 
 let config: PlatformConfig;
 let database: TestDatabase;
@@ -143,8 +143,8 @@ describe('workers on the metrics port', () => {
 });
 
 describe('the jobs', () => {
-  it('runs hold expiry, the settlement follow-up and routing losses, and the treasury jobs only with a balance reader', () => {
-    expect(server.jobs).toEqual(['hold_expiry', 'settlement_follow_up', 'routing_losses']);
+  it('runs hold expiry, the settlement follow-up, routing losses and the public numbers\' two counts, and the treasury jobs only with a balance reader', () => {
+    expect(server.jobs).toEqual(['hold_expiry', 'settlement_follow_up', 'routing_losses', 'public_stats', 'public_stats_all']);
     expect(createApp({ config, logger: silent, postgres: database.postgres, balanceReaders: fakeReaders() }).jobs).toEqual(allJobs);
   });
 
@@ -213,7 +213,7 @@ describe('the top-up status job', () => {
     const app = createApp({ config, logger: silent, postgres: database.postgres, oneClick: client });
 
     expect(config.topups).toMatchObject({ enabled: false, recipient: 'treasury.anyfare.testnet', asset: expect.objectContaining({ name: 'near-usdc' }) });
-    expect(app.jobs).toEqual(['hold_expiry', 'settlement_follow_up', 'routing_losses', 'topup_status']);
+    expect(app.jobs).toEqual(['hold_expiry', 'settlement_follow_up', 'routing_losses', 'public_stats', 'public_stats_all', 'topup_status']);
     expect(await app.scheduler.runNow('topup_status')).toBe('success');
     const text = await metricsOf(app);
     expect(text).toContain('workers_job_runs_total{job="topup_status",result="success"} 1');
@@ -704,7 +704,7 @@ describe('the workers\' lines', () => {
       await app.close();
     }
 
-    expect(lines.filter(line => line['msg'] === 'A job ran').map(line => line['job'])).toEqual(['hold_expiry', 'settlement_follow_up', 'routing_losses']);
+    expect(lines.filter(line => line['msg'] === 'A job ran').map(line => line['job'])).toEqual(['hold_expiry', 'settlement_follow_up', 'routing_losses', 'public_stats', 'public_stats_all']);
     expect(lines.find(line => line['msg'] === 'A job ran' && line['job'] === 'hold_expiry')).toMatchObject({ level: 20, counts: { captured: 0, released: 0, failed: 0 } });
     expect(lines.find(line => line['msg'] === 'Failed to read a treasury balance' && line['network'] === base)).toMatchObject({
       level: 50, error: { message: expect.stringContaining('HTTP request failed.') },
@@ -774,7 +774,7 @@ describe('the workers\' lines', () => {
     await app.close();
 
     expect(lines.filter(line => line['msg'] === 'Started')).toHaveLength(1);
-    // Nothing ran: every first run is one interval away
+    // Nothing ran: every first run is one interval away, and the public numbers' come after the payments' jobs
     expect(lines.filter(line => line['msg'] === 'A job ran' || line['msg'] === 'A job failed')).toEqual([]);
   });
 });
