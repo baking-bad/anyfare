@@ -153,11 +153,11 @@ describe('the home page\'s structured data', () => {
 });
 
 describe('the mark', () => {
-  it('is an SVG of the brand green square with two eyes', () => {
+  it('is an SVG of the ticket in the brand green, with legs in two deeper greens', () => {
     const svg = markSvg();
 
     expect(svg).toMatch(/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
-    expect(svg).toContain('fill="#00ec97"');
-    expect(svg.match(/<circle/g)).toHaveLength(2);
+    expect(svg.match(/<path fill="#[0-9a-f]{6}"/g)).toEqual(['<path fill="#00ec97"', '<path fill="#00a774"', '<path fill="#006349"']);
+    expect(svg).not.toContain('<circle');
   });
 });

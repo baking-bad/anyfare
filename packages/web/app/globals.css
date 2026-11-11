@@ -87,9 +87,7 @@ p { margin: 0; }
 .site-header.scrolled, .site-header.menu-open { border-bottom-color: var(--grid-line); }
 .site-header .container { height: var(--header-height); display: flex; align-items: center; gap: 24px; }
 .logo { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; font-size: 22px; line-height: 1; letter-spacing: var(--tracking-tight); text-decoration: none; }
-.logo i { width: 28px; height: 28px; border-radius: 8px; background: var(--brand); position: relative; flex: none; }
-.logo i::before, .logo i::after { content: ""; position: absolute; border-radius: 50%; background: var(--brand-ink); width: 8px; height: 8px; top: 10px; }
-.logo i::before { left: 5px; } .logo i::after { right: 5px; }
+.logo svg { width: 32px; height: 32px; flex: none; }
 .nav { display: flex; gap: 4px; }
 .nav a { display: inline-flex; align-items: center; padding: 8px 12px; border-radius: var(--radius-lg); text-decoration: none; font-size: var(--text-sm); line-height: 1; color: var(--text-secondary); transition: background var(--duration) var(--ease), color var(--duration) var(--ease); }
 .nav a:hover { background: var(--surface-wash); color: var(--text); }
