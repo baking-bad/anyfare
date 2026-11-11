@@ -170,6 +170,11 @@ describe('what the API asks, in words', () => {
     expect(base[3]!.value).toBe('10000 base units = $0.01');
     expect(mpp.map(row => row.label)).toEqual(['Protocol', 'Amount', 'Recipient', 'Realm', 'Expires']);
     expect(mpp[0]!.value).toBe('MPP, method tempo, intent charge');
+    // No row without a value, on any protocol
+    const empty = { asks: { amount: '', network: ' ', recipient: '', realm: '', expires: '', method: '', intent: '' }, upstream: { headers: [] }, price: undefined, checkedAt: undefined } as const;
+
+    expect(askRows({ ...empty, protocol: 'mpp' }).map(row => row.label)).toEqual(['Protocol', 'Amount']);
+    expect(askRows({ ...empty, protocol: 'x402' }).every(row => row.value.trim() !== '')).toBe(true);
     expect(askRows({ asks: {}, protocol: 'x402', upstream: { headers: [] }, price: undefined, checkedAt: undefined }).map(row => row.label)).toEqual(['Protocol']);
   });
 
@@ -212,7 +217,7 @@ describe('the wording of a refusal', () => {
       for (const detail of list) {
         const { title, text } = words(reason, detail);
 
-        expect(title, detail).toBe(words(reason).title);
+        expect(title, detail).toBe(detail === 'invalid_host' ? 'We can\'t route to this host' : words(reason).title);
         expect(text, detail).toMatch(/^[A-Z].*\.$/);
         expect(text, detail).not.toContain('. ');
         expect(seen.has(text), `${detail} has its own text`).toBe(false);
@@ -220,6 +225,7 @@ describe('the wording of a refusal', () => {
       }
     }
     expect(words('host_not_allowed', 'opted_out').text).toBe('This API asked not to be routed through Anyfare.');
+    expect(words('invalid_target', 'invalid_host').text).toBe('This isn\'t a host we can route to.');
     expect(words('invalid_target', 'ip_address').text).toBe('Paste a link with a host name, not an IP address.');
     expect(words('host_not_allowed', 'own_host').text).toBe('This is one of Anyfare\'s own hosts.');
     expect(words('host_not_allowed', 'private_address').text).toBe('This link points to a private address.');

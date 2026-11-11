@@ -1,6 +1,7 @@
 import type { ApiResult } from '../api/reader';
 import type { Call, TopStats } from '../api/types';
 import type { SiteSettings } from '../config';
+import { servicePath } from '../services/content';
 import { callRules, callsDescription, callsLine, callsTitle, periodName, tokenName } from '../calls/content';
 import type { CallsData } from '../calls/data';
 import { apiFilter, apiQuery, callsHref, pageSize, type CallsFilters } from '../calls/filters';
@@ -32,7 +33,7 @@ const filterLines = (filters: CallsFilters): string => [
 ].filter((line): line is string => line !== undefined).map(line => `- ${line}`).join('\n');
 
 const topLists = (top: TopStats, siteUrl: string): string => {
-  const services = top.services.length === 0 ? 'No paid calls yet.' : top.services.map(service => `- [${cell(service.host)}](${siteUrl}/services/${service.host}): ${count(service.calls)} calls`).join('\n');
+  const services = top.services.length === 0 ? 'No paid calls yet.' : top.services.map(service => `- [${cell(service.host)}](${siteUrl}${servicePath(service.host)}): ${count(service.calls)} calls`).join('\n');
   const endpoints = top.endpoints.length === 0 ? 'No paid calls yet.' : top.endpoints.map(endpoint => `- [${cell(endpoint.host)}${cell(endpoint.path)}](${siteUrl}/check?url=${endpoint.host}${endpoint.path}): ${count(endpoint.calls)} calls`).join('\n');
   const paid = top.paidWith.length === 0 ? 'No paid calls yet.' : [...top.paidWith].sort((a, b) => b.calls - a.calls).map(share => `- ${paidWithName(share.paidWith)}: ${count(share.calls)} calls`).join('\n');
   const tokens = top.topupTokens.length === 0 ? 'No top-ups yet.' : top.topupTokens.map(token => `- ${tokenName(token.token, token.network)}: ${count(token.count)}`).join('\n');

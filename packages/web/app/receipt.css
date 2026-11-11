@@ -41,5 +41,5 @@
 .tl-body { padding-bottom: 16px; min-width: 0; }
 .tl:last-child .tl-body { padding-bottom: 0; }
 .tl .t { line-height: 28px; font-weight: 500; }
-@media (max-width: 480px) { .tl { grid-template-columns: 76px 28px minmax(0, 1fr); gap: 0 8px; } .tl .time { font-size: 11px; } }
+@media (max-width: 480px) { .tl { grid-template-columns: 84px 28px minmax(0, 1fr); gap: 0 8px; } .tl .time { font-size: 11px; } }
 

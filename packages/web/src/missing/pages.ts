@@ -1,7 +1,7 @@
 import { getReceipt } from '../api/endpoints';
 import type { ApiResult, Reader } from '../api/reader';
 import { isReceiptId, notFoundLine } from '../receipt/content';
-import { checkHref, isHost, serviceMissingLine, serviceMissingTitle } from '../services/content';
+import { checkHref, hostOfSegment, isHost, serviceMissingLine, serviceMissingTitle } from '../services/content';
 import { loadService } from '../services/data';
 
 // The pages whose address holds a thing that may not exist, such as a call or a service. A page's
@@ -44,13 +44,13 @@ export const missingPages: readonly MissingPage[] = [
   {
     kind: 'service',
     pattern: /^\/services\/([^/]+)$/,
-    valid: isHost,
-    exists: (read, name) => loadService(read, name, '30d'),
+    valid: name => isHost(hostOfSegment(name)),
+    exists: (read, name) => loadService(read, hostOfSegment(name), '30d'),
     title: serviceMissingTitle,
     line: serviceMissingLine,
     actions: name => [
       { label: 'See the services', href: '/services' },
-      { label: 'Check this service', href: checkHref(name), outline: true },
+      { label: 'Check this service', href: checkHref(hostOfSegment(name)), outline: true },
     ],
   },
 ];

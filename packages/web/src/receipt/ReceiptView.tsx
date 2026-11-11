@@ -10,13 +10,13 @@ import { highlightJson, jsonText } from '../components/Json';
 import { Rail } from '../components/Rail';
 import { Tabs } from '../components/Tabs';
 import { ms, usdOf } from '../format';
+import { servicePath } from '../services/content';
 import {
-  callLine, creditsLine, explorerName, noApiLine, paidAmount, receiptEyebrow, safeExplorerUrl, seconds, shortHash, sideLine, statusWords, stepTime, stepWords, utcMoment,
+  callLine, creditsLine, explorerName, noApiLine, paidAmount, receiptEyebrow, safeExplorerUrl, seconds, shortHash, sideLine, statusWords, stepTime, stepWords, utcMoment, wouldHavePaid,
 } from './content';
 
 const dash = '-';
 
-const serviceHref = (host: string): string => `/services/${encodeURIComponent(host)}`;
 
 /** A transaction line: a link to the explorer when the API gave a URL, the short hash alone when it didn't. */
 const Transaction = ({ hash, explorerUrl }: { readonly hash: string; readonly explorerUrl: string | null }) => {
@@ -36,7 +36,7 @@ const BuyerBox = ({ receipt }: { readonly receipt: Receipt }) => {
   return (
     <div className="node">
       <span className="xs muted semi">{paid ? 'The buyer paid' : 'The buyer was not charged'}</span>
-      <span className="h4">{sideLine(buyer)}</span>
+      {paid ? <span className="h4">{sideLine(buyer)}</span> : <span className="small muted">{wouldHavePaid(buyer)}</span>}
       {credits || buyer.payer === null ? null : <span className="mono small break">{buyer.payer}</span>}
       {credits
         ? paid ? <span className="small muted">{creditsLine}</span> : null
@@ -99,7 +99,7 @@ const Detail = ({ label, wide = false, children }: { readonly label: string; rea
 const Details = ({ receipt }: { readonly receipt: Receipt }) => (
   <div className="detail-grid">
     <Detail label="Call" wide><div className="mono small break">{callLine(receipt)}</div></Detail>
-    <Detail label="Service"><a className="link break" href={serviceHref(receipt.service)}>{receipt.service}</a></Detail>
+    <Detail label="Service"><a className="link break" href={servicePath(receipt.service)}>{receipt.service}</a></Detail>
     <Detail label="API price"><span className="num">{receipt.apiPrice === null ? dash : usdOf(receipt.apiPrice)}</span></Detail>
     <Detail label="Buyer paid"><span className="num">{paidAmount(receipt)}</span></Detail>
     <Detail label="Our fee"><span className="num">{receipt.fee === null ? dash : usdOf(receipt.fee)}</span></Detail>
@@ -137,7 +137,7 @@ export const ReceiptView = ({ receipt, siteUrl }: { readonly receipt: Receipt; r
   return (
     <div className="receipt">
       <nav className="row small muted" aria-label="Breadcrumb">
-        <a className="link" href="/calls">Calls</a><span>/</span><span className="mono break">{receipt.id}</span>
+        <a className="link" href="/calls">Calls</a><span>/</span><span className="mono break crumb-current">{receipt.id}</span>
       </nav>
 
       <div className="receipt-head mt-16">
@@ -151,7 +151,7 @@ export const ReceiptView = ({ receipt, siteUrl }: { readonly receipt: Receipt; r
         </div>
         <div className="row">
           <CopyButton text={link} label="Copy link" size="md" />
-          <Button variant="secondary" href={serviceHref(receipt.service)}>Service</Button>
+          <Button variant="secondary" href={servicePath(receipt.service)}>Service</Button>
         </div>
       </div>
 

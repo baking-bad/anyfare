@@ -23,6 +23,8 @@ table.t tr.click:focus-within { background: var(--surface-row-hover); }
 .svc-title { display: flex; align-items: flex-start; gap: 16px; min-width: 0; }
 .svc-tile { width: 56px; height: 56px; border-radius: 16px; font-size: 22px; font-weight: 600; }
 .svc-name { gap: 6px; min-width: 0; }
+/* "7 paid endpoints, 6 with calls in this period" may need two lines on a phone */
+.svc-count .badge { white-space: normal; height: auto; min-height: 24px; padding-top: 4px; padding-bottom: 4px; line-height: 16px; }
 .svc-host-title { overflow-wrap: anywhere; }
 .svc-endpoint { display: inline-flex; align-items: center; gap: 8px; color: inherit; }
 .svc-endpoint code { font-size: 13px; }
@@ -57,6 +59,5 @@ table.t tr.click:focus-within { background: var(--surface-row-hover); }
   .pager .btn { min-height: 44px; min-width: 44px; }
   .svc-head .btn { height: 44px; }
   .row-copy { min-height: 44px; min-width: 44px; padding: 0 12px; }
-  .svc-page .seg button::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 44px; transform: translateY(-50%); }
   .svc-tile { width: 44px; height: 44px; border-radius: 12px; font-size: 18px; }
 }

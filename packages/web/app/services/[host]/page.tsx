@@ -10,7 +10,7 @@ import { readSettings } from '../../../src/config';
 import { socialTags } from '../../../src/seo/social';
 import { markdownUrl } from '../../../src/markdown/negotiate';
 import { serviceMarkdown } from '../../../src/markdown/service';
-import { isHost, parsePeriod, serviceDescription } from '../../../src/services/content';
+import { hostOfSegment, isHost, parsePeriod, servicePath, serviceDescription } from '../../../src/services/content';
 import { loadService, loadServiceCalls, serviceJson, serviceRequests } from '../../../src/services/data';
 import { DailyChart } from '../../../src/services/DailyChart';
 import { ServiceLive } from '../../../src/services/ServiceLive';
@@ -22,15 +22,15 @@ type Props = {
 };
 
 export const generateMetadata = async ({ params }: Props): Promise<Metadata> => {
-  const host = (await params).host.toLowerCase();
+  const host = hostOfSegment((await params).host);
   const { siteUrl } = readSettings();
-  const url = `${siteUrl}/services/${encodeURIComponent(host)}`;
+  const url = `${siteUrl}${servicePath(host)}`;
   const description = serviceDescription(host);
 
   return {
     title: host,
     description,
-    alternates: { canonical: url, types: { 'text/markdown': `${siteUrl}${markdownUrl(`/services/${encodeURIComponent(host)}`)}` } },
+    alternates: { canonical: url, types: { 'text/markdown': `${siteUrl}${markdownUrl(servicePath(host))}` } },
     ...socialTags({ siteUrl, title: `${host} | Anyfare`, description, url }),
   };
 };
@@ -44,7 +44,7 @@ const first = (value: string | string[] | undefined): string | undefined => Arra
  * calls read on their own.
  */
 const Service = async ({ params, searchParams }: Props) => {
-  const host = (await params).host.toLowerCase();
+  const host = hostOfSegment((await params).host);
   if (!isHost(host))
     notFound();
   const settings = readSettings();
@@ -63,7 +63,7 @@ const Service = async ({ params, searchParams }: Props) => {
         markdown: serviceMarkdown(settings, host, result, calls),
         json: serviceJson(result, calls),
         requests: serviceRequests(settings, host, period),
-        markdownUrl: `${settings.siteUrl}${markdownUrl(`/services/${host}`)}`,
+        markdownUrl: `${settings.siteUrl}${markdownUrl(servicePath(host))}`,
       }}
     >
       <section className="band">

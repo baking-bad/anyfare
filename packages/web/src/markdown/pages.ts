@@ -5,7 +5,7 @@ import { parseCheckParams } from '../check/content';
 import { loadCheckData } from '../check/data';
 import { parseFilters } from '../calls/filters';
 import { loadHome } from '../home/data';
-import { isHost, parsePeriod, serviceMissingLine } from '../services/content';
+import { hostOfSegment, isHost, parsePeriod, serviceMissingLine } from '../services/content';
 import { loadService, loadServiceCalls, loadServices } from '../services/data';
 import { parseServicesFilters } from '../services/filters';
 import { agentsMarkdown } from './agents';
@@ -70,7 +70,7 @@ export const markdownPages: readonly MarkdownPage[] = [
     // A name that is not a host has a twin too, and it answers 404 without asking the API
     pattern: /^\/services\/[^/]+$/,
     render: async ({ settings, read, path, search }) => {
-      const host = path.slice('/services/'.length).toLowerCase();
+      const host = hostOfSegment(path.slice('/services/'.length));
       if (!isHost(host))
         return { status: 404, body: serviceMissingMarkdown(serviceMissingLine) };
       const [service, calls] = await Promise.all([loadService(read, host, parsePeriod(search.get('period'))), loadServiceCalls(read, host)]);

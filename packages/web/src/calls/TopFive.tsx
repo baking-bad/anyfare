@@ -16,6 +16,7 @@ import { useSettings } from '../components/Settings';
 import { Skeleton } from '../components/Skeleton';
 import { paidWithName } from '../content/home';
 import { count } from '../format';
+import { servicePath } from '../services/content';
 import { topPeriods, tokenName } from './content';
 
 const TopItem = ({ rank, href, label, sub, value }: { readonly rank: number; readonly href: string; readonly label: ReactNode; readonly sub?: ReactNode; readonly value: number }) => (
@@ -37,7 +38,7 @@ const Lists = ({ top }: { readonly top: TopStats }) => {
         <CardHead title="Services"><span className="xs muted">Paid calls</span></CardHead>
         <div className="top-list">
           {top.services.length === 0 ? <Empty>No paid calls yet</Empty> : top.services.map((service, index) => (
-            <TopItem key={service.host} rank={index + 1} href={`/services/${service.host}`} label={service.host} value={service.calls} />
+            <TopItem key={service.host} rank={index + 1} href={servicePath(service.host)} label={service.host} value={service.calls} />
           ))}
         </div>
       </Card>

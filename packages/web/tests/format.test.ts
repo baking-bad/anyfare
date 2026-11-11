@@ -84,6 +84,11 @@ describe('ago', () => {
     expect(ago(now - 12_000, now)).toBe('12s ago');
     expect(ago(now - 5 * 60_000, now)).toBe('5m ago');
     expect(ago(now - 3 * 3_600_000, now)).toBe('3h ago');
+    expect(ago(now - 48 * 3_600_000, now)).toBe('48h ago');
+    expect(ago(now - 165 * 3_600_000, now)).toBe('6 days ago');
+    expect(ago(now - 337 * 3_600_000, now)).toBe('14 days ago');
+    expect(ago(now - 60 * 86_400_000, now)).toBe('60 days ago');
+    expect(ago(Date.parse('2026-09-11T08:00:00Z'), Date.parse('2026-11-11T12:00:00Z'))).toBe('Sep 11, 2026');
   });
 
   it('takes a date, and reads a moment in the future as now', () => {

@@ -9,10 +9,10 @@
 .seg button:hover { background: var(--surface-wash-strong); }
 .seg button[aria-pressed="true"], .seg button[aria-selected="true"] { background: var(--primary-bg); color: var(--primary-text); }
 .seg button svg { width: 14px; height: 14px; }
-@media (pointer: coarse) {
-  .seg button::before, .tabs button::before, .chip::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 44px; transform: translateY(-50%); }
+@media (pointer: coarse), (max-width: 760px) {
   .tabs button, .chip { min-height: 44px; }
   .site-footer li a, .site-footer .logo, .agent-strip a { display: inline-flex; align-items: center; min-height: 44px; }
+  .site-footer li a { min-width: 44px; }
   .footer-grid ul { gap: 0; }
   details.faq summary { min-height: 44px; }
 }
@@ -31,7 +31,6 @@
 .tabs .pill { position: absolute; z-index: 0; top: 4px; height: 32px; border-radius: var(--radius-lg); background: var(--white); opacity: 0;
   box-shadow: var(--shadow-xs); transition: left var(--duration) var(--ease), width var(--duration) var(--ease); }
 .tabs .pill.ready { opacity: 1; }
-.tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
 .tabs.scroll { max-width: 100%; overflow-x: auto; }
 .dark .tabs .pill { background: rgb(255 255 255 / 0.08); }
 .tab-panel[hidden] { display: none; }
@@ -63,7 +62,6 @@ select.input { appearance: none; padding-right: 32px; background-image: url("dat
 .method-select { appearance: none; flex: none; height: 40px; padding: 0 28px 0 12px; border: 0; border-radius: 12px; background-color: var(--surface-wash);
   color: var(--text); font-family: var(--font-mono); font-size: var(--text-base); font-weight: 500; cursor: pointer;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23737373' stroke-width='2'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 8px center; }
-.method-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
 .check-row .method-select { height: 48px; border-radius: 14px; }
 @media (max-width: 640px) { .check-box { flex-wrap: wrap; } .check-box .lead-icon { display: none; } .check-box input { flex: 1 1 160px; height: 44px; padding: 0 8px; } .check-box .btn { flex: 1; } .check-box .method-select, .check-row .method-select { height: 44px; } }
 
@@ -370,7 +368,7 @@ table.t tr.fresh td { animation: enter 900ms var(--ease-out); }
 .pager .btn.num { min-width: 32px; padding: 0 8px; }
 .pager .btn.disabled { opacity: 0.4; pointer-events: none; }
 .pager .flip { display: inline-flex; transform: rotate(180deg); }
-@media (pointer: coarse) { .pager .btn.num { min-width: 44px; } }
+@media (pointer: coarse), (max-width: 760px) { .pager .btn.num { min-width: 44px; } }
 
 /* ---------- Chart box before it is measured ---------- */
 
@@ -378,7 +376,7 @@ table.t tr.fresh td { animation: enter 900ms var(--ease-out); }
 .page-human { display: contents; }
 .menu .menu-check { margin-left: auto; display: inline-flex; }
 .menu svg { width: 16px; height: 16px; }
-@media (pointer: coarse) { .menu button, .menu a { min-height: 44px; } }
+@media (pointer: coarse), (max-width: 760px) { .menu button, .menu a { min-height: 44px; } }
 .agent-view .agent-note { max-width: 720px; }
 .agent-view .ep-note { display: block; }
 
@@ -387,3 +385,21 @@ table.t tr.fresh td { animation: enter 900ms var(--ease-out); }
 .dev-label { width: 40px; }
 .dev-icons .tile { color: var(--text); }
 .eyebrow svg { width: 16px; height: 16px; }
+
+/* ---------- Tap areas ---------- */
+
+/* On a touch screen, and at phone width, every control has a tap area of 44 by 44 px. A control whose look must
+   stay small gets an invisible box around its middle: at least 44 px each way, and its own size where that is more. */
+@media (pointer: coarse), (max-width: 760px) {
+  .btn.xs, .btn.sm, .seg button, .seg a, .tabs button, .link-tabs > .tabs a, .chip, a.link, a.inline, .when-link, .logo, a.xs { position: relative; }
+  .btn.xs::before, .btn.sm::before, .seg button::before, .seg a::before, .tabs button::before, .link-tabs > .tabs a::before, .chip::before, a.link::before, a.inline::before, .when-link::before, .logo::before, a.xs::before {
+    content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
+}
+
+/* ---------- Focus rings ---------- */
+
+/* One ring for every control: 2 px, outside by 2 px. A field's ring lies 2 px inside it (see .input and .method-select). */
+:where(button, select, a, summary, [tabindex]:not([tabindex="-1"])):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.method-select:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+/* On a dark band the ring is white */
+.seg.on-dark :focus-visible, .inverse-band :focus-visible, .site-footer :focus-visible, .dark-panel :focus-visible { outline-color: var(--white); }

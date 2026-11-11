@@ -44,4 +44,4 @@ table.t tr.fresh td { animation: enter 900ms var(--ease-out); }
 .top-list .item:first-child { border-top: 0; }
 .top-list .rank { color: var(--text-secondary); font-variant-numeric: tabular-nums; font-size: var(--text-xs); font-weight: 600; }
 .top-path { font-size: 12px; }
-@media (pointer: coarse) { .top-list .item { min-height: 44px; } }
+@media (pointer: coarse), (max-width: 760px) { .top-list .item { min-height: 44px; } .call-link { min-height: 44px; justify-content: center; } }

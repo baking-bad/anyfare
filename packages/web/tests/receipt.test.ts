@@ -4,7 +4,7 @@ import { readSettings } from '../src/config';
 import { receiptMarkdown } from '../src/markdown/receipt';
 import { markdownPageFor } from '../src/markdown/pages';
 import { pageForMarkdownUrl } from '../src/markdown/negotiate';
-import { callLine, explorerName, isReceiptId, paidAmount, safeExplorerUrl, seconds, shortHash, statusWords, stepTime, stepWords, tokenAmount, utcMoment } from '../src/receipt/content';
+import { callLine, explorerName, isReceiptId, paidAmount, safeExplorerUrl, seconds, shortHash, statusWords, stepTime, stepWords, tokenAmount, utcMoment, wouldHavePaid } from '../src/receipt/content';
 import { loadReceipt } from '../src/receipt/data';
 import { sampleReceipt } from './support/fakeApi';
 import type { Receipt } from '../src/api/types';
@@ -112,6 +112,19 @@ describe('the words of each step', () => {
   it('keeps the steps the API gave, in its order, and none of its own', () => {
     expect(receipt('pay_sample0000').steps.map(step => step.step)).toEqual(['received', 'authorized', 'api_signed', 'api_answered', 'settled']);
     expect(free.steps.map(step => step.step)).toEqual(['received', 'authorized', 'released']);
+  });
+});
+
+describe('a free call', () => {
+  it('says what the buyer would have paid, for Credits and for a chain', () => {
+    const credits = { ...receipt('pay_freecredits') };
+
+    expect(credits.status).toBe('free');
+    expect(credits.buyer.paidWith).toBe('credits');
+    expect(wouldHavePaid(credits.buyer)).toBe('Would have paid 0.0044 in Credits');
+    expect(wouldHavePaid(receipt('pay_freenoapi').buyer)).toBe('Would have paid 0.003 USDC on Base');
+    expect(receiptMarkdown(settings, credits)).toContain('- Buyer: was not charged. Would have paid 0.0044 in Credits');
+    expect(receiptMarkdown(settings, receipt('pay_freenoapi'))).toContain('was not charged. Would have paid 0.003 USDC on Base');
   });
 });
 

@@ -13,7 +13,7 @@ import { Rail } from '../components/Rail';
 import { paidWithName } from '../content/home';
 import { count, ms, pct, usd, usdOf } from '../format';
 import { formatChange } from '../home/change';
-import { callsChange, checkHref, comparedWith, failedLine, inexactLine, lastCall, meterShare, perBuyer, togetherLine } from './content';
+import { callsChange, checkHref, comparedWith, endpointsLine, failedLine, inexactLine, lastCall, meterShare, perBuyer, togetherLine } from './content';
 import { PeriodSwitch } from './PeriodSwitch';
 
 const methodClass = (method: string): string => ({ GET: 'get', POST: 'post', DELETE: 'del' } as Record<string, string>)[method.toUpperCase()] ?? '';
@@ -27,7 +27,7 @@ export const ServiceHead = ({ host, service }: { readonly host: string; readonly
       <nav className="row small muted" aria-label="Breadcrumb">
         <Link className="link" href="/services">Services</Link>
         <span aria-hidden="true">/</span>
-        <span className="mono" aria-current="page">{host}</span>
+        <span className="mono crumb-current" aria-current="page">{host}</span>
       </nav>
       <div className="row-between mt-16 svc-head">
         <div className="svc-title">
@@ -35,7 +35,7 @@ export const ServiceHead = ({ host, service }: { readonly host: string; readonly
           <div className="stack svc-name">
             <h1 className="page-title svc-host-title">{host}</h1>
             {service === undefined ? null : (
-              <div className="row"><Badge>{count(service.paidEndpoints)} paid endpoint{service.paidEndpoints === 1 ? '' : 's'}</Badge></div>
+              <div className="row svc-count"><Badge>{endpointsLine(service.paidEndpoints, service.endpoints.length)}</Badge></div>
             )}
           </div>
         </div>

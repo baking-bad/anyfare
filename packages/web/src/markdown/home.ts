@@ -3,6 +3,7 @@ import type { Call, Period } from '../api/types';
 import type { SiteSettings } from '../config';
 import { agentPrompt, agentsText, hero, homeDescription, homeTitle, paidWithName, questions, statsText, topText, tryHref, tryLinks, ways } from '../content/home';
 import { count, ms, usdOf } from '../format';
+import { servicePath } from '../services/content';
 import { changeOf, formatChange } from '../home/change';
 import type { HomeData } from '../home/data';
 
@@ -73,7 +74,7 @@ Details: ${siteUrl}/calls`);
 
 | Service | Paid endpoints | Price from | Calls through Anyfare | Buyers | Volume |
 |---|---|---|---|---|---|
-${services.map(service => `| [${cell(service.host)}](${siteUrl}/services/${service.host}) | ${count(service.paidEndpoints)} | ${money(service.priceFrom)} | ${count(service.calls)} | ${count(service.buyers)} | ${money(service.volume)} |`).join('\n')}
+${services.map(service => `| [${cell(service.host)}](${siteUrl}${servicePath(service.host)}) | ${count(service.paidEndpoints)} | ${money(service.priceFrom)} | ${count(service.calls)} | ${count(service.buyers)} | ${money(service.volume)} |`).join('\n')}
 
 All services: ${siteUrl}/services`);
 

@@ -5,7 +5,7 @@ import type { SiteSettings } from '../config';
 import { paidWithName } from '../content/home';
 import { count, ms, pct, usdOf } from '../format';
 import { shortAddress } from '../calls/address';
-import { callsChange, comparedWith, perBuyer, periodSentence, serviceDescription, togetherLine, failedLine, checkHref, inexactLine } from '../services/content';
+import { callsChange, comparedWith, perBuyer, periodSentence, serviceDescription, togetherLine, failedLine, checkHref, endpointsLine, inexactLine, servicePath } from '../services/content';
 import { serviceCallsSize } from '../services/data';
 import { formatChange } from '../home/change';
 
@@ -66,9 +66,9 @@ Pay any of its endpoints at ${payUrl}/${host}/<path>, in any way we take. Each e
 
 ## Through Anyfare, ${periodSentence(period)}
 
-${service === undefined ? unavailable : `${count(service.paidEndpoints)} paid endpoints.\n\n${numbers(service)}${service.exact ? '' : `\n\n${inexactLine}`}`}
+${service === undefined ? unavailable : `${endpointsLine(service.paidEndpoints, service.endpoints.length)}.\n\n${numbers(service)}${service.exact ? '' : `\n\n${inexactLine}`}`}
 
-Another period: \`${apiUrl}${paths.service(host, period === '7d' ? '30d' : '7d')}\` (period is today, 7d, 30d or all). On the page: \`${siteUrl}/services/${host}.md?period=7d\`.
+Another period: \`${apiUrl}${paths.service(host, period === '7d' ? '30d' : '7d')}\` (period is today, 7d, 30d or all). On the page: \`${siteUrl}${servicePath(host)}.md?period=7d\`.
 
 ## By payment method
 

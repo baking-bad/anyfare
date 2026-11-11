@@ -25,7 +25,6 @@
 .link-tabs > .tabs a:hover { color: var(--text); }
 .link-tabs > .tabs a[aria-selected="true"] { color: var(--text); background: var(--white); box-shadow: var(--shadow-xs); }
 .dark .link-tabs > .tabs a[aria-selected="true"] { background: rgb(255 255 255 / 0.08); }
-.link-tabs > .tabs a:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
 .link-tabs > .tabs a svg { width: 14px; height: 14px; flex: none; }
 
 /* ---------- Overview ---------- */
@@ -38,6 +37,7 @@
 .ask-kv .kv-row { display: contents; }
 .ask-kv dd { overflow: visible; text-overflow: clip; overflow-wrap: anywhere; word-break: break-all; }
 .ask-description { overflow-wrap: anywhere; }
+.ask-kv dd.ask-description { text-align: left; }
 
 .ep-stats { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
 .ep-stats .card { padding: 14px 16px; background: var(--surface-well); outline: 0; }
@@ -73,11 +73,12 @@
   .link-tabs > .tabs a { height: 40px; }
 }
 
+@media (pointer: coarse), (max-width: 760px) { .link-box input { height: 44px; } }
+
 /* The period switch is a row of links */
 .seg a { position: relative; height: 28px; padding: 0 12px; border-radius: var(--radius-lg); font-size: var(--text-sm); line-height: 1; letter-spacing: var(--tracking-tight); color: var(--text);
   display: inline-flex; align-items: center; gap: 6px; text-decoration: none; transition: background var(--duration) var(--ease); }
 .seg a:hover { background: var(--surface-wash-strong); }
 .seg a[aria-current="true"] { background: var(--primary-bg); color: var(--primary-text); }
-.seg a:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
 .seg.sm a { height: 24px; padding: 0 10px; }
-@media (pointer: coarse) { .seg a::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 44px; transform: translateY(-50%); } }
+

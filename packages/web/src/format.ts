@@ -42,7 +42,11 @@ export const pct = (share: number): string => {
 /** A duration in milliseconds: `340 ms`, and from one second `1.8 s`. */
 export const ms = (milliseconds: number): string => milliseconds >= 1000 ? `${(milliseconds / 1000).toFixed(1)} s` : `${milliseconds} ms`;
 
-/** How long ago a moment was: `now`, `12s ago`, `5m ago`, `3h ago`. A moment in the future reads `now`. */
+/**
+ * How long ago a moment was: `now`, `12s ago`, `5m ago`, `3h ago` (up to 48 hours), `7 days ago` (up to 60
+ * days), then the date, such as `Sep 12, 2026` in UTC. A moment in the future reads `now`. The one helper
+ * for every page and twin.
+ */
 export const ago = (moment: Date | number, now: number = Date.now()): string => {
   const time = typeof moment === 'number' ? moment : moment.getTime();
   const seconds = Math.max(0, Math.round((now - time) / 1000));
@@ -53,7 +57,14 @@ export const ago = (moment: Date | number, now: number = Date.now()): string => 
   if (seconds < 3600)
     return `${Math.floor(seconds / 60)}m ago`;
 
-  return `${Math.floor(seconds / 3600)}h ago`;
+  const hours = Math.floor(seconds / 3600);
+  if (hours <= 48)
+    return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days <= 60)
+    return `${days} days ago`;
+
+  return new Date(time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 };
 
 /** A dollar amount from the API's decimal string, such as "0.01". A missing value, or one that isn't a number, reads as a dash. */

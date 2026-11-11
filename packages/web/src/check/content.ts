@@ -236,8 +236,11 @@ const stringOf = (value: unknown): string | undefined => typeof value === 'strin
 /** A long address as its start and end, so a row stays readable. The whole address is the row's title. */
 export const shortValue = (value: string, max = 14): string => value.length <= max + 6 ? value : `${value.slice(0, Math.floor(max / 2) - 1)}…${value.slice(-Math.floor(max / 2) + 1)}`;
 
-/** The key-value list of what the API asks, from `asks` and the decoded challenge. A value the answer lacks has no row. */
-export const askRows = (check: Pick<PayableCheck, 'asks' | 'protocol' | 'upstream' | 'price' | 'checkedAt'>): readonly AskRow[] => {
+/** The key-value list of what the API asks, from `asks` and the decoded challenge. A value the answer lacks, or holds empty, has no row, on any protocol. */
+export const askRows = (check: Pick<PayableCheck, 'asks' | 'protocol' | 'upstream' | 'price' | 'checkedAt'>): readonly AskRow[] =>
+  askRowsOf(check).filter(row => row.value.trim() !== '');
+
+const askRowsOf = (check: Pick<PayableCheck, 'asks' | 'protocol' | 'upstream' | 'price' | 'checkedAt'>): readonly AskRow[] => {
   const { asks } = check;
   const rows: AskRow[] = [];
   if (check.protocol === 'mpp') {
@@ -330,7 +333,7 @@ const refusals: Readonly<Record<string, RefusalWords>> = {
 // One sentence for each detail the pay host gives, under its reason's title
 const detailText: Readonly<Record<string, string>> = {
   not_a_url: 'Paste a full link to one endpoint, such as api.example.com/v1/quote.',
-  invalid_host: 'Paste a link with a host name, such as api.example.com.',
+  invalid_host: 'This isn\'t a host we can route to.',
   ip_address: 'Paste a link with a host name, not an IP address.',
   blocklisted: 'Anyfare doesn\'t route payments to this host.',
   own_host: 'This is one of Anyfare\'s own hosts.',
@@ -343,6 +346,11 @@ const detailText: Readonly<Record<string, string>> = {
   refused: 'This host refused the connection.',
   timeout: 'This host didn\'t answer in time.',
   unreachable: 'This host couldn\'t be reached.',
+};
+
+// A detail that has a title of its own, where the reason's title would read wrong for it
+const detailTitle: Readonly<Record<string, string>> = {
+  invalid_host: 'We can\'t route to this host',
 };
 
 // The details each reason has: a detail of another reason is not worded as this one
@@ -373,7 +381,7 @@ export const refusalWords = (refusal: Refusal, method: CheckMethod = defaultMeth
   }
   const base = refusals[reason];
   if (base !== undefined)
-    return detail !== undefined && detailsOf[reason]?.includes(detail) ? { title: base.title, text: detailText[detail]! } : base;
+    return detail !== undefined && detailsOf[reason]?.includes(detail) ? { title: detailTitle[detail] ?? base.title, text: detailText[detail]! } : base;
 
   return { title: 'We couldn\'t check this link', text: cut(refusal.message, maxDescriptionLength) };
 };

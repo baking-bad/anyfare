@@ -5,7 +5,7 @@ import { servicesMarkdown } from '../src/markdown/services';
 import { serviceMarkdown } from '../src/markdown/service';
 import { markdownPageFor } from '../src/markdown/pages';
 import { missingPageFor } from '../src/missing/pages';
-import { callsChange, checkHref, isHost, lastCall, meterShare, parsePeriod, perBuyer, serviceHref } from '../src/services/content';
+import { callsChange, checkHref, endpointsLine, hostOfSegment, isHost, lastCall, meterShare, parsePeriod, perBuyer, serviceHref, servicePath } from '../src/services/content';
 import { apiServicesQuery, parseServicesFilters, servicesHref, withSearch, withSort } from '../src/services/filters';
 import { paths } from '../src/api/endpoints';
 import { answer, sampleCall, sampleService } from './support/fakeApi';
@@ -50,9 +50,52 @@ describe('the fake services list', () => {
   });
 });
 
+describe('the count of paid endpoints', () => {
+  it('says how many have calls in the period when fewer are listed', () => {
+    expect(endpointsLine(7, 7)).toBe('7 paid endpoints');
+    expect(endpointsLine(1, 1)).toBe('1 paid endpoint');
+    expect(endpointsLine(7, 6)).toBe('7 paid endpoints, 6 with calls in this period');
+    expect(endpointsLine(2_000, 1_500)).toBe('2,000 paid endpoints, 1,500 with calls in this period');
+  });
+
+  it('is in the twin of a service', () => {
+    const service = sampleService('api.example.com', '30d', now)!;
+
+    expect(serviceMarkdown(settings, 'api.example.com', { ok: true, value: service }, { ok: false, error: { status: 503, code: 'x', message: 'x' } })).toContain(`${service.paidEndpoints} paid endpoints.`);
+    expect(serviceMarkdown(settings, 'api.example.com', { ok: true, value: { ...service, paidEndpoints: service.endpoints.length + 1 } }, { ok: false, error: { status: 503, code: 'x', message: 'x' } })).toContain(`${service.endpoints.length + 1} paid endpoints, ${service.endpoints.length} with calls in this period.`);
+  });
+});
+
 describe('the host', () => {
-  it.each([['api.example.com', true], ['A.Example.COM', true], ['xn--e1afmkfd.xn--p1ai', true], ['localhost', false], ['bad_host.com', false], ['a..com', false], ['-a.com', false], ['a.com:80', false], ['', false], [`${'a'.repeat(64)}.com`, false]])('%s is %s', (host, valid) => {
+  it.each([['api.example.com', true], ['A.Example.COM', true], ['xn--e1afmkfd.xn--p1ai', true], ['localhost', false], ['bad_host.com', false], ['a..com', false], ['-a.com', false], ['a.com:80', true], ['fake-api.test:8186', true], ['a.com:123456', false], ['a.com:', false], ['a.com.', false], ['a.b.com.:80', false], ['a.com/x', false], ['a.com?x', false], ['a.com#x', false], ['a b.com', false], ['a.123', false], ['', false], [`${'a.'.repeat(129)}com`, false], [`${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(57)}.com`, true], [`${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(58)}.com`, false], [`${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(57)}.com:65535`, true], [`${'a'.repeat(64)}.com`, false]])('%s is %s', (host, valid) => {
     expect(isHost(host)).toBe(valid);
+  });
+
+  it('reads the host out of an address segment: decoded once, lower case', () => {
+    expect(hostOfSegment('fake-api.test%3A8186')).toBe('fake-api.test:8186');
+    expect(hostOfSegment('fake-api.test:8186')).toBe('fake-api.test:8186');
+    expect(hostOfSegment('Fake-API.Test%3a8186')).toBe('fake-api.test:8186');
+    expect(isHost(hostOfSegment('API.Example.com'))).toBe(true);
+    expect(isHost(hostOfSegment('api.example.com.'))).toBe(false);
+    expect(isHost(hostOfSegment('localhost'))).toBe(false);
+    expect(isHost(hostOfSegment('api.example.com%2Fx'))).toBe(false);
+    expect(isHost(hostOfSegment('%E0%A4%A.com'))).toBe(false);
+    expect(isHost(hostOfSegment('a.com%253A80'))).toBe(false);
+  });
+
+  it('builds every link to a service with the one builder, and the proxy table accepts a host with a port', () => {
+    expect(servicePath('Fake-API.test:8186')).toBe('/services/fake-api.test%3A8186');
+    expect(serviceHref('fake-api.test:8186', '7d')).toBe('/services/fake-api.test%3A8186?period=7d');
+    for (const segment of ['fake-api.test%3A8186', 'fake-api.test:8186', 'FAKE-API.test%3a8186']) {
+      const found = missingPageFor(`/services/${segment}`)!;
+
+      expect(found.page.valid(found.name), segment).toBe(true);
+    }
+    for (const segment of ['fake-api.test%3A8186.', 'localhost', 'a.com%2Fb', `${'a'.repeat(260)}.com`]) {
+      const found = missingPageFor(`/services/${segment}`)!;
+
+      expect(found.page.valid(found.name), segment).toBe(false);
+    }
   });
 
   it('is told apart in the address by the proxy table, one entry per kind', () => {
@@ -96,6 +139,7 @@ describe('the numbers of a service', () => {
     expect(lastCall(new Date(now - 23 * 3_600_000).toISOString(), now)).toBe('23h ago');
     expect(lastCall(new Date(now - 30 * 3_600_000).toISOString(), now)).toBe('Yesterday');
     expect(lastCall(new Date(now - 3 * 86_400_000).toISOString(), now)).toBe('3 days ago');
+    expect(lastCall(new Date(now - 90 * 86_400_000).toISOString(), now)).toBe('Aug 13, 2026');
     expect(lastCall('nope', now)).toBe('-');
   });
 

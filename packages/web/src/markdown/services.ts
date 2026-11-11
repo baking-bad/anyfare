@@ -3,7 +3,7 @@ import type { ApiResult } from '../api/reader';
 import type { ServicesPage } from '../api/types';
 import type { SiteSettings } from '../config';
 import { count, ms, pct, usdOf } from '../format';
-import { cappedLine, firstRunLine, noMatchLine, payHowLine, servicesDescription, servicesLead, servicesTitle } from '../services/content';
+import { cappedLine, firstRunLine, noMatchLine, payHowLine, servicePath, servicesDescription, servicesLead, servicesTitle } from '../services/content';
 import { apiServicesQuery, servicesHref, servicesPageSize, sortChoices, type ServicesFilters } from '../services/filters';
 
 // The Services page as Markdown: the same facts as the page, from the same read.
@@ -11,7 +11,7 @@ import { apiServicesQuery, servicesHref, servicesPageSize, sortChoices, type Ser
 const cell = (text: string): string => text.replaceAll('|', '\\|');
 
 const row = (siteUrl: string, service: ServicesPage['services'][number]): string =>
-  `| [${cell(service.host)}](${siteUrl}/services/${service.host}) | ${count(service.paidEndpoints)} | ${usdOf(service.priceFrom)} | ${count(service.calls)} | ${count(service.buyers)} | ${usdOf(service.volume)} | ${service.successRate === null ? '-' : pct(service.successRate)} | ${service.p50Ms === null ? '-' : ms(service.p50Ms)} |`;
+  `| [${cell(service.host)}](${siteUrl}${servicePath(service.host)}) | ${count(service.paidEndpoints)} | ${usdOf(service.priceFrom)} | ${count(service.calls)} | ${count(service.buyers)} | ${usdOf(service.volume)} | ${service.successRate === null ? '-' : pct(service.successRate)} | ${service.p50Ms === null ? '-' : ms(service.p50Ms)} |`;
 
 const list = (siteUrl: string, page: ServicesPage, filters: ServicesFilters): string => {
   const pages = Math.max(1, Math.ceil(page.total / page.size));

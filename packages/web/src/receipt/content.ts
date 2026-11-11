@@ -95,6 +95,9 @@ const protocolOf = (paidWith: PaidWith): string => paidWith === 'tempo' ? 'MPP' 
 export const sideLine = (side: { readonly paidWith: PaidWith; readonly asset: string | null; readonly amount: string }): string =>
   side.paidWith === 'credits' ? `${tokenAmount(side.amount)} in Credits` : `${tokenAmount(side.amount)} ${side.asset ?? 'USDC'} on ${chainName(side.paidWith)}`;
 
+/** What a buyer who was not charged would have paid: "Would have paid 0.0044 in Credits", "Would have paid 0.010 USDC on NEAR". */
+export const wouldHavePaid = (side: Parameters<typeof sideLine>[0]): string => `Would have paid ${sideLine(side)}`;
+
 /** The wording of one step: a title and sometimes a note. A name the page doesn't know shows its code. */
 export const stepWords = (name: string, receipt: Receipt): { readonly title: string; readonly note?: string } => {
   const { buyer, api } = receipt;

@@ -83,6 +83,7 @@ let down: Running;
 let refused: Running;
 let shared: Running;
 let capped: Running;
+let edge: Running;
 
 beforeAll(async () => {
   const build = spawnSync(process.execPath, [nextBin, 'build'], {
@@ -93,19 +94,20 @@ beforeAll(async () => {
   if (build.status !== 0)
     throw new Error(`next build failed:\n${build.stdout}\n${build.stderr}`);
 
-  const [fullApi, emptyApi, downApi, cappedApi] = await Promise.all([startFakeApi('full'), startFakeApi('empty'), startFakeApi('down'), startFakeApi('capped')]);
-  [full, empty, down, refused, shared, capped] = await Promise.all([
+  const [fullApi, emptyApi, downApi, cappedApi, edgeApi] = await Promise.all([startFakeApi('full'), startFakeApi('empty'), startFakeApi('down'), startFakeApi('capped'), startFakeApi('edge')]);
+  [full, empty, down, refused, shared, capped, edge] = await Promise.all([
     startSite(fullApi, fullApi.url),
     startSite(emptyApi, emptyApi.url),
     startSite(downApi, downApi.url),
     startSite(undefined, await refusedUrl()),
     startSite(fullApi, fullApi.url, sharedUrls),
     startSite(cappedApi, cappedApi.url),
+    startSite(edgeApi, edgeApi.url),
   ]);
 }, 300_000);
 
 afterAll(async () => {
-  for (const running of [full, empty, down, refused, shared, capped]) {
+  for (const running of [full, empty, down, refused, shared, capped, edge]) {
     running?.process.kill();
     await running?.api?.close();
   }
@@ -731,13 +733,86 @@ describe('the Services page', () => {
   });
 });
 
+describe('a service whose host has a port, or is very long', () => {
+  const port = 'fake-api.test:8186';
+  const long = `${'a'.repeat(60)}.${'b'.repeat(60)}.${'c'.repeat(60)}.long-host.test`;
+
+  it.each([['percent-encoded', 'fake-api.test%3A8186'], ['with a literal colon', 'fake-api.test:8186'], ['in capitals', 'FAKE-API.TEST%3A8186']])('answers 200 for the host %s, and its Markdown twin too', async (_, segment) => {
+    const page = await get(edge, `/services/${segment}`);
+    const twin = await get(edge, `/services/${segment}.md`);
+
+    expect(page.response.status).toBe(200);
+    expect(page.body).toContain(port);
+    expect(twin.response.status).toBe(200);
+    expect(twin.body).toContain(`# ${port}`);
+    expect(edge.api!.requests.map(request => request.path)).toContain('/v1/services/fake-api.test%3A8186?period=30d');
+  });
+
+  it('is the 404 page for a trailing dot, a host with no dot, a path character and a host that is too long', async () => {
+    const before = edge.api!.requests.length;
+    const paths = ['/services/fake-api.test%3A8186.', '/services/localhost%3A8186', '/services/fake-api.test%2F8186', '/services/a.com%2Fb', `/services/${'a'.repeat(260)}.com`];
+    for (const path of paths) {
+      expect((await get(edge, path)).response.status, path).toBe(404);
+      expect((await get(edge, `${path}.md`)).response.status, `${path}.md`).toBe(404);
+    }
+    expect(edge.api!.requests.slice(before).filter(request => request.path.startsWith('/v1/services/'))).toEqual([]);
+  });
+
+  it('is linked from every list with the one address, and the check page offers its Service button', async () => {
+    const link = 'href="/services/fake-api.test%3A8186"';
+
+    for (const path of ['/', '/services', '/calls', `/calls/pay_porthost`, `/check?url=${encodeURIComponent(`${port}/v1/sample/lookup`)}`])
+      expect((await get(edge, path)).body, path).toContain(link);
+    for (const path of ['/index.md', '/services.md', '/calls.md', '/calls/pay_porthost.md'])
+      expect((await get(edge, path)).body, path).toContain('/services/fake-api.test%3A8186)');
+  });
+
+  it('wraps the host in the breadcrumb, at any letter', async () => {
+    const { response, body } = await get(edge, `/services/${long}`);
+
+    expect(response.status).toBe(200);
+    expect(body).toContain(`<span class="mono crumb-current" aria-current="page">${long}</span>`);
+  });
+});
+
+describe('a free call from Credits', () => {
+  it('says the buyer was not charged, then what it would have paid, in the muted style', async () => {
+    const { body } = await get(edge, '/calls/pay_freecredits');
+    const page = pageText(body);
+
+    expect(page).toContain('The buyer was not charged');
+    expect(body).toContain('<span class="small muted">Would have paid 0.0044 in Credits</span>');
+    expect(page).not.toContain('0.0044 in Credits</span><span');
+    expect((await get(edge, '/calls/pay_freecredits.md')).body).toContain('was not charged. Would have paid 0.0044 in Credits');
+  });
+
+  it('says it for a chain payment too', async () => {
+    const { body } = await get(edge, '/calls/pay_freenoapi');
+
+    expect(body).toContain('Would have paid 0.003 USDC on Base');
+  });
+});
+
+describe('how long ago a call was', () => {
+  it('reads days after 48 hours, and the date after 60 days', async () => {
+    const { body } = await get(edge, '/calls?page=4');
+    const page = pageText(body);
+    const date = new Date(Date.now() - 90 * 86_400_000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+
+    expect(page).toContain('6 days ago');
+    expect(page).toContain('14 days ago');
+    expect(page).toContain(date);
+    expect(page).not.toMatch(/\d{3}h ago/);
+  });
+});
+
 describe('the Service page', () => {
   it('answers 200 with the head, the endpoints, the six numbers, the tables and the live calls', async () => {
     const { response, body } = await get(full, '/services/api.example.com');
     const page = pageText(body);
 
     expect(response.status).toBe(200);
-    for (const text of ['4<!-- --> paid endpoint', 'Check an endpoint', 'Paths only. We never show query strings', 'Price now', 'Today', 'All time', 'Paid calls', 'Unique buyers', 'Came back', 'Answered 2xx', 'Median time', 'p95 816 ms', '6 failed calls, not charged', 'vs the 30 days before', 'Paid calls per day', 'By payment method', 'Avg. per buyer', 'Top 5 buyers', 'Together: 48% of paid calls', 'Live calls to api.example.com'])
+    for (const text of ['4 paid endpoints', 'Check an endpoint', 'Paths only. We never show query strings', 'Price now', 'Today', 'All time', 'Paid calls', 'Unique buyers', 'Came back', 'Answered 2xx', 'Median time', 'p95 816 ms', '6 failed calls, not charged', 'vs the 30 days before', 'Paid calls per day', 'By payment method', 'Avg. per buyer', 'Top 5 buyers', 'Together: 48% of paid calls', 'Live calls to api.example.com'])
       expect(page).toContain(text);
     expect(body).toContain('href="/check?url=api.example.com/v1/sample/quotes/latest"');
     expect(body).toContain('href="/calls?service=api.example.com"');
@@ -1221,7 +1296,8 @@ describe('the Check page', () => {
       ['surprise.example.com/v1/x', 'We couldn&#x27;t check this link', 'Something we did not expect &lt;b&gt;happened&lt;/b&gt;'],
       ['not a link', 'This isn&#x27;t a link', 'such as api.example.com/v1/quote.'],
       ['203.0.113.7/v1/x', 'This isn&#x27;t a link', 'Paste a link with a host name, not an IP address.'],
-      ['localhost/v1/x', 'This isn&#x27;t a link', 'Paste a link with a host name, such as api.example.com.'],
+      ['localhost/v1/x', 'We can&#x27;t route to this host', 'This isn&#x27;t a host we can route to.'],
+      ['pay.example.com/v1/x', 'We don&#x27;t route to this host', 'This is one of Anyfare&#x27;s own hosts.'],
       ['limited.example.com/v1/x', 'Too many checks', 'Wait a minute and try again.'],
     ];
     for (const [link, title, line] of cases) {
@@ -1288,7 +1364,7 @@ describe('the Check page', () => {
       expect(scripts.every(script => script.includes(`nonce="${nonce}"`))).toBe(true);
     }
     const description = (await get(full, checkPath('hostile.example.com/v1/x'))).body;
-    expect(description).toContain('<p class="small muted mt-8 ask-description">&lt;script&gt;alert(1)&lt;/script&gt;</p>');
+    expect(description).toContain('<dd class="ask-description">&lt;script&gt;alert(1)&lt;/script&gt;</dd>');
   });
 
   it('waits for a slow check and still answers 200 with the result', async () => {

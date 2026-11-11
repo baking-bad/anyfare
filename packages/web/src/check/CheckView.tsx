@@ -14,7 +14,7 @@ import { Rail } from '../components/Rail';
 import { Tabs } from '../components/Tabs';
 import { tryHref, tryLinks } from '../content/home';
 import { ago, ms, usdOf } from '../format';
-import { isHost } from '../services/content';
+import { isHost, servicePath } from '../services/content';
 import type { PayableCheck, Refusal } from './answer';
 import { CheckCalls } from './CheckCalls';
 import { CheckStats } from './CheckStats';
@@ -107,7 +107,7 @@ const CheckHead = ({ check, method, now }: { readonly check: PayableCheck; reado
     </div>
     <div className="row">
       <CopyButton text={check.link} label="Copy pay link" variant="primary" size="lg" withIcon />
-      {isHost(check.host) ? <Button variant="secondary" size="lg" href={`/services/${encodeURIComponent(check.host.toLowerCase())}`}>Service</Button> : null}
+      {isHost(check.host) ? <Button variant="secondary" size="lg" href={servicePath(check.host)}>Service</Button> : null}
     </div>
   </div>
 );
@@ -127,7 +127,7 @@ const Asks = ({ check }: { readonly check: PayableCheck }) => {
           ? <code key={index}>{part.text}</code>
           : part.strong ? <b key={index}>{part.text}</b> : part.text)}
       </p>
-      {rows.length === 0 ? null : (
+      {rows.length === 0 && description === undefined ? null : (
         <dl className="kv ask-kv mt-8">
           {rows.map(row => (
             <div key={row.label} className="kv-row">
@@ -135,9 +135,14 @@ const Asks = ({ check }: { readonly check: PayableCheck }) => {
               <dd>{row.code ? <code title={row.value}>{row.value}</code> : row.value}</dd>
             </div>
           ))}
+          {description === undefined ? null : (
+            <div className="kv-row">
+              <dt>Description</dt>
+              <dd className="ask-description">{description}</dd>
+            </div>
+          )}
         </dl>
       )}
-      {description === undefined ? null : <p className="small muted mt-8 ask-description">{description}</p>}
     </div>
   );
 };

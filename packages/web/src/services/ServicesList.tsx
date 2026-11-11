@@ -17,7 +17,7 @@ import { useSettings } from '../components/Settings';
 import { Skeleton } from '../components/Skeleton';
 import { Sparkline } from '../components/Sparkline';
 import { count, ms, pct, usdOf } from '../format';
-import { cappedLine, firstRunLine, firstRunTitle, noMatchLine, unavailableLine } from './content';
+import { cappedLine, firstRunLine, firstRunTitle, noMatchLine, servicePath, unavailableLine } from './content';
 import { apiServicesQuery, parseServicesFilters, servicesHref, sortChoices, withoutControls, withSearch, withSort, type ServicesFilters } from './filters';
 
 export interface ServicesListProps {
@@ -168,7 +168,7 @@ export const ServicesList = ({ first }: ServicesListProps) => {
               </tr>
             ) : result.value.services.map(service => (
               <tr key={service.host} className="click">
-                <td><Link prefetch={false} className="row-link row-title mono svc-host" href={`/services/${encodeURIComponent(service.host)}`}>{service.host}</Link></td>
+                <td><Link prefetch={false} className="row-link row-title mono svc-host" href={servicePath(service.host)}>{service.host}</Link></td>
                 <td className="r">{count(service.paidEndpoints)}</td>
                 <td className="r">{usdOf(service.priceFrom)}</td>
                 <td className="r semi">{count(service.calls)}</td>

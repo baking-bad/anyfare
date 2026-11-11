@@ -1,6 +1,6 @@
 import type { Period } from '../api/types';
 import { defaultMethod, knownMethod } from '../check/method';
-import { ago, pct } from '../format';
+import { ago, count, pct } from '../format';
 
 // The words and small rules of the Services page and the Service page. The pages and their Markdown
 // twins both read them, so they say the same.
@@ -36,12 +36,40 @@ export const serviceMissingLine = 'No paid call went to this service through Any
 export const serviceDescription = (host: string): string =>
   `${host} through Anyfare: its paid endpoints and prices, paid calls, buyers, how they paid, and how well it answers. Calls to it, live.`;
 
+// The API's host rule, the one rule of the website: labels of letters, digits and hyphens (at most 63, none
+// starting or ending with a hyphen), at least one dot, a last label that starts with a letter, an optional
+// port of up to five digits, a name of at most 253 characters and the whole of at most 259. Any case: a host
+// in capitals is the same host.
+const hostPattern = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}(?::[0-9]{1,5})?$/i;
+
+/** The longest host a service page can be about, with its port. */
+export const maxHost = 259;
+
 /**
- * A host name a service page can be about: dot-separated labels of letters, digits and hyphens, at least
- * two, at most 253 characters. A host in capitals is the same host.
+ * Whether a value is a host a service page can be about: `api.example.com` or `fake-api.test:8186`. A trailing
+ * dot, a host with no dot, a path character or a value over the length limit is not a host.
  */
 export const isHost = (host: string): boolean =>
-  host.length <= 253 && /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(host);
+  host.length <= maxHost && host.replace(/:[0-9]{1,5}$/, '').length <= 253 && hostPattern.test(host);
+
+/**
+ * The host an address holds in its path segment: percent-decoded once (a colon may come as `%3A`) and in
+ * lower case. The result may still not be a host: ask `isHost`.
+ */
+export const hostOfSegment = (segment: string): string => {
+  let decoded = segment;
+  try {
+    decoded = decodeURIComponent(segment);
+  }
+  catch {
+    // A malformed escape is kept as written, and is not a host
+  }
+
+  return decoded.toLowerCase();
+};
+
+/** A service page's path for a host: `/services/fake-api.test%3A8186`. The one builder of it. */
+export const servicePath = (host: string): string => `/services/${encodeURIComponent(host.toLowerCase())}`;
 
 export const periodChoices: readonly { readonly value: Period; readonly label: string }[] = [
   { value: 'today', label: 'Today' },
@@ -63,7 +91,7 @@ export const comparedWith = (period: Period): string => ({ today: 'the day befor
 
 /** A service page's address for a period. The default period has no query. */
 export const serviceHref = (host: string, period: Period = defaultPeriod, base = '/services'): string =>
-  `${base}/${encodeURIComponent(host)}${period === defaultPeriod ? '' : `?period=${period}`}`;
+  `${base}/${encodeURIComponent(host.toLowerCase())}${period === defaultPeriod ? '' : `?period=${period}`}`;
 
 /**
  * The check page's address for a host and a path: the path's characters are escaped, its slashes stay. The
@@ -94,17 +122,23 @@ export const perBuyer = (volume: string, buyers: number): number | null => {
   return average < 1 ? Number(average.toPrecision(3)) : average;
 };
 
-/** How long ago a buyer's last call was: "2m ago", "5h ago", then "Yesterday" for one day and "3 days ago" from two. */
+/** How long ago a buyer's last call was: "2m ago", "5h ago", then "Yesterday" for one day, and from two days what `ago` says. */
 export const lastCall = (at: string, now: number): string => {
   const time = Date.parse(at);
   if (!Number.isFinite(time))
     return '-';
-  const hours = (now - time) / 3_600_000;
+  const days = Math.floor((now - time) / 86_400_000);
 
-  const days = Math.floor(hours / 24);
-
-  return days < 1 ? ago(time, now) : days === 1 ? 'Yesterday' : `${days} days ago`;
+  return days === 1 ? 'Yesterday' : ago(time, now);
 };
+
+/**
+ * The count of paid endpoints under a service's name: "7 paid endpoints". The API counts every endpoint the
+ * service ever had a paid call on, and lists only those with calls in the chosen period, so when fewer are
+ * listed the line says how many: "7 paid endpoints, 6 with calls in this period".
+ */
+export const endpointsLine = (paid: number, listed: number): string =>
+  `${count(paid)} paid endpoint${paid === 1 ? '' : 's'}${listed < paid ? `, ${count(listed)} with calls in this period` : ''}`;
 
 /** The share of a way to pay, against the largest one: how long its meter is, from 0 to 1. */
 export const meterShare = (share: number, largest: number): number => largest > 0 ? Math.min(1, Math.max(0, share / largest)) : 0;

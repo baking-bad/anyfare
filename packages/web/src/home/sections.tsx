@@ -11,6 +11,7 @@ import { Icon } from '../components/Icon';
 import { MethodSelect } from '../check/MethodSelect';
 import { agentPrompt, agentsText, hero, nearIntentsUrl, questions, topText, tryHref, tryLinks, ways } from '../content/home';
 import { count, usdOf } from '../format';
+import { servicePath } from '../services/content';
 
 /** The hero: the line, the link field, and the console. The field is a plain GET form, so it works without scripts. */
 export const Hero = ({ consoleUrl }: { readonly consoleUrl: string }) => (
@@ -112,7 +113,7 @@ export const TopServices = ({ services }: { readonly services: ApiResult<Service
           <tbody>
             {services.value.services.map(service => (
               <tr key={service.host} className="click">
-                <td><Link className="row-link row-title" href={`/services/${encodeURIComponent(service.host)}`}>{service.host}</Link></td>
+                <td><Link className="row-link row-title" href={servicePath(service.host)}>{service.host}</Link></td>
                 <td className="r">{count(service.paidEndpoints)}</td>
                 <td className="r">{usdOf(service.priceFrom)}</td>
                 <td className="r semi">{count(service.calls)}</td>
