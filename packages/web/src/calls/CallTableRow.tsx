@@ -45,7 +45,7 @@ export const CallTableRow = ({ call, now, fresh = false, showService = true }: {
       </td>
       {showService ? (
         <td>
-          <Link prefetch={false} className="call-link" href={href}>
+          <Link prefetch={false} className="call-link" href={href} title={`${call.service}${call.path}`}>
             <span className="small semi call-service ellipsis">{call.service}</span>
             <span className="xs muted mono call-endpoint ellipsis">{call.service}{call.path}</span>
           </Link>

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { paths } from '../api/endpoints';
 import type { Call } from '../api/types';
@@ -12,6 +12,7 @@ import { LiveDot } from '../components/LiveDot';
 import { useSettings } from '../components/Settings';
 import { useCallStream } from '../live/useCallStream';
 import { useNow } from '../live/useNow';
+import { fromCheckName, fromCheckValue } from './content';
 import { serviceCallsSize } from './data';
 
 export interface ServiceLiveProps {
@@ -32,6 +33,14 @@ const rememberedCalls = 500;
  */
 export const ServiceLive = ({ host, calls: firstCalls, now: serverNow, small = false }: ServiceLiveProps) => {
   const { apiUrl } = useSettings();
+  // The check's marker has done its work once the page shows: it is taken off the address
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get(fromCheckName) !== fromCheckValue)
+      return;
+    url.searchParams.delete(fromCheckName);
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  }, []);
   const now = useNow(serverNow);
   const [calls, setCalls] = useState(firstCalls);
   const [freshId, setFreshId] = useState<string | undefined>(undefined);

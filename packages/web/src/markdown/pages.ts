@@ -87,7 +87,7 @@ export const markdownPages: readonly MarkdownPage[] = [
   },
   {
     pattern: /^\/check$/,
-    render: async ({ settings, read, payRead, search }) => checkMarkdown(settings, await loadCheckData(payRead, read, parseCheckParams(search))),
+    render: async ({ settings, read, payRead, search }) => checkMarkdown(settings, await loadCheckData(payRead, read, parseCheckParams(search), new URL(settings.payUrl).host)),
   },
   {
     pattern: /^\/calls\/[A-Za-z0-9_-]{1,64}$/,

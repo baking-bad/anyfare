@@ -53,6 +53,8 @@
 
 .top-intro { gap: 16px; max-width: 640px; }
 /* The whole row opens the service: the host's link stretches over it */
+/* The host keeps the height its line had before it was cut, so the row's height doesn't change */
+.top-host { min-height: 21px; }
 table.t tr.click { position: relative; }
 table.t tr.click .row-link { text-decoration: none; }
 table.t tr.click .row-link::after { content: ""; position: absolute; inset: 0; }

@@ -24,7 +24,7 @@ export const loadServiceCalls = (read: Reader, host: string): Promise<ApiResult<
 
 /** The request behind the Services page, with the address a browser or an agent uses. */
 export const servicesRequests = ({ apiUrl }: Pick<SiteSettings, 'apiUrl'>, filters: ServicesFilters): readonly AgentRequest[] => [
-  { method: 'GET', url: `${apiUrl}${paths.services(apiServicesQuery(filters))}`, note: 'The services as pages of JSON. sort: calls, buyers, volume, endpoints or price' },
+  { method: 'GET', url: `${apiUrl}${paths.services(apiServicesQuery(filters))}`, note: 'The services as pages of JSON. sort: calls, newest, buyers, volume, endpoints or price' },
 ];
 
 /** The requests behind a Service page. */

@@ -45,6 +45,11 @@ export const unavailableLine = 'The Platform API didn\'t answer. Try again in a 
 export const payHowLine = (payUrl: string): string =>
   `Any of them that asks for x402 or MPP can be paid at ${payUrl}/<host>/<path>, from any way we take: USDC on NEAR, Base or Solana, USDC.e on Tempo, or a payment key. The API's own chain doesn't limit how you pay. The price is a guide: the live 402 is what counts.`;
 
+/** The marker the Check page's Service button puts on its link: a service just listed by that check may need a moment before the API shows it. */
+export const fromCheckName = 'from';
+export const fromCheckValue = 'check';
+export const fromCheck = `${fromCheckName}=${fromCheckValue}`;
+
 export const serviceMissingTitle = 'Service not found';
 
 export const serviceMissingLine = 'No paid call or check has listed this service yet.';

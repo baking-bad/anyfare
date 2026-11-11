@@ -49,11 +49,14 @@ umask 077
 ${curl('signup-to-file')}
 \`\`\`
 
-3. Make a payment key with the limits your user sets. "key" is shown once: save it as ANYFARE_PAYMENT_KEY.
+3. Make a payment key with the limits your user sets. "key" is shown once: save it as ANYFARE_PAYMENT_KEY. The command writes the answer to anyfare-key.json, which only the user can read (the umask from step 2), and the last line reads the key into a variable without printing it. "id" is the key's id, for changing or revoking it later: read it into ANYFARE_KEY_ID the same way.
 
 \`\`\`sh
+umask 077
 ANYFARE_MASTER_KEY=$(jq -r .masterKey anyfare-account.json)
-${curl('make-key')}
+${curl('make-key-to-file')}
+ANYFARE_PAYMENT_KEY=$(jq -r .key anyfare-key.json)
+ANYFARE_KEY_ID=$(jq -r .id anyfare-key.json)
 \`\`\`
 
 4. Call. Only a 2xx answer is charged, and it carries Anyfare-Receipt: id="pay_...". Read the receipt at ${apiUrl}/v1/calls/<id>.

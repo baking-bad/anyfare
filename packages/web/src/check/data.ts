@@ -4,7 +4,7 @@ import type { CallsPage, EndpointStats } from '../api/types';
 import type { AgentRequest } from '../components/AgentView';
 import type { SiteSettings } from '../config';
 import { readCheckAnswer, type PayableCheck, type Refusal } from './answer';
-import { callsSize, checkHeader, defaultMethod, isTooLong, tooLongRefusal, type CheckMethod, type CheckParams } from './content';
+import { callsSize, checkHeader, defaultMethod, isTooLong, ownPayInner, ownPayTitle, tooLongRefusal, type CheckMethod, type CheckParams } from './content';
 
 /** What the check of the typed link came to. */
 export type CheckState =
@@ -12,6 +12,8 @@ export type CheckState =
   | { readonly kind: 'empty' }
   // The link is payable. `raw` is the answer as it came.
   | { readonly kind: 'payable'; readonly check: PayableCheck; readonly raw: unknown }
+  // The link is one of the pay host's own: `inner` is the link after the pay host, empty when there is none. Nothing was asked.
+  | { readonly kind: 'own'; readonly inner: string; readonly raw: unknown }
   // The link can't be paid, or the pay host refused the check. `status` is what a twin answers with.
   | { readonly kind: 'refused'; readonly refusal: Refusal; readonly status: number; readonly raw: unknown }
   // The pay host didn't answer, or answered with something the page can't read
@@ -35,9 +37,13 @@ const refusalOf = (error: ReadFailure): Refusal | undefined => {
  * Checks a link on the pay host, as the visitor typed it, probed with `method`. No link is `empty`. A link that is too long makes
  * no request: it is "not a link". The server never requests the link itself: the pay host does, under its own rules.
  */
-export const loadCheck = async (read: Reader, url: string, method: CheckMethod = defaultMethod): Promise<CheckState> => {
+export const loadCheck = async (read: Reader, url: string, method: CheckMethod = defaultMethod, payHost?: string): Promise<CheckState> => {
   if (url === '')
     return { kind: 'empty' };
+  // A link to the pay host itself is looked at before anything is asked: the pay host would not route to itself
+  const inner = payHost === undefined ? undefined : ownPayInner(url, payHost);
+  if (inner !== undefined)
+    return { kind: 'own', inner, raw: { payable: false, reason: 'own_pay_link', message: ownPayTitle } };
   if (isTooLong(url))
     return { kind: 'refused', refusal: tooLongRefusal, status: 200, raw: { payable: false, reason: tooLongRefusal.reason, message: tooLongRefusal.message } };
   const result = await read(paths.check(url, method), isCheckBody, method === 'POST' ? { headers: checkHeader } : undefined);
@@ -64,8 +70,8 @@ export interface CheckData {
 }
 
 /** Reads the check on the pay host, then the endpoint's numbers and its last calls from the API. */
-export const loadCheckData = async (payRead: Reader, apiRead: Reader, params: CheckParams): Promise<CheckData> => {
-  const state = await loadCheck(payRead, params.url, params.method);
+export const loadCheckData = async (payRead: Reader, apiRead: Reader, params: CheckParams, payHost?: string): Promise<CheckData> => {
+  const state = await loadCheck(payRead, params.url, params.method, payHost);
   if (state.kind !== 'payable')
     return { params, state };
   const { host, path } = state.check;

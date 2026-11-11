@@ -7,6 +7,7 @@ import { topupAmount } from './src/console/amount';
 import { readSettings, type SiteSettings } from './src/config';
 import { consolePageRoute, hiddenRoute, passHeader, passSecret, surfaceFromHeader, surfaceHeader, surfaceOf, verdictFor, type Surface } from './src/hosts';
 import { hasMarkdown, markdownRoute, pageForMarkdownUrl, prefersMarkdown } from './src/markdown/negotiate';
+import { fromCheckName, fromCheckValue } from './src/services/content';
 import { isMissing, maxMissingName, missingKindHeader, missingNameHeader, missingPageFor, missingPageOfKind, missingPath } from './src/missing/pages';
 import { linkHeader } from './src/seo/links';
 import { contentSecurityPolicy, createNonce, securityHeaders } from './src/security/csp';
@@ -26,7 +27,7 @@ const missingResponse = async (request: NextRequest, requestHeaders: Headers, se
     return undefined;
   const { page, name } = entry;
   const read = createReader({ apiUrl: settings.apiInternalUrl, forwardedFor: visitorAddress(request.headers), timeoutMs: existenceTimeoutMs, onFailure: logApiFailure() });
-  if (!await isMissing(page, read, name))
+  if (!await isMissing(page, read, name, { afterCheck: request.nextUrl.searchParams.get(fromCheckName) === fromCheckValue }))
     return undefined;
   // Built from the request's own address with only the path changed: no host of the request is a target
   const target = request.nextUrl.clone();

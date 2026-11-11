@@ -28,7 +28,10 @@ table.t tr.click:focus-within { background: var(--surface-row-hover); }
 /* "7 paid endpoints, 6 with calls in this period" may need two lines on a phone */
 .svc-count .badge { white-space: normal; height: auto; min-height: 24px; padding-top: 4px; padding-bottom: 4px; line-height: 16px; }
 .svc-host-title { overflow-wrap: anywhere; }
-.svc-endpoint { display: inline-flex; align-items: center; gap: 8px; color: inherit; }
+.svc-endpoint { display: inline-flex; align-items: center; gap: 8px; color: inherit; max-width: min(480px, 60vw); vertical-align: top; }
+.svc-endpoint .method { flex: none; }
+@media (max-width: 1279px) { .svc-endpoint { max-width: min(270px, 60vw); } }
+.cut-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .svc-endpoint code { font-size: 13px; }
 /* The Copy button stays above the row's link, so pressing it never opens the row */
 .row-copy { position: relative; z-index: 1; }

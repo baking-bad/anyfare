@@ -113,7 +113,7 @@ export const TopServices = ({ services }: { readonly services: ApiResult<Service
           <tbody>
             {services.value.services.map(service => (
               <tr key={service.host} className="click">
-                <td><Link className="row-link row-title" href={servicePath(service.host)}>{service.host}</Link></td>
+                <td><Link className="row-link row-title cut top-host" href={servicePath(service.host)} title={service.host}>{service.host}</Link></td>
                 <td className="r">{count(service.paidEndpoints)}</td>
                 <td className="r">{usdOf(service.priceFrom)}</td>
                 <td className="r semi">{count(service.calls)}</td>

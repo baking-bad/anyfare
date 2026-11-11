@@ -227,6 +227,8 @@ describe('the examples, in the order an agent runs them', () => {
     await run('services');
     await run('service');
     await run('endpoint-stats');
+    await run('openapi-api');
+    await run('openapi-pay');
   });
 
   it('puts the destructive examples last, each on an account of its own', async () => {
@@ -241,6 +243,8 @@ describe('the examples, in the order an agent runs them', () => {
     expect((await pay('/_/key', { headers: bearer(key.json.key) })).status).toBe(200);
     const revoked = await run('revoke-key', { ...own, ANYFARE_KEY_ID: key.json.id });
     expect(revoked.json.id).toBe(key.json.id);
+    // The key made into a file answers as the key made on screen does
+    expect((await run('make-key-to-file', own)).json.key).toMatch(/^af_/);
     expect(revoked.json.revokedAt).not.toBeNull();
     // A revoked key stops at once
     const after = await pay('/_/key', { headers: bearer(key.json.key) });
@@ -372,7 +376,7 @@ describe('the errors the files list', () => {
   it('names each endpoint\'s errors in the text the same as the list', () => {
     const text = fullGuide(running.hosts);
     for (const [heading, list] of printedErrorList(text)) {
-      const endpoint = endpoints.find(candidate => heading.startsWith(`${candidate.method === 'SSE' ? 'GET' : candidate.method} ${candidate.path} `));
+      const endpoint = endpoints.find(candidate => heading === `${candidate.method === 'SSE' ? 'GET' : candidate.method} ${candidate.path} (${candidate.host === 'pay' ? 'pay host' : 'API host'})`);
       expect(endpoint, heading).toBeDefined();
       expect(list, heading).toEqual(endpoint!.errors);
     }
@@ -384,7 +388,7 @@ describe('the answers the text prints are the real ones', () => {
     const printed = printedAnswers(fullGuide(running.hosts));
     const compared: string[] = [];
     for (const answer of printed) {
-      const endpoint = endpoints.find(candidate => answer.heading.startsWith(`${candidate.method === 'SSE' ? 'GET' : candidate.method} ${candidate.path} `));
+      const endpoint = endpoints.find(candidate => answer.heading === `${candidate.method === 'SSE' ? 'GET' : candidate.method} ${candidate.path} (${candidate.host === 'pay' ? 'pay host' : 'API host'})`);
       expect(endpoint, answer.heading).toBeDefined();
       if (endpoint?.example === undefined)
         continue;

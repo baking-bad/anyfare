@@ -27,7 +27,7 @@ const sourceOf = (name: string): { readonly path: string; readonly text: string 
   sourceFiles(`${packages}/${name}/src`).map(path => ({ path, text: readFileSync(path, 'utf8') }));
 
 const sources = { api: sourceOf('api'), proxy: sourceOf('proxy') };
-const everything = [...sources.api, ...sources.proxy, ...sourceOf('core'), ...sourceOf('payments')].map(file => file.text).join('\n');
+const everything = [...sources.api, ...sources.proxy, ...sourceOf('core'), ...sourceOf('payments'), ...sourceOf('common')].map(file => file.text).join('\n');
 
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 

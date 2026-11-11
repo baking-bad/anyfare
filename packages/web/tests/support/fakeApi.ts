@@ -262,7 +262,7 @@ const hashOf = (paidWith: PaidWith, seed: string): string => paidWith === 'near'
 
 /**
  * The receipt of a sample call, steps and times as the API keeps them. The ids the fake knows: a sample
- * call's own id (`pay_sample0000`), and the named cases: `pay_creditspaid`, `pay_freecredits` (a free Credits call), `pay_longpath` (a 512-character path on a 200-character host), `pay_porthost`, `pay_freenoapi`,
+ * call's own id (`pay_sample0000`), and the named cases: `pay_creditspaid`, `pay_freecredits` (a free Credits call), `pay_longpath` (a 512-character path on a 200-character host), `pay_porthost`, `pay_pathusd` (the buyer pays in USDC on Base, the API in pathUSD on Tempo), `pay_6d2f1c3a-7b84-4e0d-9a51-c3e8f2b4a7d1` (the same, with an id as long as a real one), `pay_freenoapi`,
  * `pay_notxlink` (a transaction with no explorer URL), `pay_unknownstep` and `pay_settling` (the payment is
  * not final: no settled step, no `settledAt`, and a `null` fee). Any other id is unknown.
  */
@@ -275,6 +275,8 @@ export const sampleReceipt = (id: string, now: number): Receipt | undefined => {
     pay_settling: { ...sampleCall(1, now, 15), id: 'pay_settling', paidWith: 'base', apiPaidWith: 'base', status: 'paid', apiStatus: 200 },
     pay_freecredits: { ...sampleCall(3, now, 9), id: 'pay_freecredits', paidWith: 'credits', payer: null, status: 'free', apiStatus: 502, apiPaidWith: 'base', amount: '0.0044' },
     pay_longpath: { ...sampleCall(1, now, 2), id: 'pay_longpath', service: longHost, path: longPath, paidWith: 'base', payer: `0x${'ab12'.repeat(10)}` },
+    pay_pathusd: { ...sampleCall(1, now, 4), id: 'pay_pathusd', paidWith: 'base', apiPaidWith: 'tempo', payer: `0x${'cd34'.repeat(10)}`, status: 'paid', apiStatus: 200 },
+    'pay_6d2f1c3a-7b84-4e0d-9a51-c3e8f2b4a7d1': { ...sampleCall(1, now, 6), id: 'pay_6d2f1c3a-7b84-4e0d-9a51-c3e8f2b4a7d1', paidWith: 'base', apiPaidWith: 'tempo', payer: `0x${'cd34'.repeat(10)}`, status: 'paid', apiStatus: 200 },
     pay_porthost: { ...sampleCall(2, now, 5), id: 'pay_porthost', service: portHost, path: '/v1/sample/lookup', paidWith: 'near', payer: 'sample.near' },
   };
   const index = /^pay_sample(\d{4})$/.exec(id)?.[1];
@@ -288,7 +290,7 @@ export const sampleReceipt = (id: string, now: number): Receipt | undefined => {
   const paid = call.status === 'paid';
   const settling = id === 'pay_settling';
   const hasApi = call.apiPaidWith !== null;
-  const apiAsset = call.apiPaidWith === null ? 'USDC' : assetOf(call.apiPaidWith);
+  const apiAsset = id === 'pay_pathusd' || id.startsWith('pay_6d2f') ? 'pathUSD' : call.apiPaidWith === null ? 'USDC' : assetOf(call.apiPaidWith);
   const buyerHash = credits || !paid ? null : hashOf(call.paidWith, id.slice(-4));
   const apiHash = call.apiPaidWith === null ? null : hashOf(call.apiPaidWith, `api${id.slice(-3)}`);
   const steps: { step: string; at: string }[] = [

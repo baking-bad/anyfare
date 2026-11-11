@@ -77,9 +77,9 @@ export const EndpointsTable = ({ host, endpoints, now, unpaid = false }: { reado
           return (
             <tr key={`${endpoint.method ?? ''} ${endpoint.path}`} className="click">
               <td>
-                <Link prefetch={false} className="row-link svc-endpoint" href={checkHref(host, endpoint.path, endpoint.method)}>
+                <Link prefetch={false} className="row-link svc-endpoint" href={checkHref(host, endpoint.path, endpoint.method)} title={endpoint.path}>
                   {endpoint.method === null ? null : <span className={`method ${methodClass(endpoint.method)}`.trim()}>{endpoint.method.toUpperCase()}</span>}
-                  <code>{endpoint.path}</code>
+                  <code className="cut-path">{endpoint.path}</code>
                 </Link>
                 {note === undefined ? null : <span className="xs muted svc-checked">{note}</span>}
               </td>

@@ -111,7 +111,7 @@ ${fence(curl('check-post'), 'sh')}
 
 ${fence(`umask 077\n${curl('signup-to-file')}`, 'sh')}
 
-3. Make a payment key with limits (see "Payment key limits"). "key" is shown once:
+3. Make a payment key with limits (see "Payment key limits"). "key" is shown once. The "id" of the answer is the key's id: the examples that change or revoke a key use it as $ANYFARE_KEY_ID, and the list of keys (GET /v1/keys) shows the "id" of each key too.
 
 ${fence(`ANYFARE_MASTER_KEY=$(jq -r .masterKey anyfare-account.json)\n${curl('make-key')}`, 'sh')}
 

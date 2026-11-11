@@ -5,7 +5,7 @@ import { paidWithName } from '../content/home';
 import { count, ms, pct, usdOf } from '../format';
 import type { CheckNumbers, PayableCheck } from '../check/answer';
 import {
-  askRows, asksSentence, checkAddress, checkDescription, cut, defaultMethod, offersPost, tryPostLine, describedAs, emptyLine, linkParts, noCallsLine, periodName, refusalWords, titleFor, unavailableLine, unlistedLine, wayWords,
+  askRows, asksSentence, checkAddress, checkDescription, cut, defaultMethod, offersPost, tryPostLine, describedAs, emptyLine, linkParts, noCallsLine, periodName, refusalWords, titleFor, unavailableLine, unlistedLine, wayWords, ownPayLine, ownPayTitle,
 } from '../check/content';
 import type { CheckData } from '../check/data';
 import { inexactLine, isHost, servicePath } from '../services/content';
@@ -124,6 +124,12 @@ export const checkMarkdown = (settings: SiteSettings, data: CheckData): { readon
   }
   if (state.kind === 'unavailable')
     return { status: 503, body: `# ${titleFor(params.url, params.method)}\n\n${unavailableLine}\n` };
+  if (state.kind === 'own') {
+    const payHost = new URL(settings.payUrl).host;
+    const next = state.inner === '' ? '' : ` Ask as ${settings.siteUrl}${checkAddress({ ...params, url: state.inner }, '/check.md')}`;
+
+    return { status: 200, body: `# ${titleFor(params.url, params.method)}\n\n${ownPayTitle}. ${ownPayLine(payHost)}${next}\n` };
+  }
   if (state.kind === 'refused') {
     const { title, text } = refusalWords(state.refusal, params.method);
     const { host, path } = linkParts(params.url);

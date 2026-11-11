@@ -45,6 +45,9 @@ p { margin: 0; }
 .right { text-align: right; }
 /* The last part of a breadcrumb is a host or an id: it wraps inside the page, at any letter */
 .crumb-current { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+/* A host or a path in a table cell: it takes at most this much room and is cut with an ellipsis on one line */
+.cut { display: block; max-width: min(300px, 60vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1279px) { .cut { max-width: min(220px, 60vw); } }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .link { text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--border-hover); }
 .link:hover { text-decoration-color: currentColor; }

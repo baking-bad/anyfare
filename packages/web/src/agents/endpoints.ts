@@ -173,6 +173,13 @@ export const endpoints: readonly Endpoint[] = [
     source: { package: 'proxy', method: 'GET', path: '/_/key' },
   },
   {
+    id: 'openapi-pay', group: 'pay', method: 'GET', host: 'pay', path: '/openapi.json', summary: 'The OpenAPI document of the pay host\'s public routes', who: 'No key', example: 'openapi-pay',
+    answer: { status: 200, json: { openapi: '3.1.0', info: { title: 'Anyfare pay host', version: '1.0.0' }, servers: [{ url: '<API host>' }], paths: {}, components: {} } },
+    errors: [...publicErrors],
+    notes: ['An OpenAPI 3.1 document of the public routes of this host. Limited per address.'],
+    source: { package: 'proxy', method: 'GET', path: '/openapi.json' },
+  },
+  {
     id: 'signup', group: 'accounts', method: 'POST', host: 'api', path: '/v1/accounts', summary: 'Sign up. Returns the master key, once', who: 'No key', example: 'signup', alsoExamples: ['signup-to-file'],
     request: ['No body.'],
     answer: {
@@ -197,7 +204,7 @@ export const endpoints: readonly Endpoint[] = [
     source: { package: 'api', method: 'POST', path: '/v1/account/master-key/rotate' },
   },
   {
-    id: 'make-key', group: 'accounts', method: 'POST', host: 'api', path: '/v1/keys', summary: 'Make a payment key with limits. The key is shown once', who: 'Master key', example: 'make-key',
+    id: 'make-key', group: 'accounts', method: 'POST', host: 'api', path: '/v1/keys', summary: 'Make a payment key with limits. The key is shown once', who: 'Master key', example: 'make-key', alsoExamples: ['make-key-to-file'],
     request: [
       'JSON body, every field optional: `label` (text, at most 60 characters), `dailyBudget` (USD per UTC day), `maxPrice` (USD per call), `allowance` (USD in all), `expiresAt` (a future time, ISO 8601).',
       'Amounts are decimal strings with at most 6 decimals, such as `"0.05"`. Without `dailyBudget` the key gets the platform\'s default.',
@@ -218,12 +225,14 @@ export const endpoints: readonly Endpoint[] = [
     request: ['JSON body with the fields to change: `label`, `allowance`, `dailyBudget`, `maxPrice`, `expiresAt`. `null` clears a limit that is optional. A field you leave out stays as it is.'],
     answer: { status: 200, json: { ...keyView, dailyBudget: '10', maxPrice: null, remaining: { allowance: null, dailyBudget: '10' } } },
     errors: ['400 invalid_request', '404 not_found', ...masterErrors],
+    notes: ['`$ANYFARE_KEY_ID` in the example is the `id` of the key: the `id` in the answer of making a key (`POST /v1/keys`) or listing keys (`GET /v1/keys`).'],
     source: { package: 'api', method: 'PATCH', path: '/v1/keys/:id' },
   },
   {
     id: 'revoke-key', group: 'accounts', method: 'DELETE', host: 'api', path: '/v1/keys/:id', summary: 'Revoke a payment key. It stops working at once', who: 'Master key', example: 'revoke-key',
     answer: { status: 200, json: { id: '<key id>', revokedAt: time } },
     errors: ['404 not_found', ...masterErrors],
+    notes: ['`$ANYFARE_KEY_ID` in the example is the `id` of the key: the `id` in the answer of making a key (`POST /v1/keys`) or listing keys (`GET /v1/keys`).'],
     source: { package: 'api', method: 'DELETE', path: '/v1/keys/:id' },
   },
   {
@@ -402,7 +411,7 @@ export const endpoints: readonly Endpoint[] = [
   },
   {
     id: 'services', group: 'public', method: 'GET', host: 'api', path: '/v1/services', summary: 'The listed services, paid or checked: price, calls, buyers, volume', who: 'No key', example: 'services',
-    request: ['`q`: part of a host. `sort`: calls, buyers, volume, endpoints, price or newest. `page`: from 1. `size`: 1 to 100, default 20.'],
+    request: ['`q`: part of a host. `sort`: calls, newest, buyers, volume, endpoints or price. `page`: from 1. `size`: 1 to 100, default 20.'],
     answer: { status: 200, json: { services: [serviceRow], page: 1, size: 3, total: 1, totalCapped: false, totals: { services: 1, paidServices: 1, paidEndpoints: 1, calls30d: 12 }, updatedAt: time } },
     errors: ['400 invalid_request', ...publicErrors],
     notes: [
@@ -465,6 +474,13 @@ export const endpoints: readonly Endpoint[] = [
       '`exact` is `false` when the numbers stopped at their cap and cover the newest 10,000 calls only. A read that can\'t finish answers `503 stats_unavailable`: try again shortly.',
     ],
     source: { package: 'api', method: 'GET', path: '/v1/endpoints/stats' },
+  },
+  {
+    id: 'openapi-api', group: 'public', method: 'GET', host: 'api', path: '/openapi.json', summary: 'The OpenAPI document of the Platform API\'s public routes', who: 'No key', example: 'openapi-api',
+    answer: { status: 200, json: { openapi: '3.1.0', info: { title: 'Anyfare Platform API', version: '1.0.0' }, servers: [{ url: '<API host>' }], paths: {}, components: {} } },
+    errors: [...publicErrors],
+    notes: ['An OpenAPI 3.1 document of the public routes of this host. Limited per address.'],
+    source: { package: 'api', method: 'GET', path: '/openapi.json' },
   },
 ];
 

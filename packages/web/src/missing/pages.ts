@@ -26,6 +26,8 @@ export interface MissingPage {
   readonly valid: (name: string) => boolean;
   // The API's answer for the thing: a 404 means it doesn't exist. Any other failure is the page's to show.
   readonly exists: (read: Reader, name: string) => Promise<ApiResult<unknown>>;
+  // A thing the visitor may have made a moment ago, by a check: with the check's marker in the address, a miss is read once more after a short wait
+  readonly afterCheck?: boolean;
   readonly title: string;
   readonly line: string;
   readonly actions: (name: string) => readonly MissingAction[];
@@ -46,6 +48,7 @@ export const missingPages: readonly MissingPage[] = [
     pattern: /^\/services\/([^/]+)$/,
     valid: name => isHost(hostOfSegment(name)),
     exists: (read, name) => loadService(read, hostOfSegment(name), '30d'),
+    afterCheck: true,
     title: serviceMissingTitle,
     line: serviceMissingLine,
     actions: name => [
@@ -78,11 +81,44 @@ export const missingPageFor = (pathname: string): { readonly page: MissingPage; 
 
 export const missingPageOfKind = (kind: string | null): MissingPage | undefined => missingPages.find(page => page.kind === kind);
 
-/** Whether the thing is missing: it can't exist, or the API says it doesn't. Any other failure is not "missing". */
-export const isMissing = async (page: MissingPage, read: Reader, name: string): Promise<boolean> => {
+/** How long a miss waits before the one more read, for a visitor who has just made the thing by a check. */
+export const recheckDelayMs = 1_500;
+
+/** How many such waits may be going at once. Past it a miss is decided at once, so a flood of marked requests can't hold the server. */
+export const maxRechecks = 20;
+
+let rechecking = 0;
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+export interface MissingOptions {
+  // The request carries the check's marker
+  readonly afterCheck?: boolean;
+  // Waits `ms`. A test passes its own.
+  readonly pause?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Whether the thing is missing: it can't exist, or the API says it doesn't. Any other failure is not "missing".
+ * For a page that allows it and a request that carries the check's marker, the first answer of "not listed"
+ * is read once more after a pause of 1.5 seconds, and never more than once. At most 20 requests wait at a time.
+ */
+export const isMissing = async (page: MissingPage, read: Reader, name: string, { afterCheck = false, pause = sleep }: MissingOptions = {}): Promise<boolean> => {
   if (!page.valid(name))
     return true;
   const result = await page.exists(read, name);
+  if (result.ok || result.error.status !== 404)
+    return false;
+  if (!afterCheck || page.afterCheck !== true || rechecking >= maxRechecks)
+    return true;
+  rechecking += 1;
+  try {
+    await pause(recheckDelayMs);
+  }
+  finally {
+    rechecking -= 1;
+  }
+  const again = await page.exists(read, name);
 
-  return !result.ok && result.error.status === 404;
+  return !again.ok && again.error.status === 404;
 };

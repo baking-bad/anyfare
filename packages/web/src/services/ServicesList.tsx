@@ -178,7 +178,7 @@ export const ServicesList = ({ first, now }: ServicesListProps) => {
               return (
                 <tr key={service.host} className="click">
                   <td>
-                    <Link prefetch={false} className="row-link row-title mono svc-host" href={servicePath(service.host)}>{service.host}</Link>
+                    <Link prefetch={false} className="row-link row-title mono svc-host cut" href={servicePath(service.host)} title={service.host}>{service.host}</Link>
                     {checked === undefined ? null : <span className="xs muted svc-checked">{checked}</span>}
                   </td>
                   <td className="r">{count(service.paidEndpoints)}</td>

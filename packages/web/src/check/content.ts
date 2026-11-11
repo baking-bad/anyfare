@@ -141,6 +141,30 @@ export const linkParts = (link: string): { readonly host: string; readonly path:
   return slash < 0 ? { host: bare, path: '' } : { host: bare.slice(0, slash), path: bare.slice(slash) };
 };
 
+/**
+ * The link inside a link to the pay host itself, such as `<pay host>/api.example.com/v1/x`: what follows the
+ * pay host and its slash, query included. Undefined when the link is not on the pay host. A link to the pay
+ * host with nothing after it gives an empty text. `payHost` is the pay host as `host` or `host:port`.
+ */
+export const ownPayInner = (link: string, payHost: string): string | undefined => {
+  const trimmed = link.trim();
+  const bare = trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  const end = bare.search(/[/?#]/);
+  const host = (end < 0 ? bare : bare.slice(0, end)).toLowerCase().replace(/\.(?=$|:)/, '');
+  if (host === '' || host !== payHost.toLowerCase().replace(/\.(?=$|:)/, ''))
+    return undefined;
+  const rest = end < 0 ? '' : bare.slice(end);
+
+  return rest.replace(/^\/+/, '').replace(/^[?#].*$/, '');
+};
+
+/** What the card says of a link to the pay host itself. */
+export const ownPayTitle = 'This is already an Anyfare pay link';
+
+export const ownPayLine = (payHost: string): string => `Paste the API's own link: the part after ${payHost}/.`;
+
+export const ownPayButton = 'Check that link';
+
 /** The page's title for a link: "Check: <host><path>", with the method before the link when it is not GET, cut at 80 characters. Without a link it is "Check a link". */
 export const titleFor = (link: string, method: CheckMethod = defaultMethod): string => {
   const { host, path } = linkParts(link);

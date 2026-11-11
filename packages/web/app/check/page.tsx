@@ -8,7 +8,7 @@ import { payReader, serverReader } from '../../src/api/server';
 import { PageView } from '../../src/components/AgentView';
 import { readSettings } from '../../src/config';
 import { CheckForm } from '../../src/check/CheckForm';
-import { CheckEmpty, CheckPayable, CheckRefused, CheckUnavailable } from '../../src/check/CheckView';
+import { CheckEmpty, CheckOwnLink, CheckPayable, CheckRefused, CheckUnavailable } from '../../src/check/CheckView';
 import { checkAddress, checkDescription, defaultMethod, maxFieldLength, parseCheckParams, titleFor, unavailableLine, unavailableTitle } from '../../src/check/content';
 import { checkJson, checkRequests, loadCheckData } from '../../src/check/data';
 import { checkMarkdown } from '../../src/markdown/check';
@@ -43,7 +43,7 @@ const Check = async ({ searchParams }: Props) => {
   const params = parseCheckParams(await searchParams);
   const settings = readSettings();
   const incoming = await headers();
-  const data = await loadCheckData(payReader(incoming, settings), serverReader(incoming, settings), params);
+  const data = await loadCheckData(payReader(incoming, settings), serverReader(incoming, settings), params, hostOf(settings.payUrl));
   const { state } = data;
   const twin = checkMarkdown(settings, data);
   const agentUrl = `${settings.siteUrl}${checkAddress({ url: params.url, method: params.method, tab: 'overview', period: '30d', page: 1 }, markdownUrl('/check'))}`;
@@ -66,6 +66,7 @@ const Check = async ({ searchParams }: Props) => {
       <section className="band">
         <div className="container ruled page-pad">
           {state.kind === 'empty' ? <CheckEmpty />
+            : state.kind === 'own' ? <CheckOwnLink inner={state.inner} method={params.method} payHost={hostOf(settings.payUrl)} />
             : state.kind === 'refused' ? <CheckRefused refusal={state.refusal} url={params.url} method={params.method} />
               : state.kind === 'unavailable' ? <CheckUnavailable title={unavailableTitle}>{unavailableLine}</CheckUnavailable>
                 : (

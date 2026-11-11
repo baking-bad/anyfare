@@ -19,8 +19,9 @@
   .route-map .link-line { height: 24px; width: 2px; margin: 0 auto; }
   .route-map .link-line::after { display: none; }
 }
-.route-big { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; white-space: nowrap; }
-.route-big .leg { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-base); }
+/* The route wraps inside its box, at the arrow, for the longest names; each leg stays on one line */
+.route-big { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.route-big .leg { display: inline-flex; white-space: nowrap; max-width: 100%; align-items: center; gap: 6px; font-size: var(--text-base); }
 .route-big .leg b { font-weight: 500; letter-spacing: var(--tracking-tight); }
 .route-big svg { width: 18px; height: 18px; color: var(--inverse-text-secondary); flex: none; }
 .route-big .rail { background: rgb(255 255 255 / 0.1); color: var(--gray-300); }
@@ -34,6 +35,8 @@
 .detail-grid .full { grid-column: 1 / -1; }
 .detail-grid .receipt-id { white-space: nowrap; overflow-x: auto; }
 @media (max-width: 640px) { .detail-grid .wide { grid-column: auto; } }
+/* Below 480 px the id wraps, so none of it is hidden */
+@media (max-width: 479px) { .detail-grid .receipt-id { white-space: normal; overflow-wrap: anywhere; overflow-x: visible; } }
 .detail-grid > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .divider-line { height: 1px; background: var(--divider); }
 

@@ -164,7 +164,7 @@ describe('the curl examples', () => {
   it('are all in llms-full.txt, which holds the whole list', () => {
     const found = new Set(curlCommands(files['llms-full.txt']));
     // The sign-up that saves to a file is the skill's
-    for (const example of examples.filter(candidate => candidate.id !== 'signup-to-file'))
+    for (const example of examples.filter(candidate => candidate.id !== 'signup-to-file' && candidate.id !== 'make-key-to-file'))
       expect(found.has(curlOf(example)), example.id).toBe(true);
   });
 
@@ -189,7 +189,7 @@ describe('the curl examples', () => {
 describe('the answers the text prints', () => {
   const printed = printedAnswers(files['llms-full.txt']);
   const examples = curlExamples(settings);
-  const endpointOf = (heading: string) => endpoints.find(endpoint => heading.startsWith(`${endpoint.method === 'SSE' ? 'GET' : endpoint.method} ${endpoint.path} `));
+  const endpointOf = (heading: string) => endpoints.find(endpoint => heading === `${endpoint.method === 'SSE' ? 'GET' : endpoint.method} ${endpoint.path} (${endpoint.host === 'pay' ? 'pay host' : 'API host'})`);
 
   it('are in llms-full.txt for every JSON answer of the list, and are its JSON', () => {
     expect(printed.map(answer => endpointOf(answer.heading)?.id)).toEqual(endpoints.filter(endpoint => endpoint.answer.json !== undefined).map(endpoint => endpoint.id));

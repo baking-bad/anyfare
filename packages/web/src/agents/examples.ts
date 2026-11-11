@@ -72,6 +72,10 @@ export const curlExamples = ({ apiUrl, payUrl }: Hosts): readonly CurlExample[] 
     id: 'make-key', method: 'POST', url: `${apiUrl}/v1/keys`, headers: { ...master, ...json }, body: '{"label":"research","dailyBudget":"5","maxPrice":"0.05"}',
     expect: { status: 201, fields: ['id', 'label', 'allowance', 'dailyBudget', 'maxPrice', 'expiresAt', 'createdAt', 'revokedAt', 'spent', 'remaining', 'key'] }, needs: ['ANYFARE_MASTER_KEY'],
   },
+  {
+    id: 'make-key-to-file', method: 'POST', url: `${apiUrl}/v1/keys`, headers: { ...master, ...json }, body: '{"label":"research","dailyBudget":"5","maxPrice":"0.05"}', flags: ['-s'], saveTo: 'anyfare-key.json',
+    expect: { status: 201, fields: ['id', 'label', 'allowance', 'dailyBudget', 'maxPrice', 'expiresAt', 'createdAt', 'revokedAt', 'spent', 'remaining', 'key'] }, needs: ['ANYFARE_MASTER_KEY'],
+  },
   { id: 'list-keys', method: 'GET', url: `${apiUrl}/v1/keys`, headers: master, expect: { status: 200, fields: ['keys'] }, needs: ['ANYFARE_MASTER_KEY'] },
   {
     id: 'change-key', method: 'PATCH', url: `${apiUrl}/v1/keys/$ANYFARE_KEY_ID`, headers: { ...master, ...json }, body: '{"dailyBudget":"10","maxPrice":null}',
@@ -105,6 +109,8 @@ export const curlExamples = ({ apiUrl, payUrl }: Hosts): readonly CurlExample[] 
     id: 'stats', method: 'GET', url: `${apiUrl}/v1/stats`, headers: {},
     expect: { status: 200, fields: ['updatedAt', 'allUpdatedAt', 'calls', 'volume', 'buyers', 'services', 'byPaidWith', 'topups', 'daily'] }, needs: [],
   },
+  { id: 'openapi-api', method: 'GET', url: `${apiUrl}/openapi.json`, headers: {}, expect: { status: 200, fields: ['openapi', 'info', 'servers', 'paths', 'components'] }, needs: [] },
+  { id: 'openapi-pay', method: 'GET', url: `${payUrl}/openapi.json`, headers: {}, expect: { status: 200, fields: ['openapi', 'info', 'servers', 'paths', 'components'] }, needs: [] },
   { id: 'stats-live', method: 'GET', url: `${apiUrl}/v1/stats/live`, headers: {}, expect: { status: 200, fields: ['at', 'today', 'last24h', 'perMinute'] }, needs: [] },
   {
     id: 'stats-top', method: 'GET', url: `${apiUrl}/v1/stats/top?period=7d`, headers: {},

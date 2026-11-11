@@ -4,6 +4,7 @@ import type { SiteSettings } from '../config';
 import { agentPrompt, agentsText, hero, homeDescription, homeTitle, paidWithName, questions, statsText, topText, tryHref, tryLinks, ways } from '../content/home';
 import { count, ms, usdOf } from '../format';
 import { servicePath } from '../services/content';
+import { withAllTimeAtLeast30Days } from '../home/allTime';
 import { changeOf, formatChange } from '../home/change';
 import type { HomeData } from '../home/data';
 
@@ -52,7 +53,10 @@ ${calls.map(callRow).join('\n')}
 
 Each call has its receipt at ${siteUrl}/calls/<id>. Every call: ${siteUrl}/calls`);
 
-  const stats = section(data.stats, value => `${statsText.lead}
+  const stats = section(data.stats, counted => {
+    const value = withAllTimeAtLeast30Days(counted);
+
+    return `${statsText.lead}
 
 | Period | ${statsText.calls.label} | ${statsText.volume.label} | ${statsText.buyers.label} | ${statsText.services.label} |
 |---|---|---|---|---|
@@ -66,7 +70,8 @@ ${value.daily.every(day => day.calls === 0) ? 'No paid calls yet.' : `| Day | Pa
 
 ${value.byPaidWith['30d'].length === 0 ? 'No paid calls yet.' : value.byPaidWith['30d'].map(share => `- ${paidWithName(share.paidWith)}: ${count(share.calls)} calls, ${money(share.volume)}`).join('\n')}
 
-Details: ${siteUrl}/calls`);
+Details: ${siteUrl}/calls`;
+  });
 
   const top = section(data.services, ({ services }) => services.length === 0
     ? 'No paid services yet.'

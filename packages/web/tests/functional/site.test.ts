@@ -768,8 +768,10 @@ describe('a service whose host has a port, or is very long', () => {
   it('is linked from every list with the one address, and the check page offers its Service button', async () => {
     const link = 'href="/services/fake-api.test%3A8186"';
 
-    for (const path of ['/', '/services', '/calls', `/calls/pay_porthost`, `/check?url=${encodeURIComponent(`${port}/v1/sample/lookup`)}`])
+    for (const path of ['/', '/services', '/calls', `/calls/pay_porthost`])
       expect((await get(edge, path)).body, path).toContain(link);
+    // The check page's Service button carries the check's marker
+    expect((await get(edge, `/check?url=${encodeURIComponent(`${port}/v1/sample/lookup`)}`)).body).toContain('href="/services/fake-api.test%3A8186?from=check"');
     for (const path of ['/index.md', '/services.md', '/calls.md', '/calls/pay_porthost.md'])
       expect((await get(edge, path)).body, path).toContain('/services/fake-api.test%3A8186)');
   });
@@ -1162,7 +1164,7 @@ describe('the Check page', () => {
     for (const part of ['Check again', 'Payable through Anyfare', 'Checked', '340 ms', 'Copy pay link', 'Service', 'Overview', 'JSON', 'Headers', 'Code', 'What the API asks', 'This API asks $0.01 in USDC on Base for each call, over x402.', 'x402 version 2, scheme exact', 'eip155:8453', 'Latest quotes for sample assets', 'Stats', 'Today', '7 days', '30 days', 'All', 'Paid calls', 'Unique payers', 'Volume', 'Answered 2xx', 'Median time', 'Paid calls per day', 'Buyers paid with', 'Pay it through Anyfare', 'Fee $0', 'Your link through Anyfare', 'Pay it from your agent', 'Make a payment key', 'Give your agent this', 'Watch the calls', 'Last calls'])
       expect(text).toContain(part);
     expect(text).toContain('402 Paid calls');
-    expect(body).toContain('href="/services/api.example.com"');
+    expect(body).toContain('href="/services/api.example.com?from=check"');
     expect(body).toContain(`href="${consoleUrl}/keys"`);
     expect(body).toMatch(/<input [^>]*readOnly=""|<input [^>]*readonly=""/);
     expect(body).toContain('value="https://pay.example.com/api.example.com/v1/sample/quotes/latest"');
@@ -1305,7 +1307,6 @@ describe('the Check page', () => {
       ['not a link', 'This isn&#x27;t a link', 'such as api.example.com/v1/quote.'],
       ['203.0.113.7/v1/x', 'This isn&#x27;t a link', 'Paste a link with a host name, not an IP address.'],
       ['localhost/v1/x', 'We can&#x27;t route to this host', 'This isn&#x27;t a host we can route to.'],
-      ['pay.example.com/v1/x', 'We don&#x27;t route to this host', 'This is one of Anyfare&#x27;s own hosts.'],
       ['limited.example.com/v1/x', 'Too many checks', 'Wait a minute and try again.'],
     ];
     for (const [link, title, line] of cases) {
@@ -2160,7 +2161,7 @@ describe('one host for the site and the console', () => {
 // ---------- Services that were only checked ----------
 
 // The text of the rows of a table, in the order they come: the hosts of the links in the list
-const hostsInOrder = (html: string): string[] => [...html.slice(html.indexOf('<tbody'), html.indexOf('</tbody>')).matchAll(/class="row-link row-title mono svc-host" href="\/services\/([^"]+)"/g)].map(match => decodeURIComponent(match[1]!));
+const hostsInOrder = (html: string): string[] => [...html.slice(html.indexOf('<tbody'), html.indexOf('</tbody>')).matchAll(/class="row-link row-title mono svc-host cut" title="[^"]*" href="\/services\/([^"]+)"/g)].map(match => decodeURIComponent(match[1]!));
 
 describe('the Services page with services that were only checked', () => {
   it('lists both kinds, and numbers each: services listed, paid through Anyfare, calls', async () => {
@@ -2289,7 +2290,7 @@ describe('the Service page of a service that was only checked', () => {
     expect(body).toContain('href="/check?url=fresh02.example.net/v1/sample/quotes/latest"');
     // The second endpoint asks on POST: its check opens with the method
     expect(body).toContain('href="/check?url=fresh02.example.net/v1/sample/lookup&amp;method=POST"');
-    expect(rows[0]).toMatch(/<code>\/v1\/sample\/quotes\/latest<\/code>[\s\S]*Checked (today|yesterday)/);
+    expect(rows[0]).toMatch(/<code class="cut-path">\/v1\/sample\/quotes\/latest<\/code>[\s\S]*Checked (today|yesterday)/);
     expect(textOf(rows[0]!)).toMatch(/\$0\.004/);
     expect((rows[0]!.match(/<span class="sr-only">-<\/span>/g) ?? [])).toHaveLength(5);
   });
@@ -2402,7 +2403,7 @@ describe('the Check page leads to the service', () => {
     const { body } = await get(full, checkPath('api.example.com/v1/sample/lookup'));
     const head = body.slice(body.indexOf('class="row-between check-head"'), body.indexOf('What the API asks'));
 
-    expect(head).toMatch(/<a class="btn secondary lg" href="\/services\/api.example.com">Service<\/a>/);
+    expect(head).toMatch(/<a class="btn secondary lg" href="\/services\/api.example.com\?from=check">Service<\/a>/);
     expect(textOf(head)).not.toContain('isn\'t in the list');
   });
 
@@ -2431,7 +2432,7 @@ describe('the Check page leads to the service', () => {
   it('opens a service page that exists for a checked link', async () => {
     const check = await get(full, checkPath('fresh01.example.net/v1/sample/lookup'));
 
-    expect(check.body).toContain('href="/services/fresh01.example.net"');
+    expect(check.body).toContain('href="/services/fresh01.example.net?from=check"');
     expect((await get(full, '/services/fresh01.example.net')).response.status).toBe(200);
   });
 });
@@ -2519,5 +2520,71 @@ describe('a link checked while the site runs shows within 5 seconds', () => {
     listing.api!.listChecked(host);
 
     expect((await get(listing, `/services/${host}`)).response.status).toBe(200);
+  });
+});
+
+describe('the 404 pages have their own titles', () => {
+  const titleOf = (body: string): string => /<title>([^<]*)<\/title>/.exec(body)?.[1] ?? '';
+
+  it('says "Page not found", "Service not found" and "Receipt not found", each with the suffix and noindex', async () => {
+    const page = await get(full, '/nothing');
+    const service = await get(full, '/services/nothing-here.example.net');
+    const receipt = await get(full, '/calls/pay_nosuchcall');
+    for (const reply of [page, service, receipt])
+      expect(reply.response.status).toBe(404);
+    expect(titleOf(page.body)).toBe('Page not found | Anyfare');
+    expect(titleOf(service.body)).toBe('Service not found | Anyfare');
+    expect(titleOf(receipt.body)).toBe('Receipt not found | Anyfare');
+    for (const reply of [page, service, receipt])
+      expect(reply.body).toMatch(/<meta name="robots" content="noindex/);
+  });
+});
+
+describe('a link to the pay host itself', () => {
+  it('shows its own card, with a button for the inner link, and asks the pay host nothing', async () => {
+    const before = full.api!.requests.length;
+    const { response, body } = await get(full, `/check?url=${encodeURIComponent(`${pay}/api.example.com/v1/sample/quotes/latest`)}&method=POST`);
+    const text = textOf(pageText(body));
+
+    expect(response.status).toBe(200);
+    expect(text).toContain('This is already an Anyfare pay link');
+    expect(text).toContain('Paste the API&#x27;s own link: the part after pay.example.com/.');
+    expect(text).not.toContain('isn\'t a host we can route to');
+    expect(body).toContain('Check that link');
+    expect(body).toContain('href="/check?url=api.example.com%2Fv1%2Fsample%2Fquotes%2Flatest&amp;method=POST"');
+    expect(full.api!.requests.slice(before).filter(request => request.path.startsWith('/_/check'))).toEqual([]);
+  });
+});
+
+describe('a service opened right after a check', () => {
+  it('waits once for the listing with the check\'s marker: a host listed 1 second after the first read answers 200', async () => {
+    const host = 'listed-late.example.net';
+    setTimeout(() => listing.api!.listChecked(host), 1_000);
+    const started = Date.now();
+    const marked = await get(listing, `/services/${host}?from=check`);
+
+    expect(marked.response.status).toBe(200);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_000);
+    // Never shown, and not in the canonical link
+    expect(marked.body).toContain(`<link rel="canonical" href="${site}/services/${host}"/>`);
+  });
+
+  it('answers a plain unknown host at once, with the marker or without it when nothing lists it, and reads once more only with it', async () => {
+    const host = 'never-listed.example.net';
+    const count = (): number => listing.api!.requests.filter(request => request.path.startsWith(`/v1/services/${host}`)).length;
+    const startedPlain = Date.now();
+    expect((await get(listing, `/services/${host}`)).response.status).toBe(404);
+    expect(Date.now() - startedPlain).toBeLessThan(1_000);
+    const plain = count();
+    const startedMarked = Date.now();
+    expect((await get(listing, `/services/${host}?from=check`)).response.status).toBe(404);
+    expect(Date.now() - startedMarked).toBeGreaterThanOrEqual(1_400);
+    expect(count() - plain).toBe(2);
+  });
+
+  it('puts the marker on the check page\'s Service button', async () => {
+    const { body } = await get(full, '/check?url=api.example.com%2Fv1%2Fsample%2Fquotes%2Flatest');
+
+    expect(body).toMatch(/href="\/services\/api\.example\.com\?from=check"/);
   });
 });

@@ -14,13 +14,13 @@ import { Rail } from '../components/Rail';
 import { Tabs } from '../components/Tabs';
 import { tryHref, tryLinks } from '../content/home';
 import { ago, ms, usdOf } from '../format';
-import { isHost, servicePath } from '../services/content';
+import { fromCheck, isHost, servicePath } from '../services/content';
 import type { PayableCheck, Refusal } from './answer';
 import { CheckCalls } from './CheckCalls';
 import { CheckStats } from './CheckStats';
 import {
   askRows, asksSentence, byHandNote, checkAddress, checkTabs, codeSamples, cut, defaultMethod, describedAs, emptyLine, linkParts, methodFlag, offersPost, refusalWords, shellWord,
-  tryPostLabel, tryPostLine, unlistedLine, wayWords,
+  tryPostLabel, tryPostLine, ownPayButton, ownPayLine, ownPayTitle, unlistedLine, wayWords,
   type CheckMethod, type CheckParams, type CheckTab,
 } from './content';
 import { LinkPending } from './LinkPending';
@@ -84,6 +84,21 @@ export const CheckRefused = ({ refusal, url, method }: { readonly refusal: Refus
   );
 };
 
+/** A link to the pay host itself: it says so, and offers the check of the link inside it. Nothing was asked of the pay host. */
+export const CheckOwnLink = ({ inner, method, payHost }: { readonly inner: string; readonly method: CheckMethod; readonly payHost: string }) => (
+  <div className="card pad-lg check-refused">
+    <div className="stack check-refused-inner">
+      <span className="icon-circle"><Icon name="link" /></span>
+      <h1 className="h3">{ownPayTitle}</h1>
+      <p className="muted check-refused-text">{ownPayLine(payHost)}</p>
+      <div className="row check-refused-actions">
+        {inner === '' ? null : <Button href={checkAddress({ url: inner, method, tab: 'overview', period: '30d', page: 1 })}>{ownPayButton}</Button>}
+        <Button variant={inner === '' ? 'primary' : 'secondary'} href="/services">Browse services</Button>
+      </div>
+    </div>
+  </div>
+);
+
 // ---------- The head ----------
 
 const checkedLine = (check: PayableCheck, now: number): string => {
@@ -108,7 +123,7 @@ const CheckHead = ({ check, method, now }: { readonly check: PayableCheck; reado
     </div>
     <div className="row">
       <CopyButton text={check.link} label="Copy pay link" variant="primary" size="lg" withIcon />
-      {check.listed && isHost(check.host) ? <Link prefetch={false} className={buttonClass({ variant: 'secondary', size: 'lg' })} href={servicePath(check.host)}>Service</Link> : null}
+      {check.listed && isHost(check.host) ? <Link prefetch={false} className={buttonClass({ variant: 'secondary', size: 'lg' })} href={`${servicePath(check.host)}?${fromCheck}`}>Service</Link> : null}
     </div>
   </div>
 );

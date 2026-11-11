@@ -13,6 +13,7 @@ import { Segmented } from '../components/Segmented';
 import { Stat } from '../components/Stat';
 import { paidWithName, statsText } from '../content/home';
 import { count, usdOf } from '../format';
+import { withAllTimeAtLeast30Days } from './allTime';
 
 const periods: readonly { readonly value: Period; readonly label: string }[] = [
   { value: 'today', label: 'Today' },
@@ -29,7 +30,8 @@ const shortDay = (day: string): string => day.slice(5);
  * answer of `GET /v1/stats` holds all four periods, so the switch makes no request. `stats` is null when
  * that read failed: the band keeps its title and shows an error where the numbers go.
  */
-export const StatsBand = ({ stats }: { readonly stats: Stats | null }) => {
+export const StatsBand = ({ stats: counted }: { readonly stats: Stats | null }) => {
+  const stats = counted === null ? null : withAllTimeAtLeast30Days(counted);
   const [period, setPeriod] = useState<Period>('30d');
   const paidWith = [...stats?.byPaidWith['30d'] ?? []].sort((a, b) => b.calls - a.calls);
 

@@ -103,6 +103,8 @@ table.t td { padding: 12px 16px; border-top: 1px solid var(--line-table); white-
 table.t tbody tr { background: var(--surface-card); transition: background var(--duration) var(--ease); }
 table.t tbody tr:hover { background: var(--surface-row-hover); }
 table.t tbody tr.click { cursor: pointer; }
+/* A state in a table (an error, an empty list) wraps inside its box: it takes the table's width from no one */
+table.t td.state-cell { white-space: normal; }
 table.t th.r, table.t td.r { text-align: right; font-variant-numeric: tabular-nums; }
 .t-wrap { background: var(--surface-well); border-radius: var(--radius-2xl); padding: 0 4px 4px; }
 .t-wrap .inner { background: var(--surface-card); border-radius: 14px; outline: 1px solid var(--border); outline-offset: -1px; overflow: hidden; }
@@ -189,6 +191,8 @@ table.t th.r, table.t td.r { text-align: right; font-variant-numeric: tabular-nu
 .alert { display: flex; gap: 12px; padding: 16px; border-radius: var(--radius-2xl); font-size: var(--text-sm); line-height: var(--leading-sm); }
 .alert svg { width: 20px; height: 20px; flex: none; }
 .alert .t { font-weight: 600; }
+/* The text of an alert wraps inside it, wherever it sits */
+.alert > .stack { min-width: 0; flex: 1 1 0; overflow-wrap: anywhere; }
 .alert.info { background: var(--info-soft); box-shadow: inset 0 0 0 1px var(--info-soft-border); } .alert.info svg, .alert.info .t { color: var(--info-text); }
 .alert.warning { background: var(--warning-soft); box-shadow: inset 0 0 0 1px var(--warning-soft-border); } .alert.warning svg, .alert.warning .t { color: var(--warning-text); }
 .alert.success { background: var(--success-soft); } .alert.success svg, .alert.success .t { color: var(--success-text); }
@@ -353,6 +357,8 @@ table.t tr.fresh td { animation: enter 900ms var(--ease-out); }
 .empty.sm { gap: 8px; padding: 24px 16px; }
 .empty .row-title { font-size: var(--text-base); }
 .empty p { max-width: 420px; }
+.empty { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.empty > * { max-width: 100%; }
 
 /* ---------- The page and its Agent view ---------- */
 

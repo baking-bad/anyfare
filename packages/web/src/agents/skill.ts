@@ -67,7 +67,7 @@ ANYFARE_MASTER_KEY=$(jq -r .masterKey anyfare-account.json)
 ${curl('make-key')}
 \`\`\`
 
-The answer's "key" is shown once. Store it as ANYFARE_PAYMENT_KEY in a file only the user can read, and keep "id" as ANYFARE_KEY_ID. Do not print the key. Change limits with the user's leave:
+The answer's "key" is shown once. Store it as ANYFARE_PAYMENT_KEY in a file only the user can read, and keep "id" (in the answer of making a key, and of listing keys) as ANYFARE_KEY_ID. Do not print the key. Change limits with the user's leave:
 
 \`\`\`sh
 ${curl('change-key')}
