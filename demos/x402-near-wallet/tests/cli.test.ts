@@ -122,10 +122,10 @@ describe('runCli', () => {
     expect(err()).toBe('✘ The URL must start with https://\n');
   });
 
-  it('returns 1 with one line from the interactive stub', async () => {
+  it('returns 2 with one line for the interactive mode without a terminal', async () => {
     const { io, err } = fakeIo();
-    expect(await runCli([], io)).toBe(1);
-    expect(err()).toBe('✘ Not built yet\n');
+    expect(await runCli([], io)).toBe(2);
+    expect(err()).toBe('✘ The interactive mode needs a terminal. Give a request instead; see --help\n');
   });
 
   it('sends a request through the request handler, to the fetch of the Io only', async () => {

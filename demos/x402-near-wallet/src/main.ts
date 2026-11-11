@@ -8,5 +8,11 @@ const code = await runCli(process.argv.slice(2), {
   isTerminal: Boolean(process.stdin.isTTY && process.stdout.isTTY),
   env: process.env,
   fetch: globalThis.fetch,
+  onInterrupt: (listener) => {
+    process.on('SIGINT', listener);
+    return () => {
+      process.off('SIGINT', listener);
+    };
+  },
 });
 await exitWhenWritten(code);

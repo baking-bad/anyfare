@@ -7,6 +7,7 @@ import { createContext } from './context.ts';
 import type { Context } from './context.ts';
 import { clip, hideKeys } from './errors.ts';
 import type { Fetch } from './http.ts';
+import { runInteractive } from './interactive.ts';
 import { payRequest } from './pay.ts';
 import { parseRequest } from './request.ts';
 import type { HttpRequest } from './request.ts';
@@ -22,6 +23,8 @@ export interface Io {
   readonly isTerminal: boolean;
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly fetch: Fetch;
+  /** Calls `listener` on each Ctrl-C until the returned function is called. Without it, Ctrl-C keeps its default. */
+  readonly onInterrupt?: (listener: () => void) => () => void;
 }
 
 export interface AppOptions {
@@ -138,14 +141,12 @@ function requestCommand(command: Extract<Command, { kind: 'request' }>, ctx: Con
   return payRequest(ctx, config, command.request, command.options);
 }
 
-const notBuilt = (): Promise<number> => Promise.reject(new Stop('Not built yet'));
-
 export const HANDLERS: Handlers = {
   help: (_command, ctx) => {
     ctx.io.stdout.write(HELP_TEXT);
     return Promise.resolve(0);
   },
-  interactive: notBuilt,
+  interactive: (command, ctx) => runInteractive(ctx, command.options),
   balance: balanceCommand,
   request: requestCommand,
 };

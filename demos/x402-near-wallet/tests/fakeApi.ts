@@ -91,6 +91,11 @@ export interface FakeApi {
   readonly url: string;
   readonly requests: Recorded[];
   readonly settled: Settled[];
+  /**
+   * Holds the answer to the next good paid request until the returned function is called. The
+   * request is checked and settled first, as without a hold.
+   */
+  holdNextPaid(): () => void;
   /** Makes the next paid request fail. */
   nextFailure: PaidFailure | undefined;
   /** The made-up NEAR chain a payment is checked against, and whose USDC a payment lowers. */
@@ -121,7 +126,11 @@ export async function startFakeApi(): Promise<FakeApi> {
   const requests: Recorded[] = [];
   const settled: Settled[] = [];
   const used = new Set<string>();
-  const state = { nextFailure: undefined as PaidFailure | undefined, chain: undefined as FakeNearRpc | undefined };
+  const state = {
+    nextFailure: undefined as PaidFailure | undefined,
+    chain: undefined as FakeNearRpc | undefined,
+    hold: undefined as Promise<void> | undefined,
+  };
   let url = '';
 
   const send = (response: ServerResponse, answer: FakeAnswer): void => {
@@ -276,7 +285,11 @@ export async function startFakeApi(): Promise<FakeApi> {
         : encodePaymentResponseHeader({ success: true, transaction: payment.transaction, network: 'near:mainnet', payer: payment.payer });
     const proof: Record<string, string> =
       failure === 'no_receipt' ? {} : { 'payment-response': failure === 'unreadable_receipt' ? '!!not base64!!' : receipt };
-    send(response, { ...answer, headers: { ...answer.headers, ...proof } });
+    const held = state.hold;
+    state.hold = undefined;
+    const reply = (): void => send(response, { ...answer, headers: { ...answer.headers, ...proof } });
+    if (held === undefined) reply();
+    else void held.then(reply);
   };
 
   const server: Server = createServer((request, response) => {
@@ -318,6 +331,13 @@ export async function startFakeApi(): Promise<FakeApi> {
     set chain(value: FakeNearRpc | undefined) {
       state.chain = value;
     },
+    holdNextPaid: () => {
+      let release = (): void => {};
+      state.hold = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return release;
+    },
     route: (route) => {
       routes.set(`${route.method} ${route.path}`, route);
     },
@@ -328,6 +348,7 @@ export async function startFakeApi(): Promise<FakeApi> {
       settled.length = 0;
       used.clear();
       state.nextFailure = undefined;
+      state.hold = undefined;
     },
     close: () =>
       new Promise<void>((resolve) => {
