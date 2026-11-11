@@ -6,6 +6,7 @@ import {
 import type { BillingDecision, JsonObject, PaymentStatus, RailName } from '@anyfare/core';
 
 import { accounts, apiKeys } from './accounts.js';
+import { finalCallStatuses, finishedCallStatuses, statusIn } from './callStatuses.js';
 import { atomicAmount } from './columns.js';
 
 // Owned by the ledger. Amounts are integer micro-USD. IDs and times come from the IdGenerator and
@@ -97,6 +98,19 @@ export const payments = pgTable('payments', {
 }, table => [
   index('payments_buyer_idx').on(table.buyerAccountId, table.createdAt, table.id),
   index('payments_status_idx').on(table.status, table.createdAt),
+  // The public reads of finished calls, newest first: all of them, by how the buyer paid (the rail and
+  // a chain payment's network, such as `x402 eip155:8453`, or `credits`), by the exact host, and by the
+  // exact path. A call in flight is never read, so none is in them.
+  // A btree row holds at most 2,704 bytes, and a payment enters these indexes as it finishes, so a key
+  // too long would stop it finishing. Each key is bounded: our own IDs, a rail of three, a network of
+  // the platform config, and the buyer's host and path as their md5, since nothing bounds a path.
+  index('payments_calls_idx').on(table.createdAt, table.id).where(statusIn(sql.raw('status'), finishedCallStatuses)),
+  index('payments_calls_paid_with_idx').on(sql`(${table.rail} || coalesce(' ' || ${table.network}, ''))`, table.createdAt, table.id)
+    .where(statusIn(sql.raw('status'), finishedCallStatuses)),
+  index('payments_calls_host_idx').on(sql`md5(${table.targetHost})`, table.createdAt, table.id).where(statusIn(sql.raw('status'), finishedCallStatuses)),
+  index('payments_calls_path_idx').on(sql`md5(${table.targetPath})`, table.createdAt, table.id).where(statusIn(sql.raw('status'), finishedCallStatuses)),
+  // Calls as they become final, for the live stream: a final payment's last update never moves again
+  index('payments_calls_final_idx').on(table.updatedAt, table.id).where(statusIn(sql.raw('status'), finalCallStatuses)),
   check('payments_rail_check', sql`${table.rail} in ('credits', 'x402', 'mpp')`),
   check('payments_status_check', sql`${table.status} in ('held', 'verified', 'captured', 'settling', 'settled', 'released', 'cancelled', 'failed')`),
   check('payments_decision_check', sql`${table.decision} in ('billable', 'not_billable')`),

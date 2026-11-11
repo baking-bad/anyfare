@@ -57,6 +57,13 @@
       "when": 1794202968573,
       "tag": "0007_fundings",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794362029068,
+      "tag": "0008_call_details",
+      "breakpoints": true
     }
   ]
 }

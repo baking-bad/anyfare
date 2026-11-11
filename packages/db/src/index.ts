@@ -27,6 +27,9 @@ export { createRoutingRepository, maxRoutedEndpointsPerHost } from './routingRep
 export type {
   EndpointRegistration, NewSignature, NewTargetPayment, RoutingRepository, RoutingRepositoryOptions, TargetPaymentRecord, UnbookedRoutingLoss,
 } from './routingRepository.js';
+export { callDetailsTimeoutMs, createCallRepository } from './callRepository.js';
+export type { CallFilter, CallLeg, CallPage, CallRecord, CallRepository, CallRepositoryOptions, NewCallDetails } from './callRepository.js';
+export { finalCallStatuses, finishedCallStatuses, freeCallStatuses, paidCallStatuses } from './schema/callStatuses.js';
 export { createCatalogRepository } from './catalogRepository.js';
 export type { CatalogRepository, CatalogRepositoryOptions, RoutedCatalogEntry } from './catalogRepository.js';
 export { createTreasuryRepository } from './treasuryRepository.js';
