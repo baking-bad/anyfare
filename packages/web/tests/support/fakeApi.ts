@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
-import type { Call, CallsPage, DailyPoint, LiveStats, PaidWith, Period, Receipt, ServiceDetail, ServiceRow, ServicesPage, Stats, TopStats } from '../../src/api/types';
+import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, Period, Receipt, ServiceDetail, ServiceRow, ServicesPage, Stats, TopStats } from '../../src/api/types';
 
 // A small HTTP server that answers the public read API's endpoints with sample data, for the website's
 // tests and for looking at the site by hand. The data is sample data: hosts are example.com, the payer
@@ -12,6 +12,9 @@ import type { Call, CallsPage, DailyPoint, LiveStats, PaidWith, Period, Receipt,
 // - full: a database with calls, services and stats
 // - empty: an empty database: zeros, empty lists, status 200
 // - down: every request answers 500
+//
+// The same server also answers the pay host's `GET /_/check?url=`: the host of the link picks the case (see
+// `sampleCheck`). Every case answers 200 with `payable`, except `limited.example.com`, which is a 429.
 //
 // A page that reads a new endpoint adds its answer to `answer` below, built from `sample`.
 //
@@ -301,6 +304,148 @@ export const sampleService = (host: string, period: Period, now: number, payUrl 
   };
 };
 
+const checkHosts = {
+  // Payable
+  base: 'api.example.com',
+  near: 'data.example.com',
+  mpp: 'search.example.com',
+  hostile: 'hostile.example.com',
+  slow: 'slow.example.com',
+  // Refused, each reason; a path with `/detail` adds a detail
+  notPayable: 'free.example.com',
+  unsupported: 'unsupported.example.com',
+  blocked: 'blocked.example.com',
+  private: 'private.example.com',
+  own: 'own.example.com',
+  dead: 'dead.example.com',
+  other: 'surprise.example.com',
+  // A 429 from the pay host
+  limited: 'limited.example.com',
+  // A link with more than one page of calls
+  busy: 'busy.example.com',
+} as const;
+
+/** The hosts of the sample links for each case of the check. */
+export const sampleCheckHosts = checkHosts;
+
+const hostileDescription = '<script>alert(1)</script>';
+const hostileValue = '"><img src=x onerror=alert(1)>';
+
+const base64 = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString('base64');
+
+/**
+ * The answer of the pay host's check for a typed link. The host picks the case: `api.example.com` is x402 on
+ * Base, `data.example.com` x402 on NEAR, `search.example.com` MPP on Tempo, `hostile.example.com` an answer
+ * whose description and header values hold HTML, `slow.example.com` a slow one (see `checkDelayMs`), and the
+ * hosts of `sampleCheckHosts` the refusals. Any other host is "not a paid link". A typed link that isn't one
+ * is `invalid_target`.
+ */
+export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.example.com'): { readonly status: number; readonly body: unknown } => {
+  let target: URL;
+  try {
+    target = new URL(typed.includes('://') ? typed : `https://${typed}`);
+    if (target.host === '' || !target.host.includes('.'))
+      throw new Error('not a link');
+  }
+  catch {
+    return { status: 200, body: { payable: false, reason: 'invalid_target', message: 'The link isn\'t a URL' } };
+  }
+  const { host } = target;
+  const detail = target.pathname.includes('/detail');
+  const refuse = (reason: string, message: string, text?: string): { readonly status: number; readonly body: unknown } => ({ status: 200, body: { payable: false, reason, message, ...detail || text !== undefined ? { detail: text ?? 'sample detail' } : {} } });
+  const refusals: Readonly<Record<string, { readonly status: number; readonly body: unknown }>> = {
+    [checkHosts.notPayable]: refuse('not_payable', 'The link didn\'t ask for a payment'),
+    [checkHosts.unsupported]: refuse('unsupported_payment', 'The link asks for a payment Anyfare doesn\'t make'),
+    [checkHosts.blocked]: refuse('host_not_allowed', 'This host is not allowed'),
+    [checkHosts.private]: refuse('host_not_allowed', 'This host is not allowed', 'private or reserved address'),
+    [checkHosts.own]: refuse('host_not_allowed', 'This host is not allowed', 'our own host'),
+    [checkHosts.dead]: refuse('upstream_unavailable', 'The host did not answer'),
+    [checkHosts.other]: refuse('surprise', 'Something we did not expect <b>happened</b>'),
+    [checkHosts.limited]: { status: 429, body: { error: { code: 'rate_limited', message: 'Too many requests' } } },
+  };
+  const refused = refusals[host];
+  if (refused !== undefined)
+    return refused;
+  const known: readonly string[] = [checkHosts.base, checkHosts.near, checkHosts.mpp, checkHosts.hostile, checkHosts.slow, checkHosts.busy];
+  if (!known.includes(host))
+    return refuse('not_payable', 'The link didn\'t ask for a payment');
+
+  const mpp = host === checkHosts.mpp;
+  const onNear = host === checkHosts.near;
+  const hostile = host === checkHosts.hostile;
+  const asset = mpp ? 'USDC.e' : 'USDC';
+  const paidWith = mpp ? 'tempo' : onNear ? 'near' : 'base';
+  const network = mpp ? 'tempo:mainnet' : onNear ? 'near:mainnet' : 'eip155:8453';
+  const payTo = onNear ? 'merchant.sample.near' : `0x${'9a1f'.repeat(10)}`;
+  const description = hostile ? hostileDescription : mpp ? 'One web search' : 'Latest quotes for sample assets';
+  const resource = { url: `https://${host}${target.pathname}`, description, mimeType: 'application/json' };
+  const accept = {
+    scheme: 'exact',
+    network,
+    amount: mpp ? '5000' : '10000',
+    asset: onNear ? '17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1' : '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    payTo,
+    maxTimeoutSeconds: 60,
+    extra: { name: hostile ? hostileValue : asset },
+  };
+  const x402 = { x402Version: 2, error: 'Payment required', resource, accepts: [accept] };
+  const mppRequest = { method: 'tempo', intent: 'charge', realm: host, amount: '0.005', currency: asset, recipient: `0x${'5d2e'.repeat(10)}`, expires: new Date(now + 25_000).toISOString(), description };
+  const price = mpp ? '0.005' : '0.01';
+  const ways: readonly { paidWith: string; protocol: string; asset: string }[] = [
+    { paidWith: 'near', protocol: 'x402', asset: 'USDC' },
+    { paidWith: 'base', protocol: 'x402', asset: 'USDC' },
+    { paidWith: 'solana', protocol: 'x402', asset: 'USDC' },
+    { paidWith: 'tempo', protocol: 'mpp', asset: 'USDC.e' },
+    { paidWith: 'credits', protocol: 'key', asset: 'Credits' },
+  ];
+  const headers: Record<string, string> = mpp
+    ? { 'www-authenticate': `Payment id="ch_sample", realm="${host}", method="tempo", intent="charge", request="${base64(mppRequest)}"`, 'cache-control': 'no-store', 'content-type': 'application/problem+json' }
+    : { 'payment-required': base64(x402), 'content-type': hostile ? hostileValue : 'application/json', date: new Date(now).toUTCString() };
+  const sampleStats = sampleEndpointStats(host, target.pathname, '30d', now);
+
+  return {
+    status: 200,
+    body: {
+      payable: true,
+      target: `https://${host}${target.pathname}${target.search}`,
+      price: { amount: price, currency: 'USD', asset: mpp ? 'usdce-tempo' : onNear ? 'usdc-near' : 'usdc-base', network },
+      quote: { amount: price, fee: '0', currency: 'USD' },
+      link: `${payUrl}/${host}${target.pathname}${target.search}`,
+      protocol: mpp ? 'mpp' : 'x402',
+      asks: mpp
+        ? { amount: price, asset, network, paidWith, method: 'tempo', intent: 'charge', realm: host, recipient: mppRequest.recipient, expires: mppRequest.expires, description }
+        : { amount: price, asset, network, paidWith, payTo, scheme: 'exact', x402Version: 2, maxTimeoutSeconds: 60, description, mimeType: 'application/json' },
+      upstream: { status: 402, headers, ...mpp ? { mpp: mppRequest } : { x402 } },
+      payWith: ways.map(way => ({ ...way, amount: price, currency: 'USD' })),
+      stats: sampleStats.stats,
+      checkedAt: new Date(now - 4_000).toISOString(),
+      ms: 340,
+    },
+  };
+};
+
+/** How long the fake waits before it answers the check of a link: `slow.example.com` takes a moment. */
+export const checkDelayMs = (typed: string): number => /(^|\/\/)slow\.example\.com/.test(typed) ? 1_500 : 0;
+
+/** The endpoint's numbers for a period: the sample hosts' calls scaled, and zeros for any other endpoint. */
+export const sampleEndpointStats = (host: string, path: string, period: Period, now: number, empty = false): EndpointStats => {
+  const known = !empty && (serviceHosts.includes(host) && servicePaths.includes(path as never) || host === checkHosts.busy || host === checkHosts.hostile);
+  const scale = known ? topScale[period] : 0;
+  const calls = Math.round(402 * scale);
+
+  return {
+    host,
+    path,
+    period,
+    updatedAt: new Date(now - 60_000).toISOString(),
+    stats: known
+      ? { calls, buyers: Math.max(1, Math.round(33 * Math.min(1, scale))), volume: money(calls * 0.01), successRate: 0.99, p50Ms: 340 }
+      : { calls: 0, buyers: 0, volume: '0', successRate: null, p50Ms: null },
+    daily: Array.from({ length: 14 }, (_, index) => ({ day: utcDay(now - (13 - index) * day), calls: known ? Math.round((3 + index * 2) * Math.max(scale, 0.05)) : 0 })),
+    byPaidWith: known ? rails.map((paidWith, index) => ({ paidWith, calls: Math.round((145 - index * 25) * scale) })) : [],
+  };
+};
+
 /** The answer to a read: its status and body. Undefined for a path the fake doesn't know. */
 export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number): { readonly status: number; readonly body: unknown } | undefined => {
   const empty = mode === 'empty';
@@ -316,10 +461,23 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
 
     return { status: 200, body: sampleTop(period as Period, now, empty) };
   }
+  if (pathname === '/_/check')
+    return sampleCheck(searchParams.get('url') ?? '', now);
+  if (pathname === '/v1/endpoints/stats') {
+    const period = searchParams.get('period') ?? '30d';
+    if (!periods.includes(period as Period))
+      return { status: 400, body: { error: { code: 'invalid_request', message: 'Unknown period' } } };
+
+    return { status: 200, body: sampleEndpointStats(searchParams.get('host') ?? '', searchParams.get('path') ?? '', period as Period, now, empty) };
+  }
   if (pathname === '/v1/calls') {
     const size = intParam(searchParams.get('size'), 20, 100);
     const page = intParam(searchParams.get('page'), 1, 1000);
-    const all = callsOf(now, empty).filter(call => matchesCall(call, searchParams));
+    // One endpoint has 25 calls, for a grid with pages
+    const busy = searchParams.get('host') === checkHosts.busy && !empty
+      ? Array.from({ length: 25 }, (_, index) => ({ ...sampleCall(index, now), service: checkHosts.busy, path: '/v1/busy' }))
+      : undefined;
+    const all = (busy ?? callsOf(now, empty)).filter(call => matchesCall(call, searchParams));
     const body: CallsPage = { calls: all.slice((page - 1) * size, page * size), page, size, total: all.length, totalCapped: false };
 
     return { status: 200, body };
@@ -437,10 +595,17 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0): Promise<FakeApi
       return;
     }
     const found = answer(url, mode, Date.now());
-    if (found === undefined)
-      json(response, 404, { error: { code: 'not_found', message: 'Not found' } });
+    const delay = url.pathname === '/_/check' ? checkDelayMs(url.searchParams.get('url') ?? '') : 0;
+    const send = (): void => {
+      if (found === undefined)
+        json(response, 404, { error: { code: 'not_found', message: 'Not found' } });
+      else
+        json(response, found.status, found.body);
+    };
+    if (delay > 0)
+      setTimeout(send, delay);
     else
-      json(response, found.status, found.body);
+      send();
   });
   await new Promise<void>(resolve => server.listen(port, '127.0.0.1', resolve));
 

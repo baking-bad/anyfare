@@ -47,6 +47,7 @@ const startSite = async (api: FakeApi | undefined, apiInternalUrl: string): Prom
       CONSOLE_URL: consoleUrl,
       API_URL: 'https://api.example.com',
       API_INTERNAL_URL: apiInternalUrl,
+      PAY_INTERNAL_URL: apiInternalUrl,
       LOG_LEVEL: 'silent',
     },
     stdio: 'ignore',
@@ -809,6 +810,361 @@ describe('the Service page', () => {
     expect(failed.response.status).toBe(503);
     expect(bad.response.status).toBe(404);
     expect(full.api!.requests.slice(before)).toEqual([]);
+  });
+});
+
+const textOf = (html: string): string => html.replace(/<script[\s\S]*?<\/script>/g, '').replace(/<!-- -->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replace(/ ([.,])/g, '$1');
+
+const checkPath = (link: string, extra = ''): string => `/check?url=${encodeURIComponent(link)}${extra}`;
+
+describe('the Check page', () => {
+  const base = 'api.example.com/v1/sample/quotes/latest';
+
+  it('shows the link field, the head, the four tabs and the Overview of an x402 link on Base', async () => {
+    const { response, body } = await get(full, checkPath(base));
+    const text = textOf(body);
+
+    expect(response.status).toBe(200);
+    expect(body).toMatch(/<form [^>]*action="\/check" method="get"/);
+    expect(body).toMatch(/<input [^>]*name="url"[^>]*value="api\.example\.com\/v1\/sample\/quotes\/latest"/);
+    expect(body).not.toContain('Mockup state');
+    for (const part of ['Check again', 'Payable through Anyfare', 'Checked', '340 ms', 'Copy pay link', 'Service', 'Overview', 'JSON', 'Headers', 'Code', 'What the API asks', 'This API asks $0.010 in USDC on Base for each call, over x402.', 'x402 version 2, scheme exact', 'eip155:8453', 'Latest quotes for sample assets', 'Stats', 'Today', '7 days', '30 days', 'All', 'Paid calls', 'Unique payers', 'Volume', 'Answered 2xx', 'Median time', 'Paid calls per day', 'Buyers paid with', 'Pay it through Anyfare', 'Fee $0.00', 'Your link through Anyfare', 'Pay it from your agent', 'Make a payment key', 'Give your agent this', 'Watch the calls', 'Last calls'])
+      expect(text).toContain(part);
+    expect(text).toContain('402 Paid calls');
+    expect(body).toContain('href="/services/api.example.com"');
+    expect(body).toContain(`href="${consoleUrl}/keys"`);
+    expect(body).toMatch(/<input [^>]*readOnly=""|<input [^>]*readonly=""/);
+    expect(body).toContain('value="https://pay.example.com/api.example.com/v1/sample/quotes/latest"');
+    expect(body).toContain('Call https://pay.example.com/api.example.com/v1/sample/quotes/latest through Anyfare.');
+    expect(body).toContain('href="/calls/pay_sample0000"');
+    noBrokenValues(body);
+  });
+
+  it('lists one row for each way the API lists, in its order, with the price', async () => {
+    const { body } = await get(full, checkPath(base));
+    const names = ['USDC on NEAR', 'USDC on Base', 'USDC on Solana', 'USDC.e on Tempo', 'Credits, with a payment key'];
+    const at = names.map(name => body.indexOf(`>${name}<`));
+
+    expect(at.every(index => index > 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(body).toContain('No transaction per call');
+    expect(body).toContain('MPP charge · sign and send at once');
+  });
+
+  it('has the title, description and noindex, a link to its twin, and the header item marked', async () => {
+    const { body } = await get(full, checkPath(base));
+
+    expect(body).toContain('<title>Check: api.example.com/v1/sample/quotes/latest | Anyfare</title>');
+    expect(body).toMatch(/<meta name="description" content="Paste the link of one paid API/);
+    expect(body).toMatch(/<meta name="robots" content="noindex/);
+    expect(body).toContain('rel="alternate" type="text/markdown" href="https://anyfare.example.com/check.md?url=api.example.com%2Fv1%2Fsample%2Fquotes%2Flatest"');
+    expect(body).toMatch(/<a [^>]*aria-current="page"[^>]*href="\/"[^>]*>Check a link<\/a>|<a [^>]*href="\/"[^>]*aria-current="page"[^>]*>Check a link<\/a>/);
+    expect(body).not.toContain('sitemap');
+  });
+
+  it('gives the NEAR link and the MPP link their own words', async () => {
+    const near = await get(full, checkPath('data.example.com/v1/sample/lookup'));
+    const mpp = await get(full, checkPath('search.example.com/v1/sample/lookup'));
+
+    expect(textOf(near.body)).toContain('$0.010 in USDC on NEAR for each call, over x402.');
+    expect(textOf(near.body)).toContain('merchant.sample.near');
+    expect(textOf(mpp.body)).toMatch(/\$0\.005 in USDC\.e on Tempo for each call, over MPP\. It wants a signed charge by the tempo method\./);
+    expect(textOf(mpp.body)).toContain('MPP, method tempo, intent charge');
+    expect(mpp.response.status).toBe(200);
+  });
+
+  it('opens the tab the URL names, and every tab is a link to the same check with that tab', async () => {
+    const json = await get(full, checkPath(base, '&tab=json'));
+    const headers = await get(full, checkPath(base, '&tab=headers'));
+    const code = await get(full, checkPath(base, '&tab=code'));
+    const selected = (html: string): string | undefined => /-tab-(\w+)" role="tab"[^>]*aria-selected="true"/.exec(html)?.[1];
+
+    expect(selected(json.body)).toBe('json');
+    expect(selected(headers.body)).toBe('headers');
+    expect(selected(code.body)).toBe('code');
+    expect(json.body).toMatch(/href="\/check\?url=api\.example\.com%2Fv1%2Fsample%2Fquotes%2Flatest&amp;tab=json"/);
+    expect(json.body).toMatch(/-tab-overview" role="tab" href="\/check\?url=api\.example\.com%2Fv1%2Fsample%2Fquotes%2Flatest" aria-selected="false"/);
+    expect(selected(await (await get(full, checkPath(base, '&tab=nope'))).body)).toBe('overview');
+    expect(json.body).toContain('The answer to');
+    expect(json.body).toContain('Copy JSON');
+    expect(json.body).toContain('&quot;payable&quot;');
+  });
+
+  it('shows the headers as they came, and the challenge decoded', async () => {
+    const { body } = await get(full, checkPath(base, '&tab=headers'));
+
+    expect(body).toContain('curl -i https://api.example.com/v1/sample/quotes/latest');
+    expect(body).toContain('HTTP/1.1 402 Payment Required');
+    expect(body).toMatch(/payment-required<\/span>: (<!-- -->)?eyJ/);
+    expect(body).toMatch(/content-type<\/span>: (<!-- -->)?application\/json/);
+    expect(body).toContain('header, decoded from base64');
+    expect(body).toContain('&quot;x402Version&quot;');
+    expect(body).toContain('&quot;accepts&quot;');
+  });
+
+  it('shows the three calls of the Code tab, the by-hand one with the two real steps', async () => {
+    const { body } = await get(full, checkPath(base, '&tab=code'));
+
+    for (const text of ['curl, with a key', 'curl, x402 by hand', 'Agent prompt', 'Authorization: Bearer $ANYFARE_PAYMENT_KEY', 'PAYMENT-SIGNATURE', 'Any x402 client does both steps for you'])
+      expect(body).toContain(text);
+    expect(body).not.toMatch(/TypeScript|@x402|nearSigner/);
+  });
+
+  it('reads the endpoint\'s numbers for the period, and the calls for the page, from the URL', async () => {
+    const before = full.api!.requests.length;
+    await get(full, checkPath(base, '&period=7d&page=2'));
+    const paths = full.api!.requests.slice(before).map(request => request.path);
+
+    expect(paths).toContain('/v1/endpoints/stats?host=api.example.com&path=%2Fv1%2Fsample%2Fquotes%2Flatest&period=7d');
+    expect(paths).toContain('/v1/calls?host=api.example.com&endpoint=%2Fv1%2Fsample%2Fquotes%2Flatest&page=2&size=10');
+    expect(paths.filter(path => path.startsWith('/_/check'))).toHaveLength(1);
+    const defaults = full.api!.requests.length;
+    await get(full, checkPath(base));
+    expect(full.api!.requests.slice(defaults).map(request => request.path)).toContain('/v1/endpoints/stats?host=api.example.com&path=%2Fv1%2Fsample%2Fquotes%2Flatest&period=30d');
+  });
+
+  it('pages the last calls of a busy endpoint, 10 at a time, with links', async () => {
+    const first = await get(full, checkPath('busy.example.com/v1/busy'));
+    const third = await get(full, checkPath('busy.example.com/v1/busy', '&page=3'));
+
+    expect(textOf(first.body)).toMatch(/1–10 of 25/);
+    expect(textOf(third.body)).toMatch(/21–25 of 25/);
+    expect(first.body).toMatch(/href="\/check\?url=busy\.example\.com%2Fv1%2Fbusy&amp;page=2"/);
+    expect(first.body.match(/href="\/calls\/pay_sample/g)?.length).toBe(10);
+    expect(third.body.match(/href="\/calls\/pay_sample/g)?.length).toBe(5);
+  });
+
+  it('says there is no call yet for an endpoint with none, and shows zeros', async () => {
+    const { response, body } = await get(full, checkPath('hostile.example.com/v1/none'));
+
+    expect(response.status).toBe(200);
+    expect(textOf(body)).toContain('No calls through Anyfare yet. Yours can be the first.');
+  });
+
+  it('shows the field and one line with the two examples when there is no link', async () => {
+    const before = full.api!.requests.length;
+    for (const path of ['/check', '/check?url=', '/check?url=%20%20']) {
+      const { response, body } = await get(full, path);
+
+      expect(response.status).toBe(200);
+      expect(textOf(body)).toContain('Paste the link of one paid endpoint, the one that answers 402.');
+      expect(body).toContain('href="/check?url=pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest"');
+      expect(body).toContain('href="/check?url=merchant-near.mikedotexe.com/v1/evidence/account"');
+      expect(body).toContain('<title>Check a link | Anyfare</title>');
+    }
+    expect(full.api!.requests.slice(before)).toEqual([]);
+  });
+
+  it('shows the card of each refusal, worded by its reason', async () => {
+    const cases: readonly (readonly [string, string, string])[] = [
+      ['free.example.com/v1/free', 'Not a paid link', 'This link answered without asking for a payment.'],
+      ['free.example.com/detail', 'Not a paid link', 'This link answered without asking for a payment.'],
+      ['unsupported.example.com/v1/x', 'A paid link we can&#x27;t pay yet', 'in a way Anyfare doesn&#x27;t make yet.'],
+      ['blocked.example.com/v1/x', 'We don&#x27;t route to this host', 'Anyfare doesn&#x27;t send calls to this host.'],
+      ['private.example.com/v1/x', 'We don&#x27;t route to this host', 'This link points to a private address.'],
+      ['own.example.com/v1/x', 'We don&#x27;t route to this host', 'This is one of Anyfare&#x27;s own hosts.'],
+      ['dead.example.com/v1/x', 'The link didn&#x27;t answer', 'We couldn&#x27;t reach this host. Check the link and try again.'],
+      ['surprise.example.com/v1/x', 'We couldn&#x27;t check this link', 'Something we did not expect &lt;b&gt;happened&lt;/b&gt;'],
+      ['not a link', 'This isn&#x27;t a link', 'such as api.example.com/v1/quote.'],
+      ['limited.example.com/v1/x', 'Too many checks', 'Wait a minute and try again.'],
+    ];
+    for (const [link, title, line] of cases) {
+      const { response, body } = await get(full, checkPath(link));
+
+      expect(response.status, link).toBe(200);
+      expect(body, link).toContain(title);
+      expect(body, link).toContain(line);
+      expect(body, link).toContain('Browse services');
+      expect(body, link).toContain('Check another link');
+      expect(body, link).toContain('href="/services"');
+      expect(body, link).not.toContain('Payable through Anyfare');
+    }
+    expect((await get(full, checkPath('free.example.com/v1/free'))).body).toMatch(/<span class="host">free\.example\.com<\/span><span class="path">\/v1\/free<\/span>/);
+  });
+
+  it('makes no request, and says it is not a link, for a link over 2,048 characters', async () => {
+    const before = full.api!.requests.length;
+    const long = `api.example.com/${'a'.repeat(2_100)}`;
+    const { response, body } = await get(full, checkPath(long));
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('This isn&#x27;t a link');
+    expect(full.api!.requests.slice(before).filter(request => request.path.startsWith('/_/check'))).toEqual([]);
+    expect(body).not.toContain('a'.repeat(4_100));
+    const exact = `api.example.com/${'a'.repeat(2_048 - 'api.example.com/'.length)}`;
+    await get(full, checkPath(exact));
+    expect(full.api!.requests.slice(before).filter(request => request.path.startsWith('/_/check'))).toHaveLength(1);
+  });
+
+  it('forwards the visitor\'s address to the pay host and to the API, and sends the link as typed', async () => {
+    const typed = 'api.example.com/v1/sample/lookup?symbol=BTC&x=a b';
+    await get(full, checkPath(typed), { headers: { 'x-forwarded-for': '203.0.113.9' } });
+
+    const checks = full.api!.requests.filter(request => request.path.startsWith('/_/check') && request.path.includes('symbol'));
+    expect(checks.at(-1)!.path).toBe(`/_/check?url=${encodeURIComponent(typed).replaceAll('%20', '+')}`);
+    expect(checks.at(-1)!.headers['x-forwarded-for']).toBe('203.0.113.9');
+    const reads = full.api!.requests.filter(request => request.path.startsWith('/v1/endpoints/stats') || request.path.startsWith('/v1/calls?host=api.example.com&endpoint=%2Fv1%2Fsample%2Flookup'));
+    expect(reads.at(-1)!.headers['x-forwarded-for']).toBe('203.0.113.9');
+    expect(reads.every(request => !request.path.includes('symbol'))).toBe(true);
+  });
+
+  it('shows the pay link with the query string of the link, and quotes the link for a shell', async () => {
+    const { body } = await get(full, checkPath('api.example.com/v1/sample/lookup?symbol=BTC', '&tab=headers'));
+
+    expect(body).toContain('value="https://pay.example.com/api.example.com/v1/sample/lookup?symbol=BTC"');
+    expect(body).toContain('curl -i &#x27;https://api.example.com/v1/sample/lookup?symbol=BTC&#x27;');
+  });
+
+  it('renders text from an outside host only as text: never markup, a link target or a style', async () => {
+    for (const tab of ['', '&tab=json', '&tab=headers', '&tab=code']) {
+      const { response, body } = await get(full, checkPath('hostile.example.com/v1/x', tab));
+
+      expect(response.status).toBe(200);
+      expect(body).not.toMatch(/<script>alert/);
+      expect(body).not.toContain('<img');
+      expect(body).not.toMatch(/<[a-z][^>]*\sonerror=/i);
+      expect(body).not.toMatch(/ style="/);
+      expect(body).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+      expect(body).toContain('&quot;&gt;&lt;img src=x onerror=alert(1)&gt;');
+      expect(body).not.toMatch(/href="[^"]*(alert|script)/i);
+      const scripts = [...body.matchAll(/<script\b[^>]*>/g)].map(match => match[0]);
+      const nonce = /'nonce-([^']+)'/.exec(response.headers.get('content-security-policy')!)![1]!;
+      expect(scripts.every(script => script.includes(`nonce="${nonce}"`))).toBe(true);
+    }
+    const description = (await get(full, checkPath('hostile.example.com/v1/x'))).body;
+    expect(description).toContain('<p class="small muted mt-8 ask-description">&lt;script&gt;alert(1)&lt;/script&gt;</p>');
+  });
+
+  it('waits for a slow check and still answers 200 with the result', async () => {
+    const started = Date.now();
+    const { response, body } = await get(full, checkPath('slow.example.com/v1/x'));
+
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_400);
+    expect(response.status).toBe(200);
+    expect(body).toContain('Payable through Anyfare');
+  });
+
+  it('answers 200 with the shared error state and the field still usable when the pay host is down or refuses the connection', async () => {
+    for (const running of [down, refused]) {
+      const { response, body } = await get(running, checkPath(base));
+
+      expect(response.status).toBe(200);
+      expect(body).toContain('role="alert"');
+      expect(body).toContain('We couldn&#x27;t check this link.');
+      expect(body).toMatch(/<input [^>]*name="url"[^>]*value="api\.example\.com\/v1\/sample\/quotes\/latest"/);
+      expect(body).toContain('Check again');
+    }
+  });
+
+  it('shows zeros and the empty state for an endpoint with no call, with an empty database', async () => {
+    const { response, body } = await get(empty, checkPath(base));
+
+    expect(response.status).toBe(200);
+    expect(textOf(body)).toContain('Payable through Anyfare');
+    expect(textOf(body)).toContain('0 Paid calls');
+    expect(textOf(body)).toContain('No calls through Anyfare yet.');
+    noBrokenValues(body);
+  });
+
+  it('answers the twin of a payable link with the real values, by .md and by Accept', async () => {
+    const { response, body } = await get(full, `/check.md?url=${encodeURIComponent(base)}`);
+    const viaAccept = await get(full, checkPath(base), { headers: { accept: 'text/markdown' } });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(body).toMatch(/^# api\.example\.com\/v1\/sample\/quotes\/latest\n\nPayable through Anyfare\./);
+    expect(body).toContain('This API asks $0.010 in USDC on Base for each call, over x402.');
+    expect(body).toContain('- Link: https://pay.example.com/api.example.com/v1/sample/quotes/latest');
+    expect(body).toContain('- Paid calls: 402');
+    expect(body).toContain('https://anyfare.example.com/calls/pay_sample0000');
+    expect(viaAccept.response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    // The same twin: only the clock differs
+    const clockless = (markdown: string): string => markdown.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, '<time>');
+    expect(clockless(viaAccept.body)).toBe(clockless(body));
+  });
+
+  it('answers the twin of a link that is not payable with its reason, and 429, 503 and the empty page when they apply', async () => {
+    const refused = await get(full, `/check.md?url=${encodeURIComponent('free.example.com/v1/free')}`);
+    const limited = await get(full, `/check.md?url=${encodeURIComponent('limited.example.com/v1/x')}`);
+    const failed = await get(down, `/check.md?url=${encodeURIComponent(base)}`);
+    const before = full.api!.requests.length;
+    const none = await get(full, '/check.md');
+
+    expect(refused.response.status).toBe(200);
+    expect(refused.body).toContain('Not payable: Not a paid link.');
+    expect(refused.body).toContain('Reason: `not_payable`');
+    expect(limited.response.status).toBe(429);
+    expect(limited.body).toContain('Reason: `rate_limited`');
+    expect(failed.response.status).toBe(503);
+    expect(none.response.status).toBe(200);
+    expect(none.body).toContain('Paste the link of one paid endpoint');
+    expect(full.api!.requests.slice(before)).toEqual([]);
+  });
+
+  it('turns into the Agent view with the requests behind the page, and has no twin cache', async () => {
+    const { response } = await get(full, `/check.md?url=${encodeURIComponent(base)}`);
+
+    expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+});
+
+describe('addresses a visitor can see', () => {
+  it('never show the internal address the server reads from, in any page or twin', async () => {
+    const internal = new URL(full.api!.url).host;
+    const paths = [
+      '/', '/calls', '/calls/pay_sample0000', '/services', '/services/api.example.com', checkPath('api.example.com/v1/sample/quotes/latest'),
+      checkPath('api.example.com/v1/sample/quotes/latest', '&tab=json'), checkPath('api.example.com/v1/sample/quotes/latest', '&tab=headers'), checkPath('api.example.com/v1/sample/quotes/latest', '&tab=code'),
+      checkPath('free.example.com/v1/free'), checkPath('hostile.example.com/v1/x'), checkPath('api.example.com/v1/x', '&period=7d&page=2'),
+      '/index.md', '/calls.md', '/calls/pay_sample0000.md', '/services.md', '/services/api.example.com.md', `/check.md?url=${encodeURIComponent('api.example.com/v1/sample/quotes/latest')}`, '/check.md',
+    ];
+    for (const path of paths) {
+      const { response, body } = await get(full, path);
+
+      expect(response.status, path).toBe(200);
+      expect(body, path).not.toContain(internal);
+      expect(JSON.stringify([...response.headers.entries()]), path).not.toContain(internal);
+    }
+    // The public addresses are the ones shown
+    const page = (await get(full, checkPath('api.example.com/v1/sample/quotes/latest'))).body;
+    expect(page).toMatch(/Put <code>pay\.example\.com(<!-- -->)?\/<\/code>/);
+    expect(page).toContain('https://pay.example.com/api.example.com/v1/sample/quotes/latest');
+  });
+});
+
+describe('the period and the pages of the Check page', () => {
+  const base = 'api.example.com/v1/sample/quotes/latest';
+
+  it('are plain links in the server\'s HTML, so a shared link and a browser without scripts work', async () => {
+    const { body } = await get(full, checkPath('busy.example.com/v1/busy', '&period=7d&tab=overview'));
+
+    expect(body).toMatch(/<a href="\/check\?url=busy\.example\.com%2Fv1%2Fbusy&amp;period=today"[^>]*>Today<\/a>/);
+    expect(body).toMatch(/<a href="\/check\?url=busy\.example\.com%2Fv1%2Fbusy&amp;period=7d" aria-current="true"[^>]*>7 days<\/a>/);
+    expect(body).toMatch(/<a [^>]*href="\/check\?url=busy\.example\.com%2Fv1%2Fbusy&amp;period=7d&amp;page=2"/);
+  });
+
+  it('are read from the public API in the browser, with no navigation and no check', async () => {
+    // The components that do it never use the router, and never ask for the check
+    const { readFileSync } = await import('node:fs');
+    for (const file of ['CheckStats.tsx', 'CheckCalls.tsx']) {
+      const source = readFileSync(new URL(`../../src/check/${file}`, import.meta.url), 'utf8');
+
+      expect(source, file).not.toMatch(/useRouter|router\.push|next\/navigation|paths\.check|\/_\/check/);
+      expect(source, file).toContain('window.history.replaceState');
+    }
+    // Each period and each page is one request to the API's read endpoints, and the check is asked once, for the first load
+    const before = full.api!.requests.length;
+    await get(full, checkPath(base));
+    const first = full.api!.requests.slice(before).map(request => request.path.split('?')[0]);
+    expect(first.filter(path => path === '/_/check')).toHaveLength(1);
+    const { getEndpointStats, listCalls } = await import('../../src/api/endpoints');
+    const { createReader } = await import('../../src/api/reader');
+    const mark = full.api!.requests.length;
+    const read = createReader({ apiUrl: full.api!.url });
+    for (const period of ['today', '7d', '30d', 'all'] as const)
+      expect((await getEndpointStats(read, 'api.example.com', '/v1/sample/quotes/latest', period)).ok).toBe(true);
+    expect((await listCalls(read, { host: 'busy.example.com', endpoint: '/v1/busy', size: 10, page: 2 })).ok).toBe(true);
+    const paths = full.api!.requests.slice(mark).map(request => request.path.split('?')[0]);
+    expect(paths).toEqual(['/v1/endpoints/stats', '/v1/endpoints/stats', '/v1/endpoints/stats', '/v1/endpoints/stats', '/v1/calls']);
   });
 });
 

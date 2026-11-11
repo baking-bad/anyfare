@@ -24,7 +24,23 @@ const PageButton = ({ page, current = false, disabled = false, label, icon = fal
   const classes = ['btn', 'sm', current ? 'primary' : 'ghost', icon ? 'icon' : 'num', disabled ? 'disabled' : ''].filter(Boolean).join(' ');
   const content = icon ? <span className={back ? 'flip' : ''}><Icon name="chev" /></span> : children;
   if (hrefFor && !disabled)
-    return <Link className={classes} href={hrefFor(page)} aria-label={label} aria-current={current ? 'page' : undefined}>{content}</Link>;
+    return (
+      <Link
+        className={classes}
+        href={hrefFor(page)}
+        aria-label={label}
+        aria-current={current ? 'page' : undefined}
+        // With both, a plain click goes through `onPage` and the link stays for a new tab and for no scripts
+        onClick={onPage === undefined ? undefined : event => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0)
+            return;
+          event.preventDefault();
+          onPage(page);
+        }}
+      >
+        {content}
+      </Link>
+    );
 
   return <button type="button" className={classes} disabled={disabled} aria-label={label} aria-current={current ? 'page' : undefined} onClick={() => onPage?.(page)}>{content}</button>;
 };

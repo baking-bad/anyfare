@@ -39,7 +39,12 @@ export interface AgentViewProps {
 const methodClass = (method: string): string => ({ GET: 'get', POST: 'post', SSE: 'sse', DELETE: 'del' } as Record<string, string>)[method] ?? '';
 
 // The page's own address from its Markdown twin's: `/index.md` is `/`, `/services.md` is `/services`
-const pageUrlOf = (markdownUrl: string): string => markdownUrl.endsWith('/index.md') ? markdownUrl.slice(0, -'index.md'.length) : markdownUrl.replace(/\.md$/, '');
+const pageUrlOf = (markdownUrl: string): string => {
+  const [path = '', ...query] = markdownUrl.split('?');
+  const page = path.endsWith('/index.md') ? path.slice(0, -'index.md'.length) : path.replace(/\.md$/, '');
+
+  return query.length === 0 ? page : `${page}?${query.join('?')}`;
+};
 
 // Read requests an agent can run as they are: the page by Accept, its twin, and the first request behind it
 const curlLines = (markdownUrl: string, requests: readonly AgentRequest[]): readonly string[] => {

@@ -13,3 +13,14 @@ export const visitorAddress = (headers: Headers): string | undefined =>
  */
 export const serverReader = (incoming: Headers, settings: SiteSettings = readSettings()): Reader =>
   createReader({ apiUrl: settings.apiInternalUrl, forwardedFor: visitorAddress(incoming), onFailure: logApiFailure() });
+
+/** How long a read of the pay host's check waits: the pay host makes a request to an outside host, which can be slow. */
+export const checkTimeoutMs = 15_000;
+
+/**
+ * A reader for the pay host, at `PAY_INTERNAL_URL`. It forwards the visitor's address in `X-Forwarded-For`,
+ * so the pay host's per-IP limit counts the visitor and not this server. A failed read is logged with its
+ * path and no query: the visitor's link is never in the log.
+ */
+export const payReader = (incoming: Headers, settings: SiteSettings = readSettings()): Reader =>
+  createReader({ apiUrl: settings.payInternalUrl, forwardedFor: visitorAddress(incoming), timeoutMs: checkTimeoutMs, onFailure: logApiFailure() });

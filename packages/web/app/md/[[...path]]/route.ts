@@ -1,4 +1,4 @@
-import { serverReader } from '../../../src/api/server';
+import { payReader, serverReader } from '../../../src/api/server';
 import { readSettings } from '../../../src/config';
 import { markdownPageFor } from '../../../src/markdown/pages';
 
@@ -19,7 +19,7 @@ export const GET = async (request: Request, { params }: { readonly params: Promi
     return notFound();
 
   const settings = readSettings();
-  const answer = await page.render({ settings, read: serverReader(request.headers, settings), path, search: new URL(request.url).searchParams });
+  const answer = await page.render({ settings, read: serverReader(request.headers, settings), payRead: payReader(request.headers, settings), path, search: new URL(request.url).searchParams });
   if (typeof answer !== 'string')
     return new Response(answer.body, { status: answer.status, headers: { ...headers, 'cache-control': 'no-store', vary: 'Accept' } });
 

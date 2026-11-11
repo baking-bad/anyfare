@@ -1,0 +1,82 @@
+/* The Check page. Classes only: the content security policy allows no inline style. */
+
+.check-top { padding-top: 24px; padding-bottom: 24px; }
+.check-field { border-radius: 16px; padding: 6px; }
+/* The line under the field keeps its room, so the page doesn't jump when a check starts */
+.check-running { margin: 0; min-height: 20px; display: flex; align-items: center; gap: 8px; }
+.check-empty { max-width: 760px; gap: 16px; }
+.check-result { min-width: 0; }
+
+/* ---------- The head ---------- */
+
+.check-head { align-items: flex-start; gap: 24px; }
+.verdict { display: flex; gap: 16px; align-items: flex-start; min-width: 0; }
+.verdict .tile { width: 48px; height: 48px; }
+.verdict-body { gap: 8px; min-width: 0; }
+.url-title { font-family: var(--font-mono); font-size: 20px; line-height: 28px; font-weight: 500; letter-spacing: -0.01em; overflow-wrap: anywhere; word-break: break-all; }
+.url-title .host { color: var(--text); }
+.url-title .path { color: var(--text-secondary); }
+
+/* ---------- Tabs that are links ---------- */
+
+.link-tabs > .tabs a { position: relative; z-index: 1; height: 32px; padding: 0 14px; border-radius: var(--radius-lg); font-size: var(--text-sm); line-height: 1; color: var(--text-secondary);
+  display: inline-flex; align-items: center; gap: 6px; text-decoration: none; white-space: nowrap; transition: color var(--duration) var(--ease), background var(--duration) var(--ease); }
+.link-tabs > .tabs a:hover { color: var(--text); }
+.link-tabs > .tabs a[aria-selected="true"] { color: var(--text); background: var(--white); box-shadow: var(--shadow-xs); }
+.dark .link-tabs > .tabs a[aria-selected="true"] { background: rgb(255 255 255 / 0.08); }
+.link-tabs > .tabs a:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
+.link-tabs > .tabs a svg { width: 14px; height: 14px; flex: none; }
+
+/* ---------- Overview ---------- */
+
+.check-split { gap: 24px; align-items: start; }
+@media (min-width: 1024px) { .check-split .side { position: sticky; top: calc(var(--header-height) + 16px); } }
+.sentence { margin: 0; font-size: var(--text-lg); line-height: var(--leading-lg); text-wrap: pretty; overflow-wrap: anywhere; }
+.sentence b { font-weight: 600; }
+.ask-kv { grid-template-columns: auto minmax(0, 1fr); }
+.ask-kv .kv-row { display: contents; }
+.ask-kv dd { overflow: visible; text-overflow: clip; overflow-wrap: anywhere; word-break: break-all; }
+.ask-description { overflow-wrap: anywhere; }
+
+.ep-stats { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+.ep-stats .card { padding: 14px 16px; background: var(--surface-well); outline: 0; }
+.ep-stats .card .v { font-size: 22px; line-height: 28px; }
+.ep-split { gap: 24px; }
+.check-period { display: inline-flex; }
+
+.pay-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 14px 16px; }
+.pay-row .r { text-align: right; font-variant-numeric: tabular-nums; }
+.pay-way { gap: 12px; flex-wrap: nowrap; min-width: 0; }
+.pay-none { padding: 14px 16px; }
+.link-box { border-radius: 12px; padding: 4px 4px 4px 12px; box-shadow: none; flex-wrap: nowrap; }
+.agent-prompt .code { font-size: 12px; }
+.well-heading { margin: 0; font: inherit; }
+.when-link { color: inherit; text-decoration: none; }
+.when-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+
+/* ---------- A link that can't be paid, or a check that failed ---------- */
+
+.check-refused { max-width: 640px; margin: 32px auto; text-align: center; }
+.check-refused-inner { align-items: center; gap: 16px; }
+.check-refused-text { max-width: 460px; margin: 0; overflow-wrap: anywhere; }
+.check-refused-actions { justify-content: center; }
+.check-card-wrap { max-width: 640px; margin: 32px auto; overflow-wrap: anywhere; }
+
+@media (max-width: 640px) {
+  .check-head .btn { height: 44px; }
+  .check-head > .row { width: 100%; }
+  .check-head > .row .btn { flex: 1; }
+  .url-title { font-size: 16px; line-height: 24px; }
+  .link-box input { flex-basis: auto; height: 32px; padding: 0; }
+  .link-box .btn { flex: none; }
+  .link-tabs > .tabs a { height: 40px; }
+}
+
+/* The period switch is a row of links */
+.seg a { position: relative; height: 28px; padding: 0 12px; border-radius: var(--radius-lg); font-size: var(--text-sm); line-height: 1; letter-spacing: var(--tracking-tight); color: var(--text);
+  display: inline-flex; align-items: center; gap: 6px; text-decoration: none; transition: background var(--duration) var(--ease); }
+.seg a:hover { background: var(--surface-wash-strong); }
+.seg a[aria-current="true"] { background: var(--primary-bg); color: var(--primary-text); }
+.seg a:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
+.seg.sm a { height: 24px; padding: 0 10px; }
+@media (pointer: coarse) { .seg a::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 44px; transform: translateY(-50%); } }

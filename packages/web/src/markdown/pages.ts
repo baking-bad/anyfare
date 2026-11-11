@@ -1,12 +1,15 @@
 import type { Reader } from '../api/reader';
 import type { SiteSettings } from '../config';
 import { loadCalls } from '../calls/data';
+import { parseCheckParams } from '../check/content';
+import { loadCheckData } from '../check/data';
 import { parseFilters } from '../calls/filters';
 import { loadHome } from '../home/data';
 import { isHost, parsePeriod, serviceMissingLine } from '../services/content';
 import { loadService, loadServiceCalls, loadServices } from '../services/data';
 import { parseServicesFilters } from '../services/filters';
 import { callsMarkdown } from './calls';
+import { checkMarkdown } from './check';
 import { notFoundLine } from '../receipt/content';
 import { loadReceipt } from '../receipt/data';
 import { homeMarkdown } from './home';
@@ -24,6 +27,8 @@ import { servicesMarkdown } from './services';
 export interface MarkdownContext {
   readonly settings: SiteSettings;
   readonly read: Reader;
+  // A reader for the pay host, where a link is checked
+  readonly payRead: Reader;
   // The page's path, such as `/` or `/services/example.com`
   readonly path: string;
   // The page's query, as asked for
@@ -74,6 +79,10 @@ export const markdownPages: readonly MarkdownPage[] = [
         ? { status: 404, body: serviceMissingMarkdown(serviceMissingLine) }
         : { status: 503, body: serviceMarkdown(settings, host, service, calls) };
     },
+  },
+  {
+    pattern: /^\/check$/,
+    render: async ({ settings, read, payRead, search }) => checkMarkdown(settings, await loadCheckData(payRead, read, parseCheckParams(search))),
   },
   {
     pattern: /^\/calls\/[A-Za-z0-9_-]{1,64}$/,
