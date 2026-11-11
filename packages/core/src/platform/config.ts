@@ -54,6 +54,17 @@ export interface TopupNetwork {
   readonly minimum: MicroUsd;
 }
 
+export interface RebalancingTarget {
+  // A registry asset on Base or Solana, held by the Signer's hot wallet on its chain
+  readonly asset: Asset;
+  // 1Click's name for the asset's network
+  readonly blockchain: string;
+  // Below this, the hot wallet is refilled
+  readonly floor: MicroUsd;
+  // What a refill brings it up to
+  readonly target: MicroUsd;
+}
+
 export interface PlatformConfig {
   readonly version: 1;
   readonly environment: Environment;
@@ -165,5 +176,28 @@ export interface PlatformConfig {
     readonly stablecoins: readonly string[];
     readonly timeoutMs: number;
     readonly networks: readonly TopupNetwork[];
+  };
+  // Refills of the Signer's hot wallets on Base and Solana, paid from its NEAR hot wallet through 1Click
+  // at topups.url. When enabled, source is set, there is at least one target, and the platform config
+  // names the Signer's wallet on NEAR and on each target's chain.
+  readonly rebalancing: {
+    // Off: the Signer refuses every refill, and the workers' job does nothing
+    readonly enabled: boolean;
+    // The registry asset refills are paid with, on a NEAR network
+    readonly source: Asset | undefined;
+    readonly leastPerRefill: MicroUsd;
+    readonly mostPerRefill: MicroUsd;
+    // Per target asset per UTC day, counting what leaves the NEAR hot wallet
+    readonly mostPerAssetPerDay: MicroUsd;
+    // 1Click's cost, amountIn minus amountOut, at most this share of the amount, in basis points
+    readonly maxFeeBps: number;
+    // The slippage tolerance sent to 1Click, in basis points
+    readonly slippageBps: number;
+    // How long 1Click has before it refunds an unfinished swap
+    readonly deadlineMinutes: number;
+    // How often the workers' job runs
+    readonly intervalSeconds: number;
+    // Each asset once
+    readonly targets: readonly RebalancingTarget[];
   };
 }

@@ -133,6 +133,23 @@ topups:
     - { name: ethereum, blockchain: eth, minimum: "5" }
     - { name: bitcoin, blockchain: btc, minimum: "10" }
 
+# Optional. Rebalancing: the Signer refills its hot wallets on Base and Solana from its NEAR hot wallet, through
+# the 1Click API at topups.url. Checked while off too. Tests turn it on with an override
+rebalancing:
+  enabled: false                # Default: false. Off, the Signer refuses every refill. When true, signer.wallets
+                                # must name near and each target's chain, and source and one target are required
+  source: near-usdc             # The registry asset refills are paid with: one on NEAR, held by signer.wallets.near
+  leastPerRefill: "1"           # Default: "1". In USD, more than 0
+  mostPerRefill: "10"           # Default: "10". At least leastPerRefill
+  mostPerAssetPerDay: "20"      # Default: "20". Per target asset per UTC day, at least mostPerRefill
+  maxFeeBps: 200                # Default: 200. 1Click's cost, amountIn minus amountOut, as a share of the amount: 0 to 1000
+  slippageBps: 50               # Default: 50. Sent to 1Click: 0 to 500
+  deadlineMinutes: 30           # Default: 30. How long 1Click has before it refunds: 5 to 240
+  intervalSeconds: 300          # Default: 300. How often the workers' job runs: 60 to 86400
+  targets:                      # A hot wallet on Base or Solana, each asset once. blockchain is 1Click's name for the network.
+    - { asset: base-usdc, blockchain: base, floor: "5", target: "10" }   # Below floor, refill it up to target, in USD
+    - { asset: solana-usdc, blockchain: sol, floor: "3", target: "6" }
+
 timeouts:
   connectMs: 5000
   requestMs: 30000

@@ -117,6 +117,26 @@ topups:
     - { name: ethereum, blockchain: eth, minimum: "5" }
     - { name: bitcoin, blockchain: btc, minimum: "10" }
 
+# Rebalancing: the Signer refills its hot wallets on Base and Solana with near-usdc from its NEAR hot wallet,
+# through 1Click at topups.url. Off until the operator turns it on.
+rebalancing:
+  enabled: false
+  source: near-usdc
+  # In USD: the least and the most per refill, and the most per target asset per UTC day
+  leastPerRefill: "1"
+  mostPerRefill: "10"
+  mostPerAssetPerDay: "20"
+  # 1Click's cost at most 2% of the amount, and 0.5% of slippage
+  maxFeeBps: 200
+  slippageBps: 50
+  # 1Click refunds a swap unfinished after 30 minutes. The workers check every 5 minutes.
+  deadlineMinutes: 30
+  intervalSeconds: 300
+  # Below floor, a hot wallet is refilled up to target, in USD. blockchain is 1Click's name for the network.
+  targets:
+    - { asset: base-usdc, blockchain: base, floor: "5", target: "10" }
+    - { asset: solana-usdc, blockchain: sol, floor: "3", target: "6" }
+
 timeouts:
   connectMs: 5000
   requestMs: 30000

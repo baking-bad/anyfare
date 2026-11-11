@@ -158,6 +158,39 @@ export interface TopupsDocument {
   readonly networks?: readonly TopupNetworkDocument[];
 }
 
+export interface RebalancingTargetDocument {
+  // A registry asset on Base or Solana: the Signer's hot wallet that holds it is refilled
+  readonly asset: string;
+  // 1Click's name for the asset's network, such as base or sol
+  readonly blockchain: string;
+  // In USD: below it, the hot wallet is refilled
+  readonly floor: string;
+  // In USD: what a refill brings the hot wallet up to. More than floor.
+  readonly target: string;
+}
+
+export interface RebalancingDocument {
+  // Default: false. Off, the Signer refuses every refill, and the workers' job does nothing.
+  readonly enabled?: boolean;
+  // The registry asset refills are paid with: one on a NEAR network, held by signer.wallets.near
+  readonly source?: string;
+  // In USD: the least and the most one refill may be, and the most per target asset per UTC day.
+  // Defaults: "1", "10", "20".
+  readonly leastPerRefill?: string;
+  readonly mostPerRefill?: string;
+  readonly mostPerAssetPerDay?: string;
+  // 1Click's cost, amountIn minus amountOut, at most this share of the amount. Default: 200.
+  readonly maxFeeBps?: number;
+  // The slippage tolerance sent to 1Click. Default: 50.
+  readonly slippageBps?: number;
+  // How long 1Click has before it refunds an unfinished swap. Default: 30.
+  readonly deadlineMinutes?: number;
+  // How often the workers' job runs. Default: 300.
+  readonly intervalSeconds?: number;
+  // One entry per hot wallet that is refilled. At least one when enabled.
+  readonly targets?: readonly RebalancingTargetDocument[];
+}
+
 export interface PlatformConfigDocument {
   readonly version: 1;
   readonly environment: Environment;
@@ -182,4 +215,6 @@ export interface PlatformConfigDocument {
   readonly freeCredits?: FreeCreditsDocument;
   // Top-ups: any token on any chain, swapped to USDC on NEAR by the 1Click API of NEAR Intents
   readonly topups?: TopupsDocument;
+  // Refills of the Signer's hot wallets on Base and Solana from its NEAR hot wallet, through 1Click
+  readonly rebalancing?: RebalancingDocument;
 }

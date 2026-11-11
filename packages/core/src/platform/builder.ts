@@ -3,7 +3,7 @@ import {
 } from '@anyfare/common';
 
 import { isValidAddress, isValidAssetAddress } from '../addresses.js';
-import { findNetwork, supportedNetworks, type NetworkInfo } from '../networks.js';
+import { findNetwork, supportedNetworks, type Chain, type NetworkInfo } from '../networks.js';
 import { toIssues, type IssueDraft, type IssueLocator } from '../validation/issues.js';
 import { ajv, toSchemaDrafts } from '../validation/schema.js';
 import type { Asset, PlatformConfig } from './config.js';
@@ -190,7 +190,91 @@ export const checkPlatformConfig = (document: PlatformConfigDocument): readonly 
       add(['topups', 'networks'], 'must have at least 1 item: top-ups are enabled');
   }
 
+  checkRebalancing(document, add, checkAmount);
+
   return drafts;
+};
+
+// The chains 1Click delivers refills on, and 1Click's name for each: never Tempo, and NEAR is where they
+// are paid from
+const refillBlockchains = { base: 'base', solana: 'sol' } as const;
+const isRefillChain = (chain: Chain | undefined): chain is keyof typeof refillBlockchains => chain === 'base' || chain === 'solana';
+
+/**
+ * Rebalancing's rules, checked while it is off too, so turning it on can't start a mistake. Refills are
+ * paid from the NEAR hot wallet, so the source is on NEAR, and 1Click delivers each on Base or Solana to
+ * the Signer's wallet there, named `base` or `sol` as 1Click names them. When it is on, the platform
+ * config names those wallets. The 1Click URL is topups.url, which always has a value: the document's or
+ * the default.
+ */
+const checkRebalancing = (
+  document: PlatformConfigDocument,
+  add: (path: ValuePath, message: string) => void,
+  checkAmount: (path: ValuePath, value: string | undefined) => MicroUsd | undefined,
+): void => {
+  const rebalancing = document.rebalancing ?? {};
+  const defaults = platformDefaults.rebalancing;
+  const assetNamed = (name: string) => document.assets.find(asset => asset.name === name);
+  const assetNames = document.assets.map(asset => asset.name).join(', ');
+
+  if (rebalancing.source !== undefined) {
+    const source = assetNamed(rebalancing.source);
+    if (!source)
+      add(['rebalancing', 'source'], `is not an asset in assets. Assets: ${assetNames}`);
+    else if (findNetwork(source.network)?.namespace !== 'near')
+      add(['rebalancing', 'source'], 'must be an asset on a NEAR network: refills are paid from the NEAR hot wallet');
+  }
+
+  const least = checkAmount(['rebalancing', 'leastPerRefill'], rebalancing.leastPerRefill ?? defaults.leastPerRefill);
+  const most = checkAmount(['rebalancing', 'mostPerRefill'], rebalancing.mostPerRefill ?? defaults.mostPerRefill);
+  const perDay = checkAmount(['rebalancing', 'mostPerAssetPerDay'], rebalancing.mostPerAssetPerDay ?? defaults.mostPerAssetPerDay);
+  if (least !== undefined && least <= 0n)
+    add(['rebalancing', 'leastPerRefill'], 'must be more than 0');
+  else if (least !== undefined && most !== undefined && least > most)
+    add(['rebalancing', 'mostPerRefill'], `must be at least leastPerRefill (${formatUsd(least)} USD)`);
+  if (most !== undefined && perDay !== undefined && most > perDay)
+    add(['rebalancing', 'mostPerAssetPerDay'], `must be at least mostPerRefill (${formatUsd(most)} USD)`);
+
+  const listed = new Set<string>();
+  const chains = new Set<'base' | 'solana'>();
+  for (const [index, target] of (rebalancing.targets ?? []).entries()) {
+    const path = ['rebalancing', 'targets', index];
+    const asset = assetNamed(target.asset);
+    const chain = asset && findNetwork(asset.network)?.chain;
+    if (!asset)
+      add([...path, 'asset'], `is not an asset in assets. Assets: ${assetNames}`);
+    else if (!isRefillChain(chain))
+      add([...path, 'asset'], 'must be an asset on Base or Solana: 1Click delivers refills there, and not on Tempo');
+    else {
+      chains.add(chain);
+      // Otherwise 1Click could deliver to our address on another chain, where the same token address lives
+      if (target.blockchain !== refillBlockchains[chain])
+        add([...path, 'blockchain'], `must be ${JSON.stringify(refillBlockchains[chain])}, 1Click's name for the asset's chain`);
+    }
+    if (listed.has(target.asset))
+      add([...path, 'asset'], `duplicate target asset ${JSON.stringify(target.asset)}`);
+    listed.add(target.asset);
+    const floor = checkAmount([...path, 'floor'], target.floor);
+    const level = checkAmount([...path, 'target'], target.target);
+    if (floor !== undefined && level !== undefined && floor >= level)
+      add([...path, 'floor'], `must be less than target (${formatUsd(level)} USD)`);
+  }
+
+  if (!rebalancing.enabled)
+    return;
+  if (rebalancing.source === undefined)
+    add(['rebalancing'], 'missing required field "source": rebalancing is enabled');
+  if (rebalancing.targets === undefined)
+    add(['rebalancing'], 'missing required field "targets": rebalancing is enabled');
+  else if (rebalancing.targets.length === 0)
+    add(['rebalancing', 'targets'], 'must have at least 1 item: rebalancing is enabled');
+  const wallets = document.signer?.wallets ?? {};
+  if (wallets.near === undefined)
+    add(['signer', 'wallets'], 'missing required field "near": rebalancing is enabled, and refills are paid from the NEAR hot wallet');
+  for (const chain of chains) {
+    if (wallets[chain] === undefined)
+      add(['signer', 'wallets'], `missing required field ${JSON.stringify(chain)}: rebalancing is enabled, and refills go to the Signer's wallet there`);
+  }
 };
 
 // Only after checkPlatformConfig passed: every network is known and every amount parses
@@ -222,7 +306,7 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
     minPrice: usd(asset.minPrice, platformDefaults.assetMinPrice),
     payTo: asset.payTo,
   }));
-  const { timeouts, sizeLimits, signer, freeCredits, topups } = platformDefaults;
+  const { timeouts, sizeLimits, signer, freeCredits, topups, rebalancing } = platformDefaults;
 
   return deepFreeze<PlatformConfig>({
     version: document.version,
@@ -286,6 +370,21 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
       stablecoins: [...document.topups?.stablecoins ?? topups.stablecoins],
       timeoutMs: document.topups?.timeoutMs ?? topups.timeoutMs,
       networks: (document.topups?.networks ?? []).map(network => ({ name: network.name, blockchain: network.blockchain, minimum: parseUsd(network.minimum) })),
+    },
+    rebalancing: {
+      enabled: document.rebalancing?.enabled ?? rebalancing.enabled,
+      source: assets.find(asset => asset.name === document.rebalancing?.source),
+      leastPerRefill: usd(document.rebalancing?.leastPerRefill, rebalancing.leastPerRefill),
+      mostPerRefill: usd(document.rebalancing?.mostPerRefill, rebalancing.mostPerRefill),
+      mostPerAssetPerDay: usd(document.rebalancing?.mostPerAssetPerDay, rebalancing.mostPerAssetPerDay),
+      maxFeeBps: document.rebalancing?.maxFeeBps ?? rebalancing.maxFeeBps,
+      slippageBps: document.rebalancing?.slippageBps ?? rebalancing.slippageBps,
+      deadlineMinutes: document.rebalancing?.deadlineMinutes ?? rebalancing.deadlineMinutes,
+      intervalSeconds: document.rebalancing?.intervalSeconds ?? rebalancing.intervalSeconds,
+      // Every target's asset is in the registry: checkRebalancing passed
+      targets: (document.rebalancing?.targets ?? []).map(target => ({
+        asset: assets.find(asset => asset.name === target.asset)!, blockchain: target.blockchain, floor: parseUsd(target.floor), target: parseUsd(target.target),
+      })),
     },
   });
 };

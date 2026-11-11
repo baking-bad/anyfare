@@ -127,6 +127,25 @@ describe('config/production.yaml', () => {
     ]);
   });
 
+  it('has rebalancing off, paid with near-usdc, refilling the Base and Solana hot wallets within $1 to $10 a refill and $20 a day each', async () => {
+    const config = await loadText(text);
+    const { rebalancing } = config;
+
+    expect(rebalancing).toMatchObject({
+      enabled: false, leastPerRefill: 1_000_000n, mostPerRefill: 10_000_000n, mostPerAssetPerDay: 20_000_000n, maxFeeBps: 200, slippageBps: 50, deadlineMinutes: 30,
+      intervalSeconds: 300,
+    });
+    expect(rebalancing.source).toBe(findAsset(config, 'near-usdc'));
+    expect(rebalancing.targets.map(target => [target.asset.name, target.asset.network.id, target.blockchain, target.floor, target.target])).toEqual([
+      ['base-usdc', 'eip155:8453', 'base', 5_000_000n, 10_000_000n],
+      ['solana-usdc', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', 'sol', 3_000_000n, 6_000_000n],
+    ]);
+    // Turned on, it needs nothing more: the Signer's wallets on NEAR, Base and Solana are named, and 1Click is at the default URL
+    const on = await loadText(text.replace('rebalancing:\n  enabled: false', 'rebalancing:\n  enabled: true'));
+    expect(on.rebalancing.enabled).toBe(true);
+    expect(on.topups.url).toBe('https://1click.chaindefuser.com');
+  });
+
   it('caps what one routed call and one network can cost us, and lists each hot wallet once, as the payTo it is', async () => {
     const config = await loadText(text);
 

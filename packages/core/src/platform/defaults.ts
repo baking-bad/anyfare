@@ -39,4 +39,17 @@ export const platformDefaults = {
     stablecoins: ['USDC', 'USDT', 'USDT0', 'DAI', 'USD1'],
     timeoutMs: 15_000,
   },
+  // Rebalancing: off unless the deployment turns it on. Refills of $1 to $10, at most $20 per target
+  // asset a day, a 2% cost at most, 0.5% slippage, 30 minutes before 1Click refunds, a check every 5
+  // minutes. No source and no targets: the deployment names them.
+  rebalancing: {
+    enabled: false,
+    leastPerRefill: '1',
+    mostPerRefill: '10',
+    mostPerAssetPerDay: '20',
+    maxFeeBps: 200,
+    slippageBps: 50,
+    deadlineMinutes: 30,
+    intervalSeconds: 300,
+  },
 } as const;

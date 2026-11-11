@@ -30,7 +30,7 @@ const issues = (build: () => unknown): readonly { readonly path: string; readonl
 const minimalOptionalFields = {
   logger: undefined, ownHosts: undefined, paymentKeyDefaults: undefined, timeouts: undefined,
   sizeLimits: undefined, signer: undefined, rateLimits: { documents: undefined, probeIp: undefined, topups: undefined, publicReads: undefined }, callStream: undefined, freeCredits: undefined,
-  topups: undefined, stats: undefined,
+  topups: undefined, stats: undefined, rebalancing: undefined,
 };
 
 type MutableDocument = { facilitators: Record<string, unknown>[] };
@@ -90,6 +90,10 @@ describe('buildPlatformConfig', () => {
     });
     expect(config.freeCredits).toEqual({ enabled: false, amount: 100_000n, perIp: { requests: 3, windowSeconds: 86_400 }, maxPerDay: undefined });
     expect(config.topups).toMatchObject({ enabled: false, url: 'https://1click.chaindefuser.com', asset: undefined, networks: [] });
+    expect(config.rebalancing).toEqual({
+      enabled: false, source: undefined, leastPerRefill: 1_000_000n, mostPerRefill: 10_000_000n, mostPerAssetPerDay: 20_000_000n, maxFeeBps: 200, slippageBps: 50,
+      deadlineMinutes: 30, intervalSeconds: 300, targets: [],
+    });
   });
 
   it('takes the limits from the document when it sets them', () => {
@@ -235,7 +239,7 @@ describe('buildPlatformConfig', () => {
   it('rejects an asset with an invalid payTo', () => {
     const assets = [{ name: 'base-usdc', network: 'eip155:84532', address: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', decimals: 6, peg: 'usd', payTo: '0x12' }];
 
-    expect(issues(() => buildPlatformConfig(document({ assets, topups: undefined }))))
+    expect(issues(() => buildPlatformConfig(document({ assets, topups: undefined, rebalancing: undefined }))))
       .toEqual([{ path: '/assets/0/payTo', message: 'is not a valid address on Base Sepolia' }]);
   });
 });
@@ -496,6 +500,107 @@ describe('top-ups', () => {
     ['an unknown field', { memo: true }, '/topups/memo', 'unknown field'],
   ])('refuse %s in the schema', (_name, topups, path, message) => {
     expect(issues(() => assertValidPlatformConfigDocument(patch(loadExamplePlatformDocument(), { topups })))).toContainEqual({ path, message });
+  });
+});
+
+describe('rebalancing', () => {
+  // Made-up hot wallets, as an operator names them when rebalancing is on
+  const wallets = { base: '0x3333333333333333333333333333333333333333', solana: '11111111111111111111111111111111', near: 'pay.anyfare.testnet' };
+  const on = (changes: Record<string, unknown> = {}, signer: unknown = { wallets }) => document({ signer, rebalancing: { enabled: true, ...changes } });
+  const target = (asset: string, floor = '5', level = '10', blockchain = asset.startsWith('solana') ? 'sol' : 'base') => ({ asset, blockchain, floor, target: level });
+
+  it('take the example\'s section: off, paid with near-usdc, and two targets with their floors and targets in micro-USD', () => {
+    const config = buildPlatformConfig(document());
+
+    expect(config.rebalancing).toMatchObject({
+      enabled: false, leastPerRefill: 1_000_000n, mostPerRefill: 10_000_000n, mostPerAssetPerDay: 20_000_000n, maxFeeBps: 200, slippageBps: 50, deadlineMinutes: 30,
+      intervalSeconds: 300,
+    });
+    expect(config.rebalancing.source).toBe(findAsset(config, 'near-usdc'));
+    expect(config.rebalancing.targets.map(item => [item.asset.name, item.blockchain, item.floor, item.target])).toEqual([
+      ['base-usdc', 'base', 5_000_000n, 10_000_000n], ['solana-usdc', 'sol', 3_000_000n, 6_000_000n],
+    ]);
+    expect(config.rebalancing.targets[0]!.asset).toBe(findAsset(config, 'base-usdc'));
+    expect(Object.isFrozen(config.rebalancing.targets[0])).toBe(true);
+  });
+
+  it('turn on with the Signer\'s wallets on NEAR and on each target\'s chain, and pay 1Click at topups.url, the default when it isn\'t set', () => {
+    expect(buildPlatformConfig(on()).rebalancing.enabled).toBe(true);
+    expect(buildPlatformConfig(on()).topups.url).toBe('http://127.0.0.1:8085');
+    expect(buildPlatformConfig(patch(on(), { topups: { url: undefined } }) as PlatformConfigDocument).topups.url).toBe('https://1click.chaindefuser.com');
+    // Only Base is refilled: Solana's wallet isn't needed
+    expect(buildPlatformConfig(on({ targets: [target('base-usdc')] }, { wallets: { base: wallets.base, near: wallets.near } })).rebalancing.targets).toHaveLength(1);
+  });
+
+  it('take the values the document sets', () => {
+    const config = buildPlatformConfig(on({
+      leastPerRefill: '0.5', mostPerRefill: '0.5', mostPerAssetPerDay: '0.5', maxFeeBps: 0, slippageBps: 500, deadlineMinutes: 240, intervalSeconds: 60,
+      targets: [target('solana-usdc', '0', '0.000001')],
+    }));
+
+    expect(config.rebalancing).toMatchObject({
+      leastPerRefill: 500_000n, mostPerRefill: 500_000n, mostPerAssetPerDay: 500_000n, maxFeeBps: 0, slippageBps: 500, deadlineMinutes: 240, intervalSeconds: 60,
+    });
+    expect(config.rebalancing.targets.map(item => [item.asset.name, item.floor, item.target])).toEqual([['solana-usdc', 0n, 1n]]);
+  });
+
+  it.each([
+    ['no NEAR wallet', { base: wallets.base, solana: wallets.solana }, 'missing required field "near": rebalancing is enabled, and refills are paid from the NEAR hot wallet'],
+    ['no Base wallet for base-usdc', { solana: wallets.solana, near: wallets.near }, 'missing required field "base": rebalancing is enabled, and refills go to the Signer\'s wallet there'],
+    ['no Solana wallet for solana-usdc', { base: wallets.base, near: wallets.near }, 'missing required field "solana": rebalancing is enabled, and refills go to the Signer\'s wallet there'],
+  ])('refuse %s when enabled, and take it while off', (_name, signerWallets, message) => {
+    expect(issues(() => buildPlatformConfig(on({}, { wallets: signerWallets })))).toEqual([{ path: '/signer/wallets', message }]);
+    expect(buildPlatformConfig(document({ signer: { wallets: signerWallets } })).rebalancing.enabled).toBe(false);
+  });
+
+  it.each([
+    ['a missing source', { source: undefined }, [{ path: '/rebalancing', message: 'missing required field "source": rebalancing is enabled' }]],
+    ['no targets', { targets: undefined }, [{ path: '/rebalancing', message: 'missing required field "targets": rebalancing is enabled' }]],
+    ['an empty target list', { targets: [] }, [{ path: '/rebalancing/targets', message: 'must have at least 1 item: rebalancing is enabled' }]],
+  ])('refuse %s when enabled, and take it while off', (_name, changes, expected) => {
+    expect(issues(() => buildPlatformConfig(on(changes)))).toEqual(expected);
+    expect(buildPlatformConfig(document({ rebalancing: changes })).rebalancing.enabled).toBe(false);
+  });
+
+  it.each([
+    ['a source not in the registry', { source: 'near-usdt' }, '/rebalancing/source', 'is not an asset in assets. Assets: base-usdc, solana-usdc, tempo-pathusd, near-usdc'],
+    ['a source not on NEAR', { source: 'base-usdc' }, '/rebalancing/source', 'must be an asset on a NEAR network: refills are paid from the NEAR hot wallet'],
+    ['a target not in the registry', { targets: [target('base-usdt')] }, '/rebalancing/targets/0/asset', 'is not an asset in assets. Assets: base-usdc, solana-usdc, tempo-pathusd, near-usdc'],
+    ['a target on NEAR', { targets: [target('near-usdc')] }, '/rebalancing/targets/0/asset', 'must be an asset on Base or Solana: 1Click delivers refills there, and not on Tempo'],
+    ['a target on Tempo', { targets: [target('tempo-pathusd')] }, '/rebalancing/targets/0/asset', 'must be an asset on Base or Solana: 1Click delivers refills there, and not on Tempo'],
+    ['a target listed twice', { targets: [target('base-usdc'), target('base-usdc', '1', '2')] }, '/rebalancing/targets/1/asset', 'duplicate target asset "base-usdc"'],
+    ['a Base target on another blockchain', { targets: [target('base-usdc', '5', '10', 'arb')] }, '/rebalancing/targets/0/blockchain', 'must be "base", 1Click\'s name for the asset\'s chain'],
+    ['a Solana target named as the chain is', { targets: [target('solana-usdc', '3', '6', 'solana')] }, '/rebalancing/targets/0/blockchain', 'must be "sol", 1Click\'s name for the asset\'s chain'],
+    ['a Solana target on Base', { targets: [target('solana-usdc', '3', '6', 'base')] }, '/rebalancing/targets/0/blockchain', 'must be "sol", 1Click\'s name for the asset\'s chain'],
+    ['a floor equal to its target', { targets: [target('base-usdc', '10', '10')] }, '/rebalancing/targets/0/floor', 'must be less than target (10 USD)'],
+    ['a floor above its target', { targets: [target('base-usdc', '10.000001', '10')] }, '/rebalancing/targets/0/floor', 'must be less than target (10 USD)'],
+    ['a least per refill of 0', { leastPerRefill: '0' }, '/rebalancing/leastPerRefill', 'must be more than 0'],
+    ['a least above the most per refill', { leastPerRefill: '10.000001' }, '/rebalancing/mostPerRefill', 'must be at least leastPerRefill (10.000001 USD)'],
+    ['a most per refill above the most per day', { mostPerRefill: '20.000001', mostPerAssetPerDay: '20' }, '/rebalancing/mostPerAssetPerDay', 'must be at least mostPerRefill (20.000001 USD)'],
+    ['a most per refill above the default most per day', { mostPerRefill: '21', mostPerAssetPerDay: undefined }, '/rebalancing/mostPerAssetPerDay', 'must be at least mostPerRefill (21 USD)'],
+    ['a target that overflows', { targets: [target('base-usdc', '1', '99999999999999')] }, '/rebalancing/targets/0/target', 'The USD amount is too large'],
+  ])('refuse %s, even while off', (_name, changes, path, message) => {
+    expect(issues(() => buildPlatformConfig(document({ rebalancing: { ...changes, enabled: false } })))).toEqual([{ path, message }]);
+    expect(issues(() => buildPlatformConfig(on(changes)))).toContainEqual({ path, message });
+  });
+
+  it.each([
+    ['a fee bound above 10%', { maxFeeBps: 1_001 }, '/rebalancing/maxFeeBps', 'must be at most 1000'],
+    ['a negative fee bound', { maxFeeBps: -1 }, '/rebalancing/maxFeeBps', 'must be at least 0'],
+    ['a slippage above 5%', { slippageBps: 501 }, '/rebalancing/slippageBps', 'must be at most 500'],
+    ['a deadline under 5 minutes', { deadlineMinutes: 4 }, '/rebalancing/deadlineMinutes', 'must be at least 5'],
+    ['a deadline over 4 hours', { deadlineMinutes: 241 }, '/rebalancing/deadlineMinutes', 'must be at most 240'],
+    ['an interval under a minute', { intervalSeconds: 59 }, '/rebalancing/intervalSeconds', 'must be at least 60'],
+    ['an interval over a day', { intervalSeconds: 86_401 }, '/rebalancing/intervalSeconds', 'must be at most 86400'],
+    ['a fractional interval', { intervalSeconds: 300.5 }, '/rebalancing/intervalSeconds', 'must be an integer'],
+    ['a numeric amount', { mostPerRefill: 10 }, '/rebalancing/mostPerRefill', 'must be a USD amount as a string with at most 6 decimal places, such as "0.001"'],
+    ['a source name with capitals', { source: 'NEAR-USDC' }, '/rebalancing/source', 'must be lowercase letters and digits separated by single hyphens, such as base-usdc'],
+    ['a target without a floor', { targets: [{ asset: 'base-usdc', blockchain: 'base', target: '10' }] }, '/rebalancing/targets/0', 'missing required field "floor"'],
+    ['a target with a numeric floor', { targets: [{ asset: 'base-usdc', blockchain: 'base', floor: 5, target: '10' }] }, '/rebalancing/targets/0/floor', 'must be a USD amount as a string with at most 6 decimal places, such as "0.001"'],
+    ['a blockchain with capitals', { targets: [{ asset: 'base-usdc', blockchain: 'Base', floor: '5', target: '10' }] }, '/rebalancing/targets/0/blockchain', 'must be 2–32 lowercase letters, digits, or hyphens, starting with a letter, such as base'],
+    ['an unknown field', { recipient: 'pay.anyfare.testnet' }, '/rebalancing/recipient', 'unknown field'],
+  ])('refuse %s in the schema', (_name, rebalancing, path, message) => {
+    expect(issues(() => assertValidPlatformConfigDocument(patch(loadExamplePlatformDocument(), { rebalancing })))).toContainEqual({ path, message });
   });
 });
 

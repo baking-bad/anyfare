@@ -103,5 +103,19 @@ export const platformConfigSchema: SchemaObject = {
       timeoutMs: positive,
       networks: array(object({ name: topupNetworkName, blockchain: topupNetworkName, minimum: usdAmount }, ['name', 'blockchain', 'minimum'])),
     }),
-  }, ['version', 'environment', 'urls', 'keyPrefixes', 'routingFeeBps', 'assets', 'facilitators', 'mpp', 'rateLimits']),
+    rebalancing: object({
+      enabled: boolean,
+      source: assetName,
+      leastPerRefill: usdAmount,
+      mostPerRefill: usdAmount,
+      mostPerAssetPerDay: usdAmount,
+      // At most 10% to 1Click, and 5% of slippage
+      maxFeeBps: integer(0, 1_000),
+      slippageBps: integer(0, 500),
+      // From 5 minutes to 4 hours before 1Click refunds, and a check from every minute to once a day
+      deadlineMinutes: integer(5, 240),
+      intervalSeconds: integer(60, 86_400),
+      targets: array(object({ asset: assetName, blockchain: topupNetworkName, floor: usdAmount, target: usdAmount }, ['asset', 'blockchain', 'floor', 'target'])),
+    }),
+  },['version', 'environment', 'urls', 'keyPrefixes', 'routingFeeBps', 'assets', 'facilitators', 'mpp', 'rateLimits']),
 };
