@@ -27,7 +27,9 @@ import { errorReason, maxFeeOf, signTempoCharge } from './tempo.js';
  * count it.
  */
 export type SigningRefusal = X402OptionRefusal | 'not_in_registry' | 'no_wallet' | 'above_quote' | 'above_max_per_call' | 'expired' | TempoChargeRefusal
-  | SpendRefusal | 'quote_released';
+  | SpendRefusal | 'quote_released'
+  // A refill: its amount out of rebalancing's range, a quote that fails its check, or a NEAR hot wallet short of amountIn
+  | 'refill_amount' | 'quote_rejected' | 'source_low';
 
 /** A spend window's total against its limit, in USD, when a limit refused. */
 export interface SpendWindow {

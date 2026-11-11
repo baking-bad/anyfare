@@ -6,13 +6,17 @@ import { Challenge } from 'mppx';
 import type { LocalAccount } from 'viem';
 
 import {
-  AnyfareError, createServer, formatUsd, isRecord, randomIdGenerator, Secret, systemClock, type Clock, type ErrorStatusTable, type IdGenerator, type Logger,
-  type MicroUsd, type Server,
+  AnyfareError, createServer, formatUsd, isRecord, randomIdGenerator, recordErrorCode, Secret, systemClock, type Clock, type ErrorStatusTable, type IdGenerator,
+  type Logger, type MicroUsd, type Server,
 } from '@anyfare/common';
 import type { PlatformConfig } from '@anyfare/core';
 import { createRoutingRepository, type Postgres, type Redis, type RoutingRepository } from '@anyfare/db';
+import { createTokenCatalog, type OneClickClient } from '@anyfare/topups';
 
 import { createRedisNearPayerStore, type NearPayerStore, type NearWallet } from './near.js';
+import { createNearTransfer } from './nearTransfer.js';
+import { createRefiller, refillLeaseMs } from './refill.js';
+import { createRedisRefillStore, refillSpendKeyPrefix, type RefillStore } from './refillStore.js';
 import { createSigner, PayerBusyError, SigningFailedError, SigningRefusedError, type SignRequest } from './sign.js';
 import { createRedisSpendLimits, type SpendLimits } from './spend.js';
 import { createTempoClient } from './tempo.js';
@@ -43,12 +47,25 @@ export interface SignerDependencies {
   readonly nearStore?: NearPayerStore;
   // Where signatures are recorded. Default: the signatures table.
   readonly signatures?: Pick<RoutingRepository, 'recordSignature'>;
+  // The 1Click API refills are quoted by, built from topups when rebalancing is on. Without it, every refill is refused.
+  readonly oneClick?: Pick<OneClickClient, 'tokens' | 'quote'>;
+  // Default: Redis counters per target asset and UTC day, with rebalancing.mostPerAssetPerDay
+  readonly refillSpend?: SpendLimits;
+  // Each refill's record by its ID. Default: the Signer's Redis.
+  readonly refills?: RefillStore;
+  // How often a refill's transaction whose send had no answer is looked up. Default: a second.
+  readonly refillPollMs?: number;
 }
 
 // Redis down: without its spend counters the Signer signs nothing, and says so as unavailable
 // A NEAR payment in flight from the hot wallet: 409 payer_busy, and the caller tries again in a moment.
+// Refills: off or not possible, 503 refills_off; the same ID asked while it runs, 409 refill_in_progress,
+// or for another asset or amount than its outcome's, 409 refill_id_conflict; 1Click refused or silent,
+// 503 oneclick_unavailable; a transaction that failed, 502 refill_failed; one whose outcome is unknown,
+// 502 refill_unknown.
 const errorStatuses = {
   unauthorized: 401, invalid_request: 400, signing_refused: 422, payer_busy: 409, signing_failed: 502, redis_not_ready: 503,
+  refills_off: 503, refill_in_progress: 409, refill_id_conflict: 409, oneclick_unavailable: 503, refill_failed: 502, refill_unknown: 502,
 } as const satisfies ErrorStatusTable;
 
 class UnauthorizedError extends AnyfareError {
@@ -77,6 +94,25 @@ const signBodySchema = {
   },
   additionalProperties: false,
 } as const;
+
+// `POST /internal/v1/refills`: the workers' refill ID, a rebalancing target's asset, and what its wallet
+// must receive, in micro-USD, as a decimal string
+const refillBodySchema = {
+  type: 'object',
+  required: ['refillId', 'asset', 'amount'],
+  properties: {
+    refillId: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+    asset: { type: 'string', minLength: 1, maxLength: 64 },
+    amount: { type: 'string', pattern: '^\\d{1,20}$' },
+  },
+  additionalProperties: false,
+} as const;
+
+interface RefillBody {
+  readonly refillId: string;
+  readonly asset: string;
+  readonly amount: string;
+}
 
 // `POST /internal/v1/quotes/:quoteId/release`: the proxy's quote ID, its payment ID
 const releaseParamsSchema = {
@@ -140,15 +176,19 @@ const signRequestOf = (body: SignBody, quotedPrice: MicroUsd): SignRequest => {
 };
 
 /**
- * The Signer, on the internal network only: `POST /internal/v1/sign` and
- * `POST /internal/v1/quotes/:quoteId/release` with the shared secret. Readiness covers Postgres and
- * Redis: without its spend counters, it signs nothing.
+ * The Signer, on the internal network only: `POST /internal/v1/sign`,
+ * `POST /internal/v1/quotes/:quoteId/release`, and `POST /internal/v1/refills`, with the shared secret.
+ * Readiness covers Postgres and Redis: without its spend counters, it signs nothing.
  */
 export const createApp = ({
   config, logger, postgres, redis, secret, wallets, tempoRpcUrl, solanaRpcUrl, clock = systemClock, ids = randomIdGenerator, requestIds,
   spend = createRedisSpendLimits({ redis, hourly: config.signer.maxPerNetworkPerHour, daily: config.signer.maxPerNetworkPerDay }),
   nearStore = createRedisNearPayerStore({ redis }),
   signatures = createRoutingRepository({ db: postgres.db, clock }),
+  oneClick,
+  refillSpend = createRedisSpendLimits({ redis, hourly: undefined, daily: config.rebalancing.mostPerAssetPerDay, keyPrefix: refillSpendKeyPrefix }),
+  refills = createRedisRefillStore({ redis }),
+  refillPollMs,
 }: SignerDependencies): Server => {
   const server = createServer({
     logger,
@@ -183,6 +223,25 @@ export const createApp = ({
       if (maxFee !== undefined)
         fees.inc({ network }, Number(maxFee) / 1_000_000);
     },
+  });
+  const refilled = new Counter({
+    name: 'signer_refills_usd_total',
+    help: 'USD the Signer refilled its hot wallets with, per target asset: what each wallet was to receive',
+    labelNames: ['asset'] as const,
+    registers: [server.metrics.registry],
+  });
+  // Refills: each read and the send within the connect timeout, and lookups of a send without an answer
+  // for as long as a settle may take
+  const nearTiming = { readMs: config.timeouts.connectMs, sendMs: config.timeouts.connectMs, pollBudgetMs: config.timeouts.settleMs };
+  const refiller = createRefiller({
+    config, wallets, spend: refillSpend, store: refills, nearStore, clock, ids, leaseMs: refillLeaseMs(nearTiming),
+    transfer: wallets.near && createNearTransfer({ wallet: wallets.near, store: nearStore, ...nearTiming, ...refillPollMs === undefined ? {} : { pollMs: refillPollMs } }),
+    oneClick,
+    tokens: oneClick && createTokenCatalog({
+      client: oneClick, clock,
+      onStale: ({ error, ageMs }) => logger.warn({ error, ageMs }, 'The 1Click token list couldn\'t be read: refills resolve tokens from an older list'),
+    }),
+    onRefilled: ({ asset, amount }) => refilled.inc({ asset }, Number(amount) / 1_000_000),
   });
 
   // The shared secret, compared with `Secret.equals`, which is timing-safe
@@ -247,6 +306,23 @@ export const createApp = ({
       amount: signed.amount.toString(),
       payTo: signed.payTo,
     };
+  });
+
+  // The workers ask for a refill of a hot wallet. The Signer quotes it, checks it, and pays it from its
+  // NEAR hot wallet, or refuses. Its answer, and an unknown outcome, are answered again for the same ID.
+  server.app.post<{ Body: RefillBody }>('/internal/v1/refills', { onRequest: authenticate, schema: { body: refillBodySchema } }, async (request, reply) => {
+    const { refillId, asset, amount } = request.body;
+    const result = await refiller.refill({ refillId, asset, amount: BigInt(amount) as MicroUsd }, request.log);
+    if (result.kind === 'sent')
+      return result.answer;
+    const code = result.kind === 'failed' ? 'refill_failed' : 'refill_unknown';
+    recordErrorCode(request, code);
+
+    return result.kind === 'failed'
+      ? reply.status(errorStatuses.refill_failed).send({ error: { code, message: result.message }, transactionHash: result.transactionHash })
+      : reply.status(errorStatuses.refill_unknown).send({
+        error: { code, message: 'The refill\'s transaction may have gone through: follow 1Click\'s status for its deposit address' }, ...result.body,
+      });
   });
 
   // The proxy is done with a payment: its NEAR lease, if it holds one, goes, and the next NEAR payment

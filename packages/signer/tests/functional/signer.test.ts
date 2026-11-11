@@ -399,4 +399,24 @@ describe('the Signer\'s startup', () => {
     await expect(startSigner({ env: envOf({ SIGNER_SECRET: 'a'.repeat(31) }), logger })).rejects.toThrow('SIGNER_SECRET must be at least 32 characters');
     await expect(startSigner({ env: envOf({ SIGNER_BASE_KEY: walletKey.slice(2) }), logger })).rejects.toThrow('SIGNER_BASE_KEY must be 0x and 64 hex characters');
   });
+
+  it('with rebalancing on, reads the 1Click key topups.apiKey names, won\'t start without it, and warns without the NEAR wallet', async () => {
+    const startLines: Record<string, unknown>[] = [];
+    const logger = createLogger({}, { write: (line: string) => startLines.push(JSON.parse(line) as Record<string, unknown>) });
+    // Made-up wallets on Solana and NEAR, whose keys this Signer doesn't hold
+    const on = Buffer.from(JSON.stringify({
+      topups: { apiKey: 'ONECLICK_API_KEY' },
+      signer: { wallets: { base: wallet.address, solana: '11111111111111111111111111111111', near: 'hot.anyfare.testnet' } },
+      rebalancing: { enabled: true },
+    })).toString('base64');
+    const oneClickKey = 'oneclick-key-made-up-for-the-test';
+
+    await expect(startSigner({ env: envOf({ CONFIG: on }), logger })).rejects.toThrow('Secret ONECLICK_API_KEY is not set');
+    const app = await startSigner({ env: envOf({ CONFIG: on, ONECLICK_API_KEY: oneClickKey }), logger });
+    await app.close();
+
+    expect(startLines.find(line => line['msg'] === 'Started')).toMatchObject({ rebalancing: { enabled: true, targets: ['base-usdc', 'solana-usdc'], mostPerAssetPerDay: '20' } });
+    expect(startLines.find(line => line['level'] === 40)).toMatchObject({ msg: expect.stringMatching(/^Rebalancing is on, but SIGNER_NEAR_KEY is not set/) });
+    expect(JSON.stringify(startLines)).not.toContain(oneClickKey);
+  });
 });

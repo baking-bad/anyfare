@@ -89,14 +89,17 @@ return 0`;
  * Spend limits per network in Redis: per clock hour and per UTC day of Redis's own clock, in micro-USD.
  * Counters live at `<prefix>spend:<network>:hour:<hours since the epoch>` and
  * `<prefix>spend:<network>:day:<days since the epoch>`. The hourly limit is optional. Fails closed:
- * while Redis is down, nothing is signed.
+ * while Redis is down, nothing is signed. Another `keyPrefix` keeps counters of another kind apart,
+ * such as refills per asset under `refill:spend:`.
  */
-export const createRedisSpendLimits = ({ redis, hourly, daily }: {
+export const createRedisSpendLimits = ({ redis, hourly, daily, keyPrefix = spendKeyPrefix }: {
   readonly redis: Redis;
   readonly hourly: MicroUsd | undefined;
   readonly daily: MicroUsd;
+  // Default: spend:
+  readonly keyPrefix?: string;
 }): SpendLimits => {
-  const baseOf = (network: string) => `${redis.prefix}${spendKeyPrefix}${network}`;
+  const baseOf = (network: string) => `${redis.prefix}${keyPrefix}${network}`;
   const keysOf = ({ network, windows }: SpendEntry) => [`${baseOf(network)}:hour:${windows.hour}`, `${baseOf(network)}:day:${windows.day}`];
   const ready = () => {
     if (!redis.client.isReady)

@@ -9,6 +9,7 @@ import {
   isValidAddress, loadPlatformConfig, nearNetworkOf, platformSummary, readNearRpc, readSolanaRpc, type NearRpc, type NetworkInfo, type PlatformConfig,
 } from '@anyfare/core';
 import { createPostgres, createRedis } from '@anyfare/db';
+import { createOneClickClient } from '@anyfare/topups';
 
 import { createApp } from './app.js';
 import { nearPublicKeyOf, readNearAccessKey, type NearAccessKey } from './near.js';
@@ -242,6 +243,14 @@ export const startSigner = async ({ env, logger }: AppContext): Promise<RunningA
       logger.warn({ host: nearRpc.host }, `NEAR_RPC_URLS names no RPC for ${near.network.id}: the Signer builds NEAR payments through the x402 SDK's public RPC, which is rate limited`);
     await checkNearWallet({ wallet: near, rpc: nearRpc, budgetMs: config.timeouts.connectMs, logger });
   }
+  // Refills: 1Click at topups.url, with the key topups.apiKey names, as the API and the workers call it.
+  // A key the config names but the environment doesn't set stops the start.
+  const { topups, rebalancing } = config;
+  const oneClick = rebalancing.enabled
+    ? createOneClickClient({ url: topups.url, apiKey: topups.apiKey === undefined ? undefined : readSecret(topups.apiKey, env), timeoutMs: topups.timeoutMs })
+    : undefined;
+  if (rebalancing.enabled && !near)
+    logger.warn('Rebalancing is on, but SIGNER_NEAR_KEY is not set: every refill is refused, since refills are paid from the NEAR hot wallet');
   const databaseUrl = readSecret('DATABASE_URL', env);
   const redisUrl = readSecret('REDIS_URL', env);
 
@@ -257,6 +266,7 @@ export const startSigner = async ({ env, logger }: AppContext): Promise<RunningA
       ...near && nearRpc ? { near: { accountId: near.accountId, secretKey: near.secretKey, rpcUrl: nearRpc.url } } : {},
     },
     ...solanaRpc ? { solanaRpcUrl: solanaRpc.url } : {},
+    ...oneClick ? { oneClick } : {},
   });
   let ports;
   try {
@@ -281,6 +291,9 @@ export const startSigner = async ({ env, logger }: AppContext): Promise<RunningA
       maxPerNetworkPerHour: signer.maxPerNetworkPerHour === undefined ? null : formatUsd(signer.maxPerNetworkPerHour),
       maxPerNetworkPerDay: formatUsd(signer.maxPerNetworkPerDay),
     },
+    rebalancing: rebalancing.enabled
+      ? { enabled: true, targets: rebalancing.targets.map(target => target.asset.name), mostPerAssetPerDay: formatUsd(rebalancing.mostPerAssetPerDay) }
+      : { enabled: false },
     ports,
   }, 'Started');
 

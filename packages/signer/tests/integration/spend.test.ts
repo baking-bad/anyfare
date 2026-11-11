@@ -123,6 +123,22 @@ describe('the spend limits per network in Redis', () => {
     expect(await spend.reserve({ network: nextNetwork(), amount: 60_000n })).toMatchObject({ refusal: undefined, hour: 60_000n, day: 60_000n });
   });
 
+  it('keeps counters under another key prefix apart, such as refills per asset, with a limit of their own', async () => {
+    const name = nextNetwork();
+    const refills = createRedisSpendLimits({ redis, hourly: undefined, daily: 20_000n, keyPrefix: 'refill:spend:' });
+    await limits().reserve({ network: name, amount: 60_000n });
+
+    const { refusal, day, windows } = await refills.reserve({ network: name, amount: 20_000n });
+
+    expect({ refusal, day }).toEqual({ refusal: undefined, day: 20_000n });
+    expect(await redis.client.get(`${redis.prefix}refill:spend:${name}:day:${windows.day}`)).toBe('20000');
+    expect(await redis.client.get(keysOf(name, windows).day)).toBe('60000');
+    expect((await refills.reserve({ network: name, amount: 1n })).refusal).toBe('daily_limit');
+    await refills.release({ network: name, amount: 20_000n, windows });
+    expect(await redis.client.get(`${redis.prefix}refill:spend:${name}:day:${windows.day}`)).toBe('0');
+    expect(await redis.client.get(keysOf(name, windows).day)).toBe('60000');
+  });
+
   it('never lets reservations racing from two connections pass a limit together', async () => {
     const network = nextNetwork();
     const second = redis.duplicate();
