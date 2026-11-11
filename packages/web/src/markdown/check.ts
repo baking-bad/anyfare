@@ -6,6 +6,7 @@ import { count, ms, pct, usdOf } from '../format';
 import type { CheckNumbers, PayableCheck } from '../check/answer';
 import {
   askRows, asksSentence, checkAddress, checkDescription, cut, defaultMethod, knownMethod, offersPost, pathLines, tryPostLine, describedAs, emptyLine, linkParts, noCallsLine, periodName, refusalWords, titleFor, unavailableLine, unlistedLine, wayWords, ownPayLine, ownPayTitle,
+  type AskRow,
 } from '../check/content';
 import type { CheckData } from '../check/data';
 import { inexactLine, isHost, servicePath } from '../services/content';
@@ -16,6 +17,11 @@ import { inexactLine, isHost, servicePath } from '../services/content';
 const cell = (text: string): string => text.replaceAll('|', '\\|').replaceAll(/\s+/g, ' ');
 
 const oneLine = (text: string): string => text.replaceAll(/\s+/g, ' ').trim();
+
+// A row of what the API asks, with its links to other sites (the network's site, the explorer) as Markdown links
+const askLine = (row: AskRow): string => row.parts === undefined
+  ? oneLine(row.value)
+  : row.parts.map(part => part.href === undefined ? part.text.replaceAll(/\s+/g, ' ') : `[${oneLine(part.text)}](${part.href})`).join('').trim();
 
 const unavailable = 'Not available right now.';
 
@@ -90,7 +96,7 @@ ${serviceLine(settings.siteUrl, check)}
 ## What the API asks
 
 ${asksSentence(check).plain}
-${rows.map(row => `\n- ${row.label}: ${oneLine(row.value)}`).join('')}${description === undefined ? '' : `\n\nIts own description: "${oneLine(description)}"`}
+${rows.map(row => `\n- ${row.label}: ${askLine(row)}`).join('')}${description === undefined ? '' : `\n\nIts own description: "${oneLine(description)}"`}
 
 ## Pay it through Anyfare
 ${quote(check)}

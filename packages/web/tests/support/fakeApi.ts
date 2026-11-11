@@ -666,7 +666,7 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
   const hostile = host === checkHosts.hostile;
   const asset = mpp ? 'USDC.e' : 'USDC';
   const paidWith = mpp ? 'tempo' : onNear ? 'near' : 'base';
-  const network = mpp ? 'tempo:mainnet' : onNear ? 'near:mainnet' : 'eip155:8453';
+  const network = mpp ? 'eip155:4217' : onNear ? 'near:mainnet' : 'eip155:8453';
   const payTo = onNear ? 'merchant.sample.near' : `0x${'9a1f'.repeat(10)}`;
   const description = hostile ? hostileDescription : mpp ? 'One web search' : 'Latest quotes for sample assets';
   const resource = { url: `https://${host}${target.pathname}`, description, mimeType: 'application/json' };

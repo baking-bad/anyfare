@@ -228,7 +228,7 @@ describe('what the API asks, in words', () => {
     expect(base.map(row => row.label)).toEqual(['Protocol', 'Network', 'Asset', 'Amount', 'Pays to', 'Answer type']);
     expect(base[0]!.value).toBe('x402 version 2, scheme exact');
     expect(base[3]!.value).toBe('10000 base units = $0.01');
-    expect(mpp.map(row => row.label)).toEqual(['Protocol', 'Amount', 'Recipient', 'Realm', 'Expires']);
+    expect(mpp.map(row => row.label)).toEqual(['Protocol', 'Network', 'Amount', 'Recipient', 'Realm', 'Expires']);
     expect(mpp[0]!.value).toBe('MPP, method tempo, intent charge');
     // No row without a value, on any protocol
     const empty = { asks: { amount: '', network: ' ', recipient: '', realm: '', expires: '', method: '', intent: '' }, upstream: { headers: [] }, price: undefined, checkedAt: undefined } as const;
@@ -236,6 +236,48 @@ describe('what the API asks, in words', () => {
     expect(askRows({ ...empty, protocol: 'mpp' }).map(row => row.label)).toEqual(['Protocol', 'Amount']);
     expect(askRows({ ...empty, protocol: 'x402' }).every(row => row.value.trim() !== '')).toBe(true);
     expect(askRows({ asks: {}, protocol: 'x402', upstream: { headers: [] }, price: undefined, checkedAt: undefined }).map(row => row.label)).toEqual(['Protocol']);
+  });
+
+  it('names a known network before its ID, links it to its site, and links the asset and the payee to the explorer', () => {
+    const base = askRows(check('api.example.com/v1/sample/quotes/latest'));
+    const near = askRows(check('data.example.com/v1/sample/lookup'));
+    const mpp = askRows(check('search.example.com/v1/sample/lookup'));
+    const row = (rows: typeof base, label: string) => rows.find(entry => entry.label === label)!;
+
+    expect(row(base, 'Network')).toEqual({ label: 'Network', value: 'Base · eip155:8453', parts: [{ text: 'Base', href: 'https://base.org' }, { text: ' · ' }, { text: 'eip155:8453', code: true }] });
+    expect(row(base, 'Asset').value).toBe('USDC · 0x8335…A02913');
+    expect(row(base, 'Asset').parts).toEqual([{ text: 'USDC · ' }, { text: '0x8335…A02913', href: 'https://basescan.org/token/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', title: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' }]);
+    expect(row(base, 'Pays to').parts).toEqual([{ text: `0x${'9a1f'.repeat(10)}`, code: true, href: `https://basescan.org/address/0x${'9a1f'.repeat(10)}` }]);
+    expect(row(near, 'Network').value).toBe('NEAR · near:mainnet');
+    expect(row(near, 'Asset').parts?.[1]?.href).toBe('https://nearblocks.io/token/17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1');
+    expect(row(near, 'Pays to').parts?.[0]?.href).toBe('https://nearblocks.io/address/merchant.sample.near');
+    expect(row(mpp, 'Network').value).toBe('Tempo · eip155:4217');
+    expect(row(mpp, 'Recipient').parts?.[0]?.href).toBe(`https://explore.tempo.xyz/address/0x${'5d2e'.repeat(10)}`);
+  });
+
+  it('links no address of the wrong shape, and names no network it does not know', () => {
+    const payable = check('api.example.com/v1/sample/quotes/latest');
+    const odd = askRows({ ...payable, asks: { ...payable.asks, payTo: '0x12/../../evil?x=1' } });
+    const unknown = askRows({ ...payable, asks: { ...payable.asks, network: 'eip155:1' } });
+    const prototype = askRows({ ...payable, asks: { ...payable.asks, network: 'constructor' } });
+
+    expect(odd.find(row => row.label === 'Pays to')).toEqual({ label: 'Pays to', value: '0x12/../../evil?x=1', code: true });
+    expect(unknown.find(row => row.label === 'Network')).toEqual({ label: 'Network', value: 'eip155:1', code: true });
+    expect(unknown.find(row => row.label === 'Asset')?.parts).toBeUndefined();
+    expect(prototype.find(row => row.label === 'Network')).toEqual({ label: 'Network', value: 'constructor', code: true });
+  });
+
+  it('reads the asset and the base units from the option on the network we pay, and links an asset only when sure of it', () => {
+    const payable = check('api.example.com/v1/sample/quotes/latest');
+    const decoded = payable.upstream.decoded as { accepts: readonly Record<string, unknown>[] };
+    const [onBase] = decoded.accepts;
+    const onSolana = { ...onBase, network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', amount: '99' };
+    const solanaFirst = askRows({ ...payable, upstream: { ...payable.upstream, decoded: { ...decoded, accepts: [onSolana, onBase] } } });
+    const neither = askRows({ ...payable, upstream: { ...payable.upstream, decoded: { ...decoded, accepts: [onSolana, { ...onSolana, asset: 'other' }] } } });
+
+    expect(solanaFirst.find(row => row.label === 'Asset')?.value).toBe('USDC · 0x8335…A02913');
+    expect(solanaFirst.find(row => row.label === 'Amount')?.value).toBe('10000 base units = $0.01');
+    expect(neither.find(row => row.label === 'Asset')).toEqual({ label: 'Asset', value: 'USDC · EPjFWd…yTDt1v' });
   });
 
   it('cuts a description at 300 characters, and a missing one is nothing', () => {

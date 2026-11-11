@@ -4,6 +4,7 @@ import { usdOf } from '../format';
 import { defaultPeriod, parsePeriod } from '../services/content';
 import { checkHeader, checkMethods, defaultMethod, httpMethods, knownMethod, parseMethod, type CheckMethod, type HttpMethod } from './method';
 import { maxLinkLength, type Asks, type CheckPath, type CheckTry, type PayableCheck, type PayWay, type Refusal } from './answer';
+import { explorerLink, networkOf } from './networks';
 
 export { checkHeader, checkMethods, defaultMethod, httpMethods, knownMethod, parseMethod, type CheckMethod, type HttpMethod };
 
@@ -247,21 +248,49 @@ export const asksSentence = (check: Pick<PayableCheck, 'asks' | 'protocol' | 'pr
   ]);
 };
 
-/** One row of the key-value list under the sentence. */
+/** A piece of a row's value: text, in the mono font when `code`, and a link to another site when `href` is set. */
+export interface AskPart {
+  readonly text: string;
+  readonly code?: boolean;
+  readonly href?: string;
+  // The whole value, when `text` is a short form of it
+  readonly title?: string;
+}
+
+/** One row of the key-value list under the sentence. `value` is the row as plain text; `parts`, when set, is how the page shows it. */
 export interface AskRow {
   readonly label: string;
   readonly value: string;
   // Shown in the mono font
   readonly code?: boolean;
+  readonly parts?: readonly AskPart[];
 }
 
-// The first entry the decoded x402 challenge offers, for the asset's address and the base units
-const firstAccept = (check: Pick<PayableCheck, 'upstream'>): Record<string, unknown> | undefined => {
+// The entry of the decoded x402 challenge on the network we would pay, for the asset's address and the base units.
+// With none on it, the first entry, which is `sure` only when it is the only one.
+const acceptOf = (check: Pick<PayableCheck, 'asks' | 'upstream'>): { readonly accept?: Record<string, unknown>; readonly sure: boolean } => {
   const { decoded } = check.upstream;
-  const accepts = typeof decoded === 'object' && decoded !== null ? (decoded as { accepts?: unknown }).accepts : undefined;
-  const first: unknown = Array.isArray(accepts) ? accepts[0] : undefined;
+  const listed = typeof decoded === 'object' && decoded !== null ? (decoded as { accepts?: unknown }).accepts : undefined;
+  const accepts = (Array.isArray(listed) ? listed : []).filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null);
+  const same = check.asks.network === undefined ? undefined : accepts.find(entry => entry['network'] === check.asks.network);
 
-  return typeof first === 'object' && first !== null ? first as Record<string, unknown> : undefined;
+  return same === undefined ? { accept: accepts[0], sure: accepts.length === 1 } : { accept: same, sure: true };
+};
+
+// The network's row: its name, linked to its official site, then its ID. An unknown network is its ID alone.
+const networkRow = (id: string): AskRow => {
+  const network = networkOf(id);
+
+  return network === undefined
+    ? { label: 'Network', value: id, code: true }
+    : { label: 'Network', value: `${network.name} · ${id}`, parts: [{ text: network.name, href: network.site }, { text: ' · ' }, { text: id, code: true }] };
+};
+
+// An account's row, linked to the explorer's page of it when the network has one
+const accountRow = (label: string, network: string | undefined, account: string): AskRow => {
+  const href = explorerLink(network, 'address', account);
+
+  return href === undefined ? { label, value: account, code: true } : { label, value: account, parts: [{ text: account, code: true, href }] };
 };
 
 const stringOf = (value: unknown): string | undefined => typeof value === 'string' || typeof value === 'number' ? String(value).slice(0, 200) : undefined;
@@ -275,14 +304,17 @@ export const askRows = (check: Pick<PayableCheck, 'asks' | 'protocol' | 'upstrea
 
 const askRowsOf = (check: Pick<PayableCheck, 'asks' | 'protocol' | 'upstream' | 'price' | 'checkedAt'>): readonly AskRow[] => {
   const { asks } = check;
+  const network = asks.network?.trim() === '' ? undefined : asks.network;
   const rows: AskRow[] = [];
   if (check.protocol === 'mpp') {
     rows.push({ label: 'Protocol', value: `MPP${asks.method === undefined ? '' : `, method ${asks.method}`}${asks.intent === undefined ? '' : `, intent ${asks.intent}`}` });
+    if (network !== undefined)
+      rows.push(networkRow(network));
     const amount = asks.amount ?? check.price?.amount;
     if (amount !== undefined)
       rows.push({ label: 'Amount', value: `${amount} ${asks.asset ?? 'USD'}`.trim() });
     if (asks.recipient !== undefined)
-      rows.push({ label: 'Recipient', value: asks.recipient, code: true });
+      rows.push(accountRow('Recipient', network, asks.recipient));
     if (asks.realm !== undefined)
       rows.push({ label: 'Realm', value: asks.realm });
     if (asks.expires !== undefined)
@@ -291,18 +323,23 @@ const askRowsOf = (check: Pick<PayableCheck, 'asks' | 'protocol' | 'upstream' | 
     return rows;
   }
   rows.push({ label: 'Protocol', value: `${check.protocol === 'x402' ? 'x402' : check.protocol}${asks.x402Version === undefined ? '' : ` version ${asks.x402Version}`}${asks.scheme === undefined ? '' : `, scheme ${asks.scheme}`}` });
-  if (asks.network !== undefined)
-    rows.push({ label: 'Network', value: asks.network, code: true });
-  const accept = firstAccept(check);
+  if (network !== undefined)
+    rows.push(networkRow(network));
+  const { accept, sure } = acceptOf(check);
   const assetId = stringOf(accept?.['asset']);
-  if (asks.asset !== undefined || assetId !== undefined)
-    rows.push({ label: 'Asset', value: [asks.asset, assetId === undefined ? undefined : shortValue(assetId)].filter(Boolean).join(' · ') });
+  if (asks.asset !== undefined || assetId !== undefined) {
+    const value = [asks.asset, assetId === undefined ? undefined : shortValue(assetId)].filter(Boolean).join(' · ');
+    const href = sure ? explorerLink(network, 'token', assetId) : undefined;
+    rows.push(href === undefined || assetId === undefined
+      ? { label: 'Asset', value }
+      : { label: 'Asset', value, parts: [...asks.asset === undefined || asks.asset === '' ? [] : [{ text: `${asks.asset} · ` }], { text: shortValue(assetId), href, title: assetId }] });
+  }
   const units = stringOf(accept?.['amount']);
   const dollars = asDollars(asks.amount ?? check.price?.amount);
   if (units !== undefined || dollars !== '')
     rows.push({ label: 'Amount', value: [units === undefined ? '' : `${units} base units`, dollars].filter(Boolean).join(' = ') });
   if (asks.payTo !== undefined)
-    rows.push({ label: 'Pays to', value: asks.payTo, code: true });
+    rows.push(accountRow('Pays to', network, asks.payTo));
   if (asks.mimeType !== undefined)
     rows.push({ label: 'Answer type', value: asks.mimeType });
 

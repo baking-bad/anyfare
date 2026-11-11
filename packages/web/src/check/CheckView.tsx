@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 
 import type { ApiResult } from '../api/reader';
 import type { CallsPage, EndpointStats } from '../api/types';
@@ -21,7 +21,7 @@ import { CheckStats } from './CheckStats';
 import {
   askRows, asksSentence, bodyFlags, knownMethod, byHandNote, checkAddress, checkTabs, codeSamples, cut, defaultMethod, describedAs, emptyLine, linkParts, methodFlag, offersPost, refusalWords, shellWord,
   pathLines, tryPostLabel, tryPostLine, ownPayButton, ownPayLine, ownPayTitle, unlistedLine, wayWords,
-  type CheckMethod, type CheckParams, type CheckTab, type HttpMethod,
+  type AskPart, type CheckMethod, type CheckParams, type CheckTab, type HttpMethod,
 } from './content';
 import { LinkPending } from './LinkPending';
 import { LinkTabs } from './LinkTabs';
@@ -132,6 +132,15 @@ const CheckHead = ({ check, now }: { readonly check: PayableCheck; readonly now:
 
 // ---------- Overview ----------
 
+// A row's value in pieces: a link to another site opens in a new tab, with the outside-link icon after it
+const AskParts = ({ parts }: { readonly parts: readonly AskPart[] }) => parts.map((part, index) => {
+  const text = part.code ? <code title={part.title}>{part.text}</code> : part.text;
+
+  return part.href === undefined
+    ? <Fragment key={index}>{text}</Fragment>
+    : <a key={index} className="link out" href={part.href} target="_blank" rel="noopener noreferrer" title={part.code ? undefined : part.title}>{text}<Icon name="ext" /></a>;
+});
+
 const Asks = ({ check }: { readonly check: PayableCheck }) => {
   const sentence = asksSentence(check);
   const rows = askRows(check);
@@ -152,7 +161,7 @@ const Asks = ({ check }: { readonly check: PayableCheck }) => {
           {rows.map(row => (
             <div key={row.label} className="kv-row">
               <dt>{row.label}</dt>
-              <dd>{row.code ? <code title={row.value}>{row.value}</code> : row.value}</dd>
+              <dd>{row.parts === undefined ? row.code ? <code title={row.value}>{row.value}</code> : row.value : <AskParts parts={row.parts} />}</dd>
             </div>
           ))}
           {description === undefined ? null : (
