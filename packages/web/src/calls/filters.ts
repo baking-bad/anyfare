@@ -10,6 +10,13 @@ export const paidWithChoices = ['near', 'base', 'solana', 'tempo', 'credits'] as
 
 export const statusChoices: readonly CallStatus[] = ['paid', 'free'];
 
+// A control character, a NUL included, which the API refuses in a filter
+// eslint-disable-next-line no-control-regex
+const controls = /[\u0000-\u001f\u007f-\u009f]/g;
+
+/** A filter's text without control characters. */
+export const withoutControls = (text: string): string => text.replace(controls, '');
+
 const maxServiceLength = 100;
 const maxEndpointLength = 300;
 const maxPage = 100_000;
@@ -38,8 +45,8 @@ const valueOf = (source: Source, name: string): string => {
 export const parseFilters = (source: Source): CallsFilters => {
   const paidWith = valueOf(source, 'paidWith');
   const status = valueOf(source, 'status');
-  const service = valueOf(source, 'service').trim().slice(0, maxServiceLength);
-  const endpoint = valueOf(source, 'endpoint').trim();
+  const service = withoutControls(valueOf(source, 'service')).trim().slice(0, maxServiceLength);
+  const endpoint = withoutControls(valueOf(source, 'endpoint')).trim();
   const page = Number(valueOf(source, 'page'));
 
   return {

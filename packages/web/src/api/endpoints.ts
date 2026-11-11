@@ -32,29 +32,42 @@ export const paths = {
   callStream: (q: Omit<CallsQuery, 'page' | 'size'> = {}): string => `/v1/calls/stream${query({ paidWith: q.paidWith, service: q.service, host: q.host, endpoint: q.endpoint, status: q.status })}`,
 } as const;
 
+// A shape check looks at the fields a page reads, one level deep: that each is there, and of the kind the
+// schema gives. It never checks a field the page doesn't read.
+const isString = (value: unknown): value is string => typeof value === 'string';
+const isNullableString = (value: unknown): boolean => value === null || typeof value === 'string';
+const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
+const isNumber = (value: unknown): value is number => typeof value === 'number';
+const isArray = (value: unknown): value is readonly unknown[] => Array.isArray(value);
+
 const isStats = (value: unknown): value is Stats =>
-  isRecord(value) && isRecord(value['calls']) && isRecord(value['volume']) && isRecord(value['buyers']) && isRecord(value['services'])
-  && isRecord(value['byPaidWith']) && Array.isArray(value['daily']);
+  isRecord(value) && isNullableString(value['updatedAt']) && isNullableString(value['allUpdatedAt'])
+  && isRecord(value['calls']) && isRecord(value['volume']) && isRecord(value['buyers']) && isRecord(value['services'])
+  && isRecord(value['byPaidWith']) && isRecord(value['topups']) && Array.isArray(value['daily']);
 
 const isLiveStats = (value: unknown): value is LiveStats =>
-  isRecord(value) && isRecord(value['today']) && isRecord(value['last24h']);
+  isRecord(value) && isString(value['at']) && isRecord(value['today']) && isRecord(value['last24h']) && isArray(value['perMinute']);
 
 const isTopStats = (value: unknown): value is TopStats =>
   isRecord(value) && Array.isArray(value['services']) && Array.isArray(value['endpoints']) && Array.isArray(value['paidWith']) && Array.isArray(value['topupTokens']);
 
-const isServicesPage = (value: unknown): value is ServicesPage => isRecord(value) && Array.isArray(value['services']);
+const isServicesPage = (value: unknown): value is ServicesPage =>
+  isRecord(value) && Array.isArray(value['services']) && isNumber(value['total']) && isBoolean(value['totalCapped']) && isRecord(value['totals'])
+  && value['services'].every(row => isRecord(row) && isString(row['host']) && isNullableString(row['priceFrom']) && Array.isArray(row['trend']));
 
 const isServiceDetail = (value: unknown): value is ServiceDetail =>
-  isRecord(value) && typeof value['host'] === 'string' && isRecord(value['stats']) && Array.isArray(value['endpoints']) && Array.isArray(value['daily'])
-  && Array.isArray(value['byPaidWith']) && isRecord(value['topBuyers']) && Array.isArray(value['topBuyers']['buyers']);
+  isRecord(value) && typeof value['host'] === 'string' && isBoolean(value['exact']) && isNumber(value['paidEndpoints']) && isRecord(value['stats']) && Array.isArray(value['endpoints'])
+  && Array.isArray(value['daily']) && Array.isArray(value['byPaidWith']) && isRecord(value['topBuyers']) && Array.isArray(value['topBuyers']['buyers'])
+  && value['endpoints'].every(endpoint => isRecord(endpoint) && isString(endpoint['path']) && isNullableString(endpoint['priceNow']));
 
 const isEndpointStats = (value: unknown): value is EndpointStats =>
-  isRecord(value) && isRecord(value['stats']) && Array.isArray(value['daily']) && Array.isArray(value['byPaidWith']);
+  isRecord(value) && isBoolean(value['exact']) && isRecord(value['stats']) && Array.isArray(value['daily']) && Array.isArray(value['byPaidWith']);
 
-const isCallsPage = (value: unknown): value is CallsPage => isRecord(value) && Array.isArray(value['calls']);
+const isCallsPage = (value: unknown): value is CallsPage => isRecord(value) && Array.isArray(value['calls']) && isBoolean(value['totalCapped']);
 
 export const isReceipt = (value: unknown): value is Receipt =>
-  isRecord(value) && typeof value['id'] === 'string' && typeof value['at'] === 'string' && isRecord(value['buyer']) && isRecord(value['ms']) && Array.isArray(value['steps']);
+  isRecord(value) && typeof value['id'] === 'string' && typeof value['at'] === 'string' && isRecord(value['buyer']) && isRecord(value['ms']) && Array.isArray(value['steps'])
+  && isNullableString(value['apiPrice']) && isNullableString(value['fee']);
 
 export const getStats = (read: Reader): Promise<ApiResult<Stats>> => read(paths.stats, isStats);
 

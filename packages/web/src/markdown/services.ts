@@ -3,7 +3,7 @@ import type { ApiResult } from '../api/reader';
 import type { ServicesPage } from '../api/types';
 import type { SiteSettings } from '../config';
 import { count, ms, pct, usdOf } from '../format';
-import { firstRunLine, noMatchLine, payHowLine, servicesDescription, servicesLead, servicesTitle } from '../services/content';
+import { cappedLine, firstRunLine, noMatchLine, payHowLine, servicesDescription, servicesLead, servicesTitle } from '../services/content';
 import { apiServicesQuery, servicesHref, servicesPageSize, sortChoices, type ServicesFilters } from '../services/filters';
 
 // The Services page as Markdown: the same facts as the page, from the same read.
@@ -26,7 +26,7 @@ ${page.services.map(service => row(siteUrl, service)).join('\n')}`;
 
   return `${filters.q === undefined ? '' : `Search: ${filters.q}\n\n`}${table}
 
-Page ${count(page.page)}, services ${count(from)}–${count(to)} of ${count(page.total)}. ${next}`;
+Page ${count(page.page)}, services ${count(from)}–${count(to)} of ${count(page.total)}. ${next}${page.totalCapped ? `\n\n${cappedLine}` : ''}`;
 };
 
 /** `/services.md`. `filters` are the ones the twin's query holds. */

@@ -93,7 +93,9 @@ describe('the numbers of a service', () => {
     expect(serviceHref('a.example.com', '30d')).toBe('/services/a.example.com');
     expect(serviceHref('a.example.com', 'all')).toBe('/services/a.example.com?period=all');
     expect(lastCall(new Date(now - 120_000).toISOString(), now)).toBe('2m ago');
-    expect(lastCall(new Date(now - 3 * 86_400_000).toISOString(), now)).toBe('3d ago');
+    expect(lastCall(new Date(now - 23 * 3_600_000).toISOString(), now)).toBe('23h ago');
+    expect(lastCall(new Date(now - 30 * 3_600_000).toISOString(), now)).toBe('Yesterday');
+    expect(lastCall(new Date(now - 3 * 86_400_000).toISOString(), now)).toBe('3 days ago');
     expect(lastCall('nope', now)).toBe('-');
   });
 
@@ -113,7 +115,7 @@ describe('the Services twin', () => {
     expect(markdown).toContain('Services agents paid through Anyfare. Any x402 or MPP API can be paid the same way: paste its link on the home page.');
     expect(markdown).toContain('https://pay.example.com/<host>/<path>');
     expect(markdown).toContain('- Services paid through Anyfare: 27');
-    expect(markdown).toContain('| [api.example.com](https://site.example.com/services/api.example.com) | 4 | $0.001 | 612 | 41 | $6.06 | 99.0% | 340 ms |');
+    expect(markdown).toContain('| [api.example.com](https://site.example.com/services/api.example.com) | 4 | $0.001 | 612 | 41 | $6.06 | 99% | 340 ms |');
     expect(markdown).toContain('| [geo02.example.org](https://site.example.com/services/geo02.example.org) | 3 | $0.007 | 183 | 14 | $1.81 | - | - |');
     expect(markdown).toContain('Page 1, services 1–20 of 27. Next page: https://site.example.com/services.md?page=2');
     expect(markdown).toContain('`GET https://api.example.com/v1/services?sort=calls&page=1&size=20`');
@@ -136,9 +138,9 @@ describe('the Service twin', () => {
 
     expect(markdown).toMatch(/^# api.example.com\n/);
     expect(markdown).toContain('Pay any of its endpoints at https://pay.example.com/api.example.com/<path>');
-    expect(markdown).toContain('- Paid calls: 612 (+17.7% against the 30 days before)');
-    expect(markdown).toContain('- Answered 2xx: 99.0% (6 failed calls, not charged)');
-    expect(markdown).toContain('| USDC on NEAR | 220 | 36.0% | 15 | $2.18 | $0.145 |');
+    expect(markdown).toContain('- Paid calls: 612 (+18% against the 30 days before)');
+    expect(markdown).toContain('- Answered 2xx: 99% (6 failed calls, not charged)');
+    expect(markdown).toContain('| USDC on NEAR | 220 | 36% | 15 | $2.18 | $0.145 |');
     expect(markdown).toContain('https://pay.example.com/api.example.com/v1/sample/quotes/latest |');
     expect(markdown).toContain('| A Credits account | Credits |');
     expect(markdown).toContain('/check?url=api.example.com/v1/sample/quotes/latest');

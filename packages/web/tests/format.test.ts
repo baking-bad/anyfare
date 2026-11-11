@@ -27,8 +27,11 @@ describe('count', () => {
 
 describe('pct', () => {
   it('shows one decimal, and none for a whole share', () => {
-    expect(pct(0.124)).toBe('12.4%');
-    expect(pct(0.99)).toBe('99.0%');
+    expect(pct(0.124)).toBe('12%');
+    expect(pct(0.36)).toBe('36%');
+    expect(pct(0.99)).toBe('99%');
+    expect(pct(0.0996)).toBe('10%');
+    expect(pct(0.042)).toBe('4.2%');
     expect(pct(1)).toBe('100%');
     expect(pct(0)).toBe('0.0%');
   });

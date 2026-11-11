@@ -11,7 +11,7 @@ import type { HomeData } from '../home/data';
 
 const unavailable = 'Not available right now.';
 
-const money = (value: string, digits = 2): string => usdOf(value, digits);
+const money = (value: string | null, digits = 2): string => usdOf(value, digits);
 
 const cell = (text: string): string => text.replaceAll('|', '\\|');
 

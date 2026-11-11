@@ -12,6 +12,13 @@ import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, P
 // - full: a database with calls, services and stats
 // - empty: an empty database: zeros, empty lists, status 200
 // - down: every request answers 500
+// - capped: as full, with `totalCapped: true` on the services list
+//
+// In full mode some hosts show the API's less usual answers: `ocr04.example.org` has numbers that stopped at
+// their cap (`exact: false`), `tts03.example.org` has no price (`priceFrom` and `priceNow` are `null`), and
+// `rpc05.example.org` answers `503 stats_unavailable` for its service page and its endpoint numbers (a check of a
+// link to it is payable). The link `busy.example.com` has endpoint numbers that stopped at their cap.
+// `pay_settling` is a receipt whose fee is not booked yet.
 //
 // The same server also answers the pay host's `GET /_/check?url=`: the host of the link picks the case (see
 // `sampleCheck`). Every case answers 200 with `payable`, except `limited.example.com`, which is a 429.
@@ -21,7 +28,7 @@ import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, P
 // By hand: `node tests/support/fakeApi.ts full 4010`. Calls made while it runs are pushed to the
 // streams: `POST /_test/call` with a call as JSON, or with no body for a sample call.
 
-export type FakeApiMode = 'full' | 'empty' | 'down';
+export type FakeApiMode = 'full' | 'empty' | 'down' | 'capped';
 
 const day = 86_400_000;
 const periods: readonly Period[] = ['today', '7d', '30d', 'all'];
@@ -74,6 +81,8 @@ const sampleStats = (now: number, empty: boolean): Stats => {
 
   return {
     updatedAt: empty ? null : new Date(now - 60_000).toISOString(),
+    // The numbers for "all" are counted less often
+    allUpdatedAt: empty ? null : new Date(now - 25 * 60_000).toISOString(),
     calls,
     volume: { ...Object.fromEntries(periods.map(period => [period, money(calls[period] * 0.0107)])) as Record<Period, string>, currency: 'USD' },
     buyers,
@@ -94,6 +103,13 @@ const sampleLive = (now: number, empty: boolean): LiveStats => ({
 // 27 services: the five the calls are made to, then 22 more, so the list has a second page
 const moreHosts = Array.from({ length: 22 }, (_, index) => `${['feed', 'geo', 'tts', 'ocr', 'rpc', 'pdf'][index % 6]}${String(index + 1).padStart(2, '0')}.example.org`);
 export const serviceHosts: readonly string[] = [...hosts, ...moreHosts];
+
+/** The service whose numbers stopped at their cap. */
+export const inexactHost = 'ocr04.example.org';
+/** The service with no known price. */
+export const unpricedHost = 'tts03.example.org';
+/** The service whose numbers can't be read: its page and its endpoints answer 503. */
+export const unavailableHost = 'rpc05.example.org';
 
 const serviceRow = (host: string, index: number): ServiceRow => index < hosts.length ? {
   host,
@@ -120,7 +136,9 @@ const serviceRow = (host: string, index: number): ServiceRow => index < hosts.le
   trend: Array.from({ length: 30 }, (_, step) => (step * 2 + index) % 9),
 };
 
-const serviceRows = (empty: boolean): readonly ServiceRow[] => empty ? [] : serviceHosts.map(serviceRow);
+const rowOf = (host: string, index: number): ServiceRow => host === unpricedHost ? { ...serviceRow(host, index), priceFrom: null } : serviceRow(host, index);
+
+const serviceRows = (empty: boolean): readonly ServiceRow[] => empty ? [] : serviceHosts.map(rowOf);
 
 const callsOf = (now: number, empty: boolean): readonly Call[] => empty ? [] : Array.from({ length: 60 }, (_, index) => sampleCall(index, now));
 
@@ -158,8 +176,9 @@ const hashOf = (paidWith: PaidWith, seed: string): string => paidWith === 'near'
 
 /**
  * The receipt of a sample call, steps and times as the API keeps them. The ids the fake knows: a sample
- * call's own id (`pay_sample0000`), and four named cases: `pay_creditspaid`, `pay_freenoapi`,
- * `pay_notxlink` (a transaction with no explorer URL) and `pay_unknownstep`. Any other id is unknown.
+ * call's own id (`pay_sample0000`), and five named cases: `pay_creditspaid`, `pay_freenoapi`,
+ * `pay_notxlink` (a transaction with no explorer URL), `pay_unknownstep` and `pay_settling` (the payment is
+ * not final: no settled step, no `settledAt`, and a `null` fee). Any other id is unknown.
  */
 export const sampleReceipt = (id: string, now: number): Receipt | undefined => {
   const named: Readonly<Record<string, Call>> = {
@@ -167,6 +186,7 @@ export const sampleReceipt = (id: string, now: number): Receipt | undefined => {
     pay_freenoapi: { ...sampleCall(2, now, 40), id: 'pay_freenoapi', status: 'free', apiStatus: null, apiPaidWith: null, ms: null, paidWith: 'base' },
     pay_notxlink: { ...sampleCall(1, now, 60), id: 'pay_notxlink', paidWith: 'tempo', apiPaidWith: 'tempo', payer: 'sample.near', status: 'paid', apiStatus: 200 },
     pay_unknownstep: { ...sampleCall(0, now, 80), id: 'pay_unknownstep' },
+    pay_settling: { ...sampleCall(1, now, 15), id: 'pay_settling', paidWith: 'base', apiPaidWith: 'base', status: 'paid', apiStatus: 200 },
   };
   const index = /^pay_sample(\d{4})$/.exec(id)?.[1];
   const call = named[id] ?? (index === undefined || Number(index) >= 60 ? undefined : sampleCall(Number(index), now));
@@ -177,6 +197,7 @@ export const sampleReceipt = (id: string, now: number): Receipt | undefined => {
   const at = (offset: number): string => new Date(start + offset).toISOString();
   const credits = call.paidWith === 'credits';
   const paid = call.status === 'paid';
+  const settling = id === 'pay_settling';
   const hasApi = call.apiPaidWith !== null;
   const apiAsset = call.apiPaidWith === null ? 'USDC' : assetOf(call.apiPaidWith);
   const buyerHash = credits || !paid ? null : hashOf(call.paidWith, id.slice(-4));
@@ -187,7 +208,7 @@ export const sampleReceipt = (id: string, now: number): Receipt | undefined => {
     ...hasApi ? [{ step: 'api_signed', at: at(250) }] : [],
     ...call.apiStatus === null ? [] : [{ step: 'api_answered', at: at(250 + (call.ms ?? 0)) }],
     ...id === 'pay_unknownstep' ? [{ step: 'mystery_step', at: at(900) }] : [],
-    { step: paid ? 'settled' : 'released', at: at(900) },
+    ...settling ? [] : [{ step: paid ? 'settled' : 'released', at: at(900) }],
   ];
 
   return {
@@ -206,13 +227,13 @@ export const sampleReceipt = (id: string, now: number): Receipt | undefined => {
       payer: call.payer,
       transaction: buyerHash,
       explorerUrl: buyerHash === null ? null : explorerOf(call.paidWith, buyerHash),
-      settledAt: paid ? at(900) : null,
+      settledAt: paid && !settling ? at(900) : null,
     },
     api: hasApi && call.apiPaidWith !== null
-      ? { paidWith: call.apiPaidWith, network: networkOf(call.apiPaidWith) ?? call.apiPaidWith, asset: apiAsset, amount: call.amount, payTo: 'sample-pay-to', transaction: apiHash, explorerUrl: apiHash === null ? null : explorerOf(call.apiPaidWith, apiHash), status: 'settled' }
+      ? { paidWith: call.apiPaidWith, network: networkOf(call.apiPaidWith) ?? call.apiPaidWith, asset: apiAsset, amount: call.amount, payTo: 'sample-pay-to', transaction: apiHash, explorerUrl: apiHash === null ? null : explorerOf(call.apiPaidWith, apiHash), status: settling ? 'signed' : 'settled' }
       : null,
     apiPrice: hasApi ? call.amount : null,
-    fee: '0',
+    fee: settling ? null : '0',
     ms: { api: call.ms, total: call.ms === null ? null : call.ms + 576 },
     steps,
   };
@@ -250,7 +271,7 @@ export const sampleService = (host: string, period: Period, now: number, payUrl 
   const index = serviceHosts.indexOf(host);
   if (index < 0)
     return undefined;
-  const row = serviceRow(host, index);
+  const row = rowOf(host, index);
   const scale = topScale[period];
   const calls = Math.round(row.calls * scale);
   const buyers = Math.max(1, Math.round(row.buyers * Math.min(1, scale)));
@@ -275,7 +296,7 @@ export const sampleService = (host: string, period: Period, now: number, payUrl 
     endpoints: servicePaths.slice(0, row.paidEndpoints).map((path, step) => ({
       path,
       method: step === row.paidEndpoints - 1 && row.paidEndpoints > 2 ? null : step === 1 ? 'POST' : 'GET',
-      priceNow: money(Number(row.priceFrom) * (1 + step)),
+      priceNow: row.priceFrom === null ? null : money(Number(row.priceFrom) * (1 + step)),
       calls: Math.round(calls * pathShares[step]!),
       buyers: Math.max(1, Math.round(buyers * pathShares[step]!)),
       volume: volume(Math.round(calls * pathShares[step]!)),
@@ -301,6 +322,7 @@ export const sampleService = (host: string, period: Period, now: number, payUrl 
         { payer: `0x${'cd34'.repeat(10)}`, paidWith: 'tempo', calls: Math.round(calls * 0.03), spent: volume(Math.round(calls * 0.03)), lastCallAt: new Date(now - 129_600_000).toISOString() },
       ],
     },
+    exact: host !== inexactHost,
   };
 };
 
@@ -366,7 +388,7 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
   const refused = refusals[host];
   if (refused !== undefined)
     return refused;
-  const known: readonly string[] = [checkHosts.base, checkHosts.near, checkHosts.mpp, checkHosts.hostile, checkHosts.slow, checkHosts.busy];
+  const known: readonly string[] = [checkHosts.base, checkHosts.near, checkHosts.mpp, checkHosts.hostile, checkHosts.slow, checkHosts.busy, unavailableHost];
   if (!known.includes(host))
     return refuse('not_payable', 'The link didn\'t ask for a payment');
 
@@ -438,6 +460,8 @@ export const sampleEndpointStats = (host: string, path: string, period: Period, 
     path,
     period,
     updatedAt: new Date(now - 60_000).toISOString(),
+    // The busy link's numbers are read when asked for, and stopped at their cap
+    exact: host !== inexactHost && host !== checkHosts.busy,
     stats: known
       ? { calls, buyers: Math.max(1, Math.round(33 * Math.min(1, scale))), volume: money(calls * 0.01), successRate: 0.99, p50Ms: 340 }
       : { calls: 0, buyers: 0, volume: '0', successRate: null, p50Ms: null },
@@ -445,6 +469,8 @@ export const sampleEndpointStats = (host: string, path: string, period: Period, 
     byPaidWith: known ? rails.map((paidWith, index) => ({ paidWith, calls: Math.round((145 - index * 25) * scale) })) : [],
   };
 };
+
+const unavailable = { status: 503, body: { error: { code: 'stats_unavailable', message: 'These numbers can\'t be read right now: try again shortly' } } } as const;
 
 /** The answer to a read: its status and body. Undefined for a path the fake doesn't know. */
 export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number): { readonly status: number; readonly body: unknown } | undefined => {
@@ -467,10 +493,15 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
     const period = searchParams.get('period') ?? '30d';
     if (!periods.includes(period as Period))
       return { status: 400, body: { error: { code: 'invalid_request', message: 'Unknown period' } } };
+    if (searchParams.get('host')?.toLowerCase() === unavailableHost)
+      return unavailable;
 
     return { status: 200, body: sampleEndpointStats(searchParams.get('host') ?? '', searchParams.get('path') ?? '', period as Period, now, empty) };
   }
   if (pathname === '/v1/calls') {
+    // A NUL in a filter is refused, as the API does
+    if ([...searchParams.values()].some(value => value.includes('\u0000')))
+      return { status: 400, body: { error: { code: 'invalid_request', message: 'The request is not valid' } } };
     const size = intParam(searchParams.get('size'), 20, 100);
     const page = intParam(searchParams.get('page'), 1, 1000);
     // One endpoint has 25 calls, for a grid with pages
@@ -490,6 +521,8 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
       : { status: 200, body: receipt };
   }
   if (pathname === '/v1/services') {
+    if ([...searchParams.values()].some(value => value.includes('\u0000')))
+      return { status: 400, body: { error: { code: 'invalid_request', message: 'The request is not valid' } } };
     const size = intParam(searchParams.get('size'), 20, 100);
     const page = intParam(searchParams.get('page'), 1, 1000);
     const all = [...serviceRows(empty)];
@@ -502,7 +535,8 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
       sort === 'buyers' ? b.buyers - a.buyers
         : sort === 'volume' ? Number(b.volume) - Number(a.volume)
           : sort === 'endpoints' ? b.paidEndpoints - a.paidEndpoints
-            : sort === 'price' ? Number(a.priceFrom) - Number(b.priceFrom)
+            // A service with no price comes last
+            : sort === 'price' ? (a.priceFrom === null ? 1 : 0) - (b.priceFrom === null ? 1 : 0) || Number(a.priceFrom) - Number(b.priceFrom)
               : 0
     ) || b.calls - a.calls);
     const body: ServicesPage = {
@@ -510,6 +544,7 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
       page,
       size,
       total: rows.length,
+      totalCapped: mode === 'capped',
       totals: { services: all.length, paidEndpoints: all.reduce((sum, row) => sum + row.paidEndpoints, 0), calls30d: all.reduce((sum, row) => sum + row.calls, 0) },
       updatedAt: empty ? null : new Date(now - 60_000).toISOString(),
     };
@@ -520,6 +555,8 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
     const period = searchParams.get('period') ?? '30d';
     if (!periods.includes(period as Period))
       return { status: 400, body: { error: { code: 'invalid_request', message: 'Unknown period' } } };
+    if (decodeURIComponent(pathname.slice('/v1/services/'.length)).toLowerCase() === unavailableHost && !empty)
+      return unavailable;
     const service = empty ? undefined : sampleService(decodeURIComponent(pathname.slice('/v1/services/'.length)), period as Period, now);
 
     return service === undefined
@@ -633,11 +670,11 @@ export const refusedUrl = async (): Promise<string> => {
   return `http://127.0.0.1:${port}`;
 };
 
-// Run by hand: node tests/support/fakeApi.ts [full|empty|down] [port]
+// Run by hand: node tests/support/fakeApi.ts [full|empty|down|capped] [port]
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [mode = 'full', port = '4010'] = process.argv.slice(2);
-  if (mode !== 'full' && mode !== 'empty' && mode !== 'down')
-    throw new Error('The mode is full, empty or down');
+  if (mode !== 'full' && mode !== 'empty' && mode !== 'down' && mode !== 'capped')
+    throw new Error('The mode is full, empty, down or capped');
   const api = await startFakeApi(mode, Number(port));
   process.stdout.write(`The fake API answers in ${mode} mode at ${api.url}\n`);
   process.on('SIGTERM', () => void api.close().then(() => process.exit(0)));

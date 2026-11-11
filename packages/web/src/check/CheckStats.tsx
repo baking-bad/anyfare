@@ -13,6 +13,7 @@ import { useSettings } from '../components/Settings';
 import { Skeleton } from '../components/Skeleton';
 import { paidWithName } from '../content/home';
 import { count, ms, pct, usdOf } from '../format';
+import { inexactLine } from '../services/content';
 import { checkAddress, parseCheckParams, periodChoices, periodName, type CheckParams } from './content';
 
 const Stat = ({ value, label }: { readonly value: string; readonly label: string }) => (
@@ -88,7 +89,9 @@ export const CheckStats = ({ host, path, params, period: first, stats: firstStat
           <Skeleton shape="block" />
         </div>
       ) : !stats.ok ? (
-        <ErrorState title="This endpoint's numbers didn't load">The Platform API didn&apos;t answer. Reload the page in a moment.</ErrorState>
+        <ErrorState title="This endpoint's numbers didn't load">
+          {stats.error.code === 'stats_unavailable' ? 'These numbers can\'t be read right now. Reload the page in a moment.' : 'The Platform API didn\'t answer. Reload the page in a moment.'}
+        </ErrorState>
       ) : <StatsBody stats={stats.value} period={period} />}
     </div>
   );
@@ -109,6 +112,7 @@ const StatsBody = ({ stats, period }: { readonly stats: EndpointStats; readonly 
         <Stat value={numbers.successRate === null ? '-' : pct(numbers.successRate)} label="Answered 2xx" />
         <Stat value={numbers.p50Ms === null ? '-' : ms(numbers.p50Ms)} label="Median time" />
       </div>
+      {stats.exact ? null : <p className="small muted mt-8 ep-inexact">{inexactLine}</p>}
       <div className="split even ep-split mt-24">
         <div>
           <div className="row-between small"><span className="semi">Paid calls per day</span><span className="muted xs">14 days</span></div>

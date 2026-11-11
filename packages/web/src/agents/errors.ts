@@ -43,5 +43,6 @@ export const errorDocs: readonly ErrorDoc[] = [
   { code: 'payment_unavailable', status: 503, host: 'pay', action: 'A payment could not be checked, or another one on NEAR is in flight. Nothing was paid. Retry after Retry-After.' },
   { code: 'redis_not_ready', status: 503, host: 'pay', action: 'Anyfare is not ready. Nothing was paid. Retry in a moment.' },
   { code: 'topups_unavailable', status: 503, host: 'api', action: 'Top-ups are off, or the swap service did not answer. Nothing to send. Retry later.' },
+  { code: 'stats_unavailable', status: 503, host: 'api', action: 'A public number could not be read within its bounds just now. Try again in a few seconds.' },
   { code: 'shutting_down', status: 503, host: 'api', action: 'The server is restarting. Open the stream again.' },
 ];

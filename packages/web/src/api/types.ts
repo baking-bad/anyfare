@@ -74,6 +74,9 @@ export interface ReceiptSide {
   readonly explorerUrl: string | null;
 }
 
+/** How Anyfare's payment to the API stands. */
+export type ApiLegStatus = 'signed' | 'settled' | 'failed' | 'unknown';
+
 export type ReceiptStepName = 'received' | 'authorized' | 'api_signed' | 'api_answered' | 'settled' | 'released';
 
 /** `GET /v1/calls/:id`: the public receipt of one finished call. */
@@ -88,13 +91,13 @@ export interface Receipt {
   // For Credits: no network, payer, transaction or explorer, and the asset is "Credits"
   readonly buyer: ReceiptSide & { readonly payer: string | null; readonly settledAt: string | null };
   // null when Anyfare never signed for the API
-  readonly api: (ReceiptSide & { readonly asset: string; readonly network: string; readonly payTo: string; readonly status: string }) | null;
-  // null when `api` is null
+  readonly api: (ReceiptSide & { readonly asset: string; readonly network: string; readonly payTo: string; readonly status: ApiLegStatus }) | null;
+  // What the API asked. null when `api` is null.
   readonly apiPrice: string | null;
-  // null while the payment is still settling
+  // What we kept. null while a settling payment's fee is not booked yet.
   readonly fee: string | null;
   readonly ms: { readonly api: number | null; readonly total: number | null };
-  // Only steps whose time was kept. A name the page doesn't know is shown as its code.
+  // Only steps whose time was kept: `received` is first when the arrival was kept. A name the page doesn't know is shown as its code.
   readonly steps: readonly { readonly step: ReceiptStepName | (string & {}); readonly at: string }[];
 }
 
@@ -115,8 +118,10 @@ export interface DailyPoint {
 
 /** `GET /v1/stats`: counted every few minutes. With an empty database every number is 0. */
 export interface Stats {
-  // null before the first count
+  // When today's, 7 days' and 30 days' numbers were counted. null before the first count.
   readonly updatedAt: string | null;
+  // When the numbers for "all" were counted. They are counted less often.
+  readonly allUpdatedAt: string | null;
   readonly calls: ByPeriod<number>;
   readonly volume: ByPeriod<string> & { readonly currency: string };
   readonly buyers: ByPeriod<number>;
@@ -129,6 +134,7 @@ export interface Stats {
 
 /** `GET /v1/stats/live`: fresh numbers for the live parts of a page. */
 export interface LiveStats {
+  // The time the numbers are true for: it can be earlier than now
   readonly at: string;
   readonly today: { readonly calls: number; readonly volume: string; readonly buyers: number; readonly nearShare: number };
   // volumeBefore is the 24 hours before those
@@ -160,7 +166,8 @@ export interface ServicesQuery {
 export interface ServiceRow {
   readonly host: string;
   readonly paidEndpoints: number;
-  readonly priceFrom: string;
+  // null when no price is known
+  readonly priceFrom: string | null;
   readonly currency: string;
   readonly calls: number;
   readonly buyers: number;
@@ -177,6 +184,8 @@ export interface ServicesPage {
   readonly page: number;
   readonly size: number;
   readonly total: number;
+  // true when more services had a paid call in 30 days than the list keeps: a search may miss some
+  readonly totalCapped: boolean;
   // Over all services, whatever `q` says
   readonly totals: { readonly services: number; readonly paidEndpoints: number; readonly calls30d: number };
   readonly updatedAt: string | null;
@@ -186,7 +195,8 @@ export interface ServicesPage {
 export interface ServiceDetail {
   readonly host: string;
   readonly period: Period;
-  readonly updatedAt: string | null;
+  readonly updatedAt: string;
+  // The paid endpoints in the period; `endpoints` lists at most 100
   readonly paidEndpoints: number;
   readonly stats: {
     readonly calls: number;
@@ -203,7 +213,7 @@ export interface ServiceDetail {
   readonly endpoints: readonly {
     readonly path: string;
     readonly method: string | null;
-    readonly priceNow: string;
+    readonly priceNow: string | null;
     readonly calls: number;
     readonly buyers: number;
     readonly volume: string;
@@ -217,6 +227,8 @@ export interface ServiceDetail {
     readonly share: number;
     readonly buyers: readonly { readonly payer: string | null; readonly paidWith: PaidWith; readonly calls: number; readonly spent: string; readonly lastCallAt: string }[];
   };
+  // false: the numbers stopped at their cap and cover the newest 10,000 calls only
+  readonly exact: boolean;
 }
 
 /** `GET /v1/endpoints/stats` */
@@ -229,4 +241,6 @@ export interface EndpointStats {
   // The last 14 UTC days, zero days included
   readonly daily: readonly { readonly day: string; readonly calls: number }[];
   readonly byPaidWith: readonly { readonly paidWith: PaidWith; readonly calls: number }[];
+  // false: the numbers stopped at their cap and cover the newest 10,000 calls only
+  readonly exact: boolean;
 }

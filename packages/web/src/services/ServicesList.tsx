@@ -17,8 +17,8 @@ import { useSettings } from '../components/Settings';
 import { Skeleton } from '../components/Skeleton';
 import { Sparkline } from '../components/Sparkline';
 import { count, ms, pct, usdOf } from '../format';
-import { firstRunLine, firstRunTitle, noMatchLine, unavailableLine } from './content';
-import { apiServicesQuery, parseServicesFilters, servicesHref, sortChoices, withSearch, withSort, type ServicesFilters } from './filters';
+import { cappedLine, firstRunLine, firstRunTitle, noMatchLine, unavailableLine } from './content';
+import { apiServicesQuery, parseServicesFilters, servicesHref, sortChoices, withoutControls, withSearch, withSort, type ServicesFilters } from './filters';
 
 export interface ServicesListProps {
   // The page of the list the server read for the URL
@@ -124,7 +124,7 @@ export const ServicesList = ({ first }: ServicesListProps) => {
                     autoComplete="off"
                     maxLength={100}
                     value={searchText}
-                    onChange={event => setSearchText(event.target.value)}
+                    onChange={event => setSearchText(withoutControls(event.target.value))}
                   />
                 </div>
                 <select className="input svc-sort" aria-label="Sort" value={filters.sort} onChange={event => go(withSort(filters, event.target.value))}>
@@ -182,6 +182,7 @@ export const ServicesList = ({ first }: ServicesListProps) => {
             ))}
           </tbody>
         </DataTable>
+        {result.ok && result.value.totalCapped ? <p className="small muted mt-8 svc-capped">{cappedLine}</p> : null}
       </div>
     </>
   );

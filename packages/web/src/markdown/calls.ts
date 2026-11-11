@@ -5,7 +5,7 @@ import { callRules, callsDescription, callsLine, callsTitle, periodName, tokenNa
 import type { CallsData } from '../calls/data';
 import { apiFilter, apiQuery, callsHref, pageSize, type CallsFilters } from '../calls/filters';
 import { paths } from '../api/endpoints';
-import { paidWithName } from '../content/home';
+import { paidWithFilterName, paidWithName } from '../content/home';
 import { count, ms, usdOf } from '../format';
 
 // The Calls page as Markdown: the same facts as the page, from the same reads. A part whose read failed
@@ -25,7 +25,7 @@ const callRow = (call: Call): string => {
 };
 
 const filterLines = (filters: CallsFilters): string => [
-  filters.paidWith === undefined ? undefined : `Paid with: ${paidWithName(filters.paidWith)}`,
+  filters.paidWith === undefined ? undefined : `Paid with: ${paidWithFilterName(filters.paidWith)}`,
   filters.service === undefined ? undefined : `Service: ${filters.service}`,
   filters.endpoint === undefined ? undefined : `Endpoint: ${filters.endpoint}`,
   filters.status === undefined ? undefined : `Status: ${filters.status === 'paid' ? 'Paid' : 'Failed, free'}`,

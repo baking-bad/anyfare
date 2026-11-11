@@ -69,7 +69,7 @@ const Service = async ({ params, searchParams }: Props) => {
       <section className="band">
         <div className="container ruled page-pad svc-page">
           <ServiceHead host={host} service={service} />
-          {service === undefined ? <ServiceUnavailable /> : (
+          {service === undefined ? <ServiceUnavailable code={result.ok ? undefined : result.error.code} /> : (
             <>
               <EndpointsTable host={host} endpoints={service.endpoints} />
               <ServiceStats host={host} service={service} />

@@ -82,6 +82,7 @@ let empty: Running;
 let down: Running;
 let refused: Running;
 let shared: Running;
+let capped: Running;
 
 beforeAll(async () => {
   const build = spawnSync(process.execPath, [nextBin, 'build'], {
@@ -92,18 +93,19 @@ beforeAll(async () => {
   if (build.status !== 0)
     throw new Error(`next build failed:\n${build.stdout}\n${build.stderr}`);
 
-  const [fullApi, emptyApi, downApi] = await Promise.all([startFakeApi('full'), startFakeApi('empty'), startFakeApi('down')]);
-  [full, empty, down, refused, shared] = await Promise.all([
+  const [fullApi, emptyApi, downApi, cappedApi] = await Promise.all([startFakeApi('full'), startFakeApi('empty'), startFakeApi('down'), startFakeApi('capped')]);
+  [full, empty, down, refused, shared, capped] = await Promise.all([
     startSite(fullApi, fullApi.url),
     startSite(emptyApi, emptyApi.url),
     startSite(downApi, downApi.url),
     startSite(undefined, await refusedUrl()),
     startSite(fullApi, fullApi.url, sharedUrls),
+    startSite(cappedApi, cappedApi.url),
   ]);
 }, 300_000);
 
 afterAll(async () => {
-  for (const running of [full, empty, down, refused, shared]) {
+  for (const running of [full, empty, down, refused, shared, capped]) {
     running?.process.kill();
     await running?.api?.close();
   }
@@ -735,7 +737,7 @@ describe('the Service page', () => {
     const page = pageText(body);
 
     expect(response.status).toBe(200);
-    for (const text of ['4<!-- --> paid endpoint', 'Check an endpoint', 'Paths only. We never show query strings', 'Price now', 'Today', 'All time', 'Paid calls', 'Unique buyers', 'Came back', 'Answered 2xx', 'Median time', 'p95 816 ms', '6 failed calls, not charged', 'vs the 30 days before', 'Paid calls per day', 'By payment method', 'Avg. per buyer', 'Top 5 buyers', 'Together: 48.0% of paid calls', 'Live calls to api.example.com'])
+    for (const text of ['4<!-- --> paid endpoint', 'Check an endpoint', 'Paths only. We never show query strings', 'Price now', 'Today', 'All time', 'Paid calls', 'Unique buyers', 'Came back', 'Answered 2xx', 'Median time', 'p95 816 ms', '6 failed calls, not charged', 'vs the 30 days before', 'Paid calls per day', 'By payment method', 'Avg. per buyer', 'Top 5 buyers', 'Together: 48% of paid calls', 'Live calls to api.example.com'])
       expect(page).toContain(text);
     expect(body).toContain('href="/check?url=api.example.com/v1/sample/quotes/latest"');
     expect(body).toContain('href="/calls?service=api.example.com"');
@@ -848,6 +850,92 @@ describe('the Service page', () => {
 const textOf = (html: string): string => html.replace(/<script[\s\S]*?<\/script>/g, '').replace(/<!-- -->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replace(/ ([.,])/g, '$1');
 
 const checkPath = (link: string, extra = ''): string => `/check?url=${encodeURIComponent(link)}${extra}`;
+
+describe('the answers of the real API that are not the usual ones', () => {
+  it('says "Showing the most used services" under the grid when the list is capped, and only then', async () => {
+    const limited = await get(capped, '/services');
+    const usual = await get(full, '/services');
+
+    expect(limited.body).toContain('Showing the most used services.');
+    expect(usual.body).not.toContain('Showing the most used services.');
+    expect((await get(capped, '/services.md')).body).toContain('Showing the most used services.');
+    expect((await get(full, '/services.md')).body).not.toContain('Showing the most used services.');
+  });
+
+  it('shows a dash for a service with no price, in the list and in its endpoints', async () => {
+    const list = await get(full, '/services?q=tts03');
+    const page = await get(full, '/services/tts03.example.org');
+
+    expect(list.response.status).toBe(200);
+    expect(list.body).toMatch(/<td class="r">\d+<\/td><td class="r">-<\/td><td class="r semi">/);
+    expect(page.response.status).toBe(200);
+    expect(page.body).toMatch(/<td class="r">-<\/td><td class="r semi">/);
+    noBrokenValues(page.body);
+    expect((await get(full, '/services/tts03.example.org.md')).body).toMatch(/\| - \| \d+ \|/);
+  });
+
+  it('says "Counted over the newest 10,000 calls." near the numbers of a service that stopped at its cap', async () => {
+    const inexact = await get(full, '/services/ocr04.example.org');
+    const usual = await get(full, '/services/api.example.com');
+
+    expect(inexact.response.status).toBe(200);
+    expect(inexact.body).toContain('Counted over the newest 10,000 calls.');
+    expect(usual.body).not.toContain('Counted over the newest 10,000 calls.');
+    expect((await get(full, '/services/ocr04.example.org.md')).body).toContain('Counted over the newest 10,000 calls.');
+  });
+
+  it('keeps the page up with the shared error state when the numbers of a service can not be read', async () => {
+    const { response, body } = await get(full, '/services/rpc05.example.org');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('role="alert"');
+    expect(body).toContain('We couldn&#x27;t load this service&#x27;s numbers.');
+    expect(body).toContain('can&#x27;t be read right now');
+    expect(body).toContain('rpc05.example.org');
+    expect(body).toContain('Live calls to rpc05.example.org');
+    expect((await get(full, '/services/rpc05.example.org.md')).response.status).toBe(503);
+  });
+
+  it('shows the endpoint numbers of the check page as exact or not, and keeps the page up on a 503', async () => {
+    const inexact = await get(full, checkPath('busy.example.com/v1/busy'));
+    const unavailable = await get(full, checkPath('rpc05.example.org/v1/sample/lookup'));
+    const usual = await get(full, checkPath('api.example.com/v1/sample/lookup'));
+
+    expect(inexact.body).toContain('Counted over the newest 10,000 calls.');
+    expect(usual.body).not.toContain('Counted over the newest 10,000 calls.');
+    expect(unavailable.response.status).toBe(200);
+    expect(unavailable.body).toContain('This endpoint&#x27;s numbers didn&#x27;t load');
+    expect(unavailable.body).toContain('can&#x27;t be read right now');
+    expect(unavailable.body).toContain('Latest quotes for sample assets');
+  });
+
+  it('shows the receipt of a payment that is still settling, with no fee yet', async () => {
+    const { response, body } = await get(full, '/calls/pay_settling');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('Our fee');
+    // The page's own text has no broken value; the JSON view of the answer holds its nulls
+    expect(body.slice(0, body.indexOf('class="code') === -1 ? undefined : body.indexOf('class="code')).replace(/<script[\s\S]*?<\/script>/g, '')).not.toMatch(/undefined|NaN|\bnull\b/);
+  });
+
+  it('reads the Tempo filter of the Calls page as the mockup does, and the bar lists as they were', async () => {
+    const calls = await get(full, '/calls');
+
+    expect(calls.body).toContain('USDC.e on Tempo');
+    expect(calls.body).toMatch(/<option value="tempo">USDC\.e on Tempo<\/option>/);
+    expect(calls.body).toContain('MPP on Tempo');
+    expect(calls.body).toMatch(/class="filter-field"/);
+  });
+
+  it('shows shares as whole percents, and the latest call of a buyer as "Yesterday" or "3 days ago"', async () => {
+    const { body } = await get(full, '/services/api.example.com');
+
+    expect(body).toMatch(/>36%</);
+    expect(body).not.toMatch(/>36\.0%</);
+    expect(body).toContain('Yesterday');
+    expect(body).not.toMatch(/\dd ago/);
+  });
+});
 
 describe('the Check page', () => {
   const base = 'api.example.com/v1/sample/quotes/latest';

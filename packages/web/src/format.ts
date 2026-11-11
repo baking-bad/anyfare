@@ -13,8 +13,13 @@ export const usd = (amount: number, digits?: number): string => {
 /** A whole number with thousands separators, such as 2,140. */
 export const count = (value: number): string => value.toLocaleString('en-US');
 
-/** A share from 0 to 1 as a percentage: 12.4%, and 100% without a decimal. */
-export const pct = (share: number): string => `${(share * 100).toFixed(share === 1 ? 0 : 1)}%`;
+/** A share from 0 to 1 as a percentage: whole from 10%, such as 36% and 99%, and one decimal under it, such as 4.2%. */
+export const pct = (share: number): string => {
+  const percent = share * 100;
+  const tenths = Number(percent.toFixed(1));
+
+  return `${tenths < 10 ? tenths.toFixed(1) : Math.round(percent)}%`;
+};
 
 /** A duration in milliseconds: `340 ms`, and from one second `1.8 s`. */
 export const ms = (milliseconds: number): string => milliseconds >= 1000 ? `${(milliseconds / 1000).toFixed(1)} s` : `${milliseconds} ms`;
@@ -33,9 +38,9 @@ export const ago = (moment: Date | number, now: number = Date.now()): string => 
   return `${Math.floor(seconds / 3600)}h ago`;
 };
 
-/** A dollar amount from the API's decimal string, such as "0.01". A value that isn't a number reads as a dash. */
-export const usdOf = (amount: string, digits?: number): string => {
+/** A dollar amount from the API's decimal string, such as "0.01". A missing value, or one that isn't a number, reads as a dash. */
+export const usdOf = (amount: string | null, digits?: number): string => {
   const value = Number(amount);
 
-  return amount.trim() === '' || !Number.isFinite(value) ? '-' : usd(value, digits);
+  return amount === null || amount.trim() === '' || !Number.isFinite(value) ? '-' : usd(value, digits);
 };

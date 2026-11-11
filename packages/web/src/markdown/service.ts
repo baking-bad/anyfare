@@ -5,7 +5,7 @@ import type { SiteSettings } from '../config';
 import { paidWithName } from '../content/home';
 import { count, ms, pct, usdOf } from '../format';
 import { shortAddress } from '../calls/address';
-import { callsChange, comparedWith, perBuyer, periodSentence, serviceDescription, togetherLine, failedLine, checkHref } from '../services/content';
+import { callsChange, comparedWith, perBuyer, periodSentence, serviceDescription, togetherLine, failedLine, checkHref, inexactLine } from '../services/content';
 import { serviceCallsSize } from '../services/data';
 import { formatChange } from '../home/change';
 
@@ -19,7 +19,7 @@ const numbers = (service: ServiceDetail): string => {
   const { stats, period } = service;
   const change = callsChange(stats.calls, stats.callsBefore);
 
-  return `- Paid calls: ${count(stats.calls)}${change === null ? '' : ` (${formatChange(change)} against ${comparedWith(period)})`}
+  return `- Paid calls: ${count(stats.calls)}${change === null ? '' : ` (${formatChange(change, true)} against ${comparedWith(period)})`}
 - Volume: ${usdOf(stats.volume, 2)}
 - Unique buyers: ${count(stats.buyers)}
 - Came back: ${pct(stats.returningShare)} (buyers who paid on 2 or more days)
@@ -66,7 +66,7 @@ Pay any of its endpoints at ${payUrl}/${host}/<path>, in any way we take. Each e
 
 ## Through Anyfare, ${periodSentence(period)}
 
-${service === undefined ? unavailable : `${count(service.paidEndpoints)} paid endpoints.\n\n${numbers(service)}`}
+${service === undefined ? unavailable : `${count(service.paidEndpoints)} paid endpoints.\n\n${numbers(service)}${service.exact ? '' : `\n\n${inexactLine}`}`}
 
 Another period: \`${apiUrl}${paths.service(host, period === '7d' ? '30d' : '7d')}\` (period is today, 7d, 30d or all). On the page: \`${siteUrl}/services/${host}.md?period=7d\`.
 

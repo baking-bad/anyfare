@@ -15,6 +15,7 @@
 .f-svc { width: 220px; }
 .f-status { width: 130px; }
 .grid-bar .filter-label { white-space: nowrap; }
+.filter-field { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .call-link { display: flex; flex-direction: column; gap: 2px; text-decoration: none; color: inherit; max-width: 260px; }
 .call-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
 .call-service, .call-endpoint { display: block; }
@@ -25,7 +26,11 @@
 table.t tr.fresh td { animation: enter 900ms var(--ease-out); }
 @media (max-width: 640px) {
   .grid-bar select.input, .grid-bar .search .input, .grid-bar .btn { height: 44px; }
-  .f-svc { width: 200px; }
+  /* Each label sits above its field, and the fields take the full width, as on the Services page */
+  .grid-bar .filters { width: 100%; flex-direction: column; align-items: stretch; gap: 12px; }
+  .filter-field { flex-direction: column; align-items: stretch; gap: 4px; width: 100%; }
+  .f-rail, .f-svc, .f-status { width: 100%; }
+  .grid-bar > .btn { width: 100%; }
   .new-calls { min-height: 44px; }
   .pager .btn { min-height: 44px; min-width: 44px; }
 }

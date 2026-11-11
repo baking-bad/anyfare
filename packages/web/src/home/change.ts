@@ -13,5 +13,9 @@ export const changeOf = (now: string, before: string): number | null => {
   return (current - earlier) / earlier;
 };
 
-/** A change as the pill reads it: `+12.4%`, `-3.1%`, `0.0%`. */
-export const formatChange = (change: number): string => `${change > 0 ? '+' : change < 0 ? '-' : ''}${pct(Math.abs(change))}`;
+/**
+ * A change as the pill reads it: `+12.4%`, `-3.1%`, `0.0%`, always with one decimal. With `whole`, as a share reads
+ * (see `pct`): `+18%`, and one decimal only under 10%.
+ */
+export const formatChange = (change: number, whole = false): string =>
+  `${change > 0 ? '+' : change < 0 ? '-' : ''}${whole ? pct(Math.abs(change)) : `${(Math.abs(change) * 100).toFixed(1)}%`}`;

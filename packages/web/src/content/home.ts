@@ -87,3 +87,6 @@ const railNames: Readonly<Record<string, string>> = {
 
 /** How a way of paying reads in a list, such as "USDC on NEAR". An unknown network reads as its ID. */
 export const paidWithName = (paidWith: PaidWith): string => railNames[paidWith] ?? paidWith;
+
+/** How a way of paying reads in a filter: the token with the network, such as "USDC.e on Tempo". The bar lists keep `paidWithName`. */
+export const paidWithFilterName = (paidWith: PaidWith): string => paidWith === 'tempo' ? 'USDC.e on Tempo' : paidWithName(paidWith);

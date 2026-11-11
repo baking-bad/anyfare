@@ -13,7 +13,7 @@ import { Rail } from '../components/Rail';
 import { paidWithName } from '../content/home';
 import { count, ms, pct, usd, usdOf } from '../format';
 import { formatChange } from '../home/change';
-import { callsChange, checkHref, comparedWith, failedLine, lastCall, meterShare, perBuyer, togetherLine } from './content';
+import { callsChange, checkHref, comparedWith, failedLine, inexactLine, lastCall, meterShare, perBuyer, togetherLine } from './content';
 import { PeriodSwitch } from './PeriodSwitch';
 
 const methodClass = (method: string): string => ({ GET: 'get', POST: 'post', DELETE: 'del' } as Record<string, string>)[method.toUpperCase()] ?? '';
@@ -98,7 +98,7 @@ export const ChangePill = ({ calls, before, period }: { readonly calls: number; 
 
   return (
     <>
-      <span className={change < 0 ? 'pill-value info' : 'pill-value up'}>{arrow}{formatChange(change).replace(/^[+-]/, '')}</span>
+      <span className={change < 0 ? 'pill-value info' : 'pill-value up'}>{arrow}{formatChange(change, true).replace(/^[+-]/, '')}</span>
       <span>{`vs ${comparedWith(period)}`}</span>
     </>
   );
@@ -124,6 +124,7 @@ export const ServiceStats = ({ host, service }: { readonly host: string; readonl
           <Kpi value={stats.p50Ms === null ? '-' : ms(stats.p50Ms)} label="Median time" note={stats.p95Ms === null ? undefined : `p95 ${ms(stats.p95Ms)}`} />
         </div>
       </div>
+      {service.exact ? null : <p className="small muted mt-8 svc-inexact">{inexactLine}</p>}
     </>
   );
 };
@@ -195,10 +196,12 @@ export const TopBuyers = ({ service, now }: { readonly service: ServiceDetail; r
 );
 
 /** The service's numbers could not be read. */
-export const ServiceUnavailable = () => (
+export const ServiceUnavailable = ({ code }: { readonly code?: string }) => (
   <div className="mt-32">
     <ErrorState title="We couldn't load this service's numbers." action={<Button variant="outline" size="sm" href="/services">Back to Services</Button>}>
-      The Platform API didn&apos;t answer. Reload the page in a moment.
+      {code === 'stats_unavailable'
+        ? 'These numbers can\'t be read right now. Reload the page in a moment.'
+        : 'The Platform API didn\'t answer. Reload the page in a moment.'}
     </ErrorState>
   </div>
 );

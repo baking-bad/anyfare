@@ -45,6 +45,8 @@ export const groupOrder: readonly EndpointGroup[] = ['pay', 'accounts', 'topups'
 const time = '2026-11-12T09:00:00.000Z';
 const masterErrors = ['401 unauthorized', '401 invalid_key', '401 wrong_key_type'] as const;
 const publicErrors = ['429 rate_limited'] as const;
+// A public number that couldn't be read within its bounds just now: try again shortly
+const unavailableErrors = ['503 stats_unavailable'] as const;
 
 const keyView = {
   id: '<key id>',
@@ -284,18 +286,22 @@ export const endpoints: readonly Endpoint[] = [
     request: ['`paidWith`: near, base, solana, tempo or credits. `status`: paid or free. `service`: part of a host. `host`: an exact host. `endpoint`: an exact path. `page`: from 1. `size`: 1 to 100, default 20.'],
     answer: { status: 200, json: { calls: [call], page: 1, size: 3, total: 1, totalCapped: false } },
     errors: ['400 invalid_request', ...publicErrors],
-    notes: ['`total` is counted up to a cap: `totalCapped` is `true` when there are more. A Credits buyer is never named: `payer` is `null`.'],
+    notes: [
+      '`total` is counted up to a cap: `totalCapped` is `true` when there are more. A Credits buyer is never named: `payer` is `null`.',
+      '`service` looks in the newest calls only. `host` is exact and is read by an index: use it for one host. A filter holds no NUL character: it answers `400`. A host is matched without case.',
+    ],
     source: { package: 'api', method: 'GET', path: '/v1/calls' },
   },
   {
     id: 'calls-stream', group: 'public', method: 'SSE', host: 'api', path: '/v1/calls/stream', summary: 'Calls as they finish, as server-sent events. The same filters as the list', who: 'No key', example: 'calls-stream',
+    request: ['`paidWith`, `status`, `service`, `host` and `endpoint`, as the list takes them. No `page` or `size`.'],
     answer: {
       status: 200,
       headers: { 'content-type': 'text/event-stream' },
       text: `retry: 3000\n\nevent: call\ndata: ${JSON.stringify(call)}\n\n: ping`,
     },
-    errors: ['429 rate_limited', '503 shutting_down'],
-    notes: ['A comment line `: ping` comes every 15 seconds. Open streams are limited per address; over the limit the answer is `429` with `Retry-After`.'],
+    errors: ['400 invalid_request', '429 rate_limited', '503 shutting_down'],
+    notes: ['A comment line `: ping` comes every 15 seconds. Open streams are limited per address; over the limit the answer is `429` with `Retry-After`. While the server shuts down a new stream answers `503 shutting_down` with `Retry-After`: open it again.'],
     source: { package: 'api', method: 'GET', path: '/v1/calls/stream' },
   },
   {
@@ -319,7 +325,10 @@ export const endpoints: readonly Endpoint[] = [
       },
     },
     errors: ['404 not_found', ...publicErrors],
-    notes: ['`api` is `null` when we never paid the API. The last step is `settled` for a paid call and `released` for a free one, and is there only when the payment is final.'],
+    notes: [
+      '`api` is `null` when we never paid the API, and then `apiPrice` is `null` too. `fee` is `null` while a settling payment\'s fee is not booked yet. `buyer.settledAt` is `null` until the payment is final.',
+      'The steps are `received`, `authorized`, `api_signed`, `api_answered`, then `settled` for a paid call or `released` for a free one. Only steps whose time was kept are there, and the last one only when the payment is final. `api.status` is `signed`, `settled`, `failed` or `unknown`.',
+    ],
     source: { package: 'api', method: 'GET', path: '/v1/calls/:id' },
   },
   {
@@ -328,6 +337,7 @@ export const endpoints: readonly Endpoint[] = [
       status: 200,
       json: {
         updatedAt: time,
+        allUpdatedAt: time,
         calls: byPeriod(12),
         volume: { ...byPeriod('0.12'), currency: 'USD' },
         buyers: byPeriod(3),
@@ -337,8 +347,8 @@ export const endpoints: readonly Endpoint[] = [
         daily: [{ day: '2026-11-12', calls: 12, volume: '0.12' }],
       },
     },
-    errors: publicErrors,
-    notes: ['Counted every few minutes. With nothing counted yet every number is `0` and `updatedAt` is `null`. `daily` is the last 30 UTC days, oldest first.'],
+    errors: ['400 invalid_request', ...publicErrors],
+    notes: ['Counted every few minutes. `updatedAt` is when today\'s, 7 days\' and 30 days\' numbers were counted, and `allUpdatedAt` when the numbers for `all` were counted: they are counted less often. With nothing counted yet every number is `0` and both are `null`. `daily` is the last 30 UTC days, oldest first.'],
     source: { package: 'api', method: 'GET', path: '/v1/stats' },
   },
   {
@@ -352,7 +362,8 @@ export const endpoints: readonly Endpoint[] = [
         perMinute: [{ minute: '2026-11-12T09:00:00.000Z', calls: 1 }],
       },
     },
-    errors: publicErrors,
+    errors: ['400 invalid_request', ...publicErrors, ...unavailableErrors],
+    notes: ['`at` is the time the numbers are true for: it can be earlier than now. `perMinute` is the last 30 minutes, oldest first.'],
     source: { package: 'api', method: 'GET', path: '/v1/stats/live' },
   },
   {
@@ -375,9 +386,12 @@ export const endpoints: readonly Endpoint[] = [
   {
     id: 'services', group: 'public', method: 'GET', host: 'api', path: '/v1/services', summary: 'Services with at least one paid call: price, calls, buyers, volume', who: 'No key', example: 'services',
     request: ['`q`: part of a host. `sort`: calls, buyers, volume, endpoints or price. `page`: from 1. `size`: 1 to 100, default 20.'],
-    answer: { status: 200, json: { services: [serviceRow], page: 1, size: 3, total: 1, totals: { services: 1, paidEndpoints: 1, calls30d: 12 }, updatedAt: time } },
+    answer: { status: 200, json: { services: [serviceRow], page: 1, size: 3, total: 1, totalCapped: false, totals: { services: 1, paidEndpoints: 1, calls30d: 12 }, updatedAt: time } },
     errors: ['400 invalid_request', ...publicErrors],
-    notes: ['`calls`, `buyers` and `volume` are the last 30 days. `trend` is paid calls per UTC day, oldest first.'],
+    notes: [
+      'The list holds the services with a paid call in the last 30 days. `calls`, `buyers` and `volume` are the last 30 days, and so are `totals`. `trend` is paid calls per UTC day, oldest first. `priceFrom` is `null` when no price is known.',
+      '`totalCapped` is `true` when more services had a paid call than the list keeps: a search may miss some.',
+    ],
     source: { package: 'api', method: 'GET', path: '/v1/services' },
   },
   {
@@ -395,10 +409,15 @@ export const endpoints: readonly Endpoint[] = [
         daily: [{ day: '2026-11-12', calls: 12, volume: '0.12', buyers: 3 }],
         byPaidWith: [{ paidWith: 'base', calls: 12, share: 1, buyers: 3, volume: '0.12' }],
         topBuyers: { share: 1, buyers: [{ payer: '0x…', paidWith: 'base', calls: 12, spent: '0.12', lastCallAt: time }] },
+        exact: true,
       },
     },
-    errors: ['400 invalid_request', '404 not_found', ...publicErrors],
-    notes: ['`404` when no paid call has reached the host. A Credits buyer is listed with `payer: null` and `paidWith: "credits"`.'],
+    errors: ['400 invalid_request', '404 not_found', ...publicErrors, ...unavailableErrors],
+    notes: [
+      '`404` when no paid call has reached the host. A Credits buyer is listed with `payer: null` and `paidWith: "credits"`.',
+      '`paidEndpoints` is the number of paid endpoints in the period; `endpoints` lists at most 100. `priceNow` is `null` when no price is known.',
+      '`exact` is `false` when the numbers were read when asked for and stopped at their cap: they cover the newest 10,000 calls only. A read that can\'t finish answers `503 stats_unavailable`: try again shortly.',
+    ],
     source: { package: 'api', method: 'GET', path: '/v1/services/*' },
   },
   {
@@ -414,10 +433,14 @@ export const endpoints: readonly Endpoint[] = [
         stats: { calls: 12, buyers: 3, volume: '0.12', successRate: 1, p50Ms: 340 },
         daily: [{ day: '2026-11-12', calls: 12 }],
         byPaidWith: [{ paidWith: 'base', calls: 12 }],
+        exact: true,
       },
     },
-    errors: ['400 invalid_request', ...publicErrors],
-    notes: ['An endpoint with no paid call answers `200` with zeros.'],
+    errors: ['400 invalid_request', ...publicErrors, ...unavailableErrors],
+    notes: [
+      'An endpoint with no paid call answers `200` with zeros.',
+      '`exact` is `false` when the numbers stopped at their cap and cover the newest 10,000 calls only. A read that can\'t finish answers `503 stats_unavailable`: try again shortly.',
+    ],
     source: { package: 'api', method: 'GET', path: '/v1/endpoints/stats' },
   },
 ];

@@ -2,7 +2,7 @@ import type { Call } from '../api/types';
 
 // The live stream of finished calls, over server-sent events. A browser's EventSource retries a dropped
 // connection by itself, but gives up for good when the server answers with an error, such as a 429 when
-// too many streams are open. So when the connection is closed, this opens a new one after a pause that
+// too many streams are open, or a 503 while the server shuts down. So when the connection is closed, this opens a new one after a pause that
 // grows, up to a limit.
 
 /** The parts of `EventSource` this uses, so a test can stand in for it. */

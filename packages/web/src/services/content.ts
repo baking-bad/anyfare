@@ -16,6 +16,12 @@ export const firstRunTitle = 'No services yet';
 
 export const firstRunLine = 'Services appear here once agents have paid them through Anyfare.';
 
+/** Under the grid, when more services had a paid call than the list keeps: a search may miss some. */
+export const cappedLine = 'Showing the most used services.';
+
+/** Near the numbers read when asked for, which stopped at their cap. */
+export const inexactLine = 'Counted over the newest 10,000 calls.';
+
 export const unavailableLine = 'The Platform API didn\'t answer. Try again in a moment.';
 
 /** How to pay any listed service, for the twins. `payUrl` is the pay host's origin. */
@@ -76,14 +82,16 @@ export const perBuyer = (volume: string, buyers: number): number | null => {
   return buyers > 0 && Number.isFinite(total) && volume.trim() !== '' ? total / buyers : null;
 };
 
-/** How long ago a buyer's last call was: "2m ago", "5h ago", and from a day "3d ago". */
+/** How long ago a buyer's last call was: "2m ago", "5h ago", then "Yesterday" for one day and "3 days ago" from two. */
 export const lastCall = (at: string, now: number): string => {
   const time = Date.parse(at);
   if (!Number.isFinite(time))
     return '-';
   const hours = (now - time) / 3_600_000;
 
-  return hours >= 24 ? `${Math.floor(hours / 24)}d ago` : ago(time, now);
+  const days = Math.floor(hours / 24);
+
+  return days < 1 ? ago(time, now) : days === 1 ? 'Yesterday' : `${days} days ago`;
 };
 
 /** The share of a way to pay, against the largest one: how long its meter is, from 0 to 1. */

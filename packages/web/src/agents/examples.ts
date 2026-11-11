@@ -94,7 +94,7 @@ export const curlExamples = ({ apiUrl, payUrl }: Hosts): readonly CurlExample[] 
   },
   {
     id: 'stats', method: 'GET', url: `${apiUrl}/v1/stats`, headers: {},
-    expect: { status: 200, fields: ['updatedAt', 'calls', 'volume', 'buyers', 'services', 'byPaidWith', 'topups', 'daily'] }, needs: [],
+    expect: { status: 200, fields: ['updatedAt', 'allUpdatedAt', 'calls', 'volume', 'buyers', 'services', 'byPaidWith', 'topups', 'daily'] }, needs: [],
   },
   { id: 'stats-live', method: 'GET', url: `${apiUrl}/v1/stats/live`, headers: {}, expect: { status: 200, fields: ['at', 'today', 'last24h', 'perMinute'] }, needs: [] },
   {
@@ -103,15 +103,15 @@ export const curlExamples = ({ apiUrl, payUrl }: Hosts): readonly CurlExample[] 
   },
   {
     id: 'services', method: 'GET', url: `${apiUrl}/v1/services?sort=calls&size=3`, headers: {},
-    expect: { status: 200, fields: ['services', 'page', 'size', 'total', 'totals', 'updatedAt'] }, needs: [],
+    expect: { status: 200, fields: ['services', 'page', 'size', 'total', 'totalCapped', 'totals', 'updatedAt'] }, needs: [],
   },
   {
     id: 'service', method: 'GET', url: `${apiUrl}/v1/services/$ANYFARE_SERVICE_HOST?period=30d`, headers: {},
-    expect: { status: 200, fields: ['host', 'period', 'updatedAt', 'paidEndpoints', 'stats', 'endpoints', 'daily', 'byPaidWith', 'topBuyers'] }, needs: ['ANYFARE_SERVICE_HOST'],
+    expect: { status: 200, fields: ['host', 'period', 'updatedAt', 'paidEndpoints', 'stats', 'endpoints', 'daily', 'byPaidWith', 'topBuyers', 'exact'] }, needs: ['ANYFARE_SERVICE_HOST'],
   },
   {
     id: 'endpoint-stats', method: 'GET', url: `${apiUrl}/v1/endpoints/stats?host=$ANYFARE_SERVICE_HOST&path=$ANYFARE_SERVICE_PATH&period=30d`, headers: {},
-    expect: { status: 200, fields: ['host', 'path', 'period', 'updatedAt', 'stats', 'daily', 'byPaidWith'] }, needs: ['ANYFARE_SERVICE_HOST', 'ANYFARE_SERVICE_PATH'],
+    expect: { status: 200, fields: ['host', 'path', 'period', 'updatedAt', 'stats', 'daily', 'byPaidWith', 'exact'] }, needs: ['ANYFARE_SERVICE_HOST', 'ANYFARE_SERVICE_PATH'],
   },
 ];
 

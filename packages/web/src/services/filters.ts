@@ -16,6 +16,13 @@ export const sortChoices: readonly { readonly value: ServiceSort; readonly label
   { value: 'price', label: 'Cheapest' },
 ];
 
+// A control character, a NUL included, which the API refuses in a search
+// eslint-disable-next-line no-control-regex
+const controls = /[\u0000-\u001f\u007f-\u009f]/g;
+
+/** A search's text without control characters. */
+export const withoutControls = (text: string): string => text.replace(controls, '');
+
 const maxSearchLength = 100;
 const maxPage = 100_000;
 
@@ -40,7 +47,7 @@ const isSort = (value: string): value is ServiceSort => sortChoices.some(choice 
 
 /** The filters a URL's query holds. A value the page doesn't know is dropped, and the page counts from 1. */
 export const parseServicesFilters = (source: Source): ServicesFilters => {
-  const q = valueOf(source, 'q').trim().slice(0, maxSearchLength);
+  const q = withoutControls(valueOf(source, 'q')).trim().slice(0, maxSearchLength);
   const sort = valueOf(source, 'sort');
   const page = Number(valueOf(source, 'page'));
 
@@ -78,7 +85,7 @@ export const apiServicesQuery = (filters: ServicesFilters): ServicesQuery => ({
 
 /** The filters with the search set, back on the first page. An empty text clears it. */
 export const withSearch = (filters: ServicesFilters, text: string): ServicesFilters => {
-  const q = text.trim().slice(0, maxSearchLength);
+  const q = withoutControls(text).trim().slice(0, maxSearchLength);
 
   return { ...q === '' ? {} : { q }, sort: filters.sort, page: 1 };
 };

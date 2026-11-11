@@ -8,6 +8,7 @@ import {
   askRows, asksSentence, checkDescription, cut, describedAs, emptyLine, linkParts, noCallsLine, periodName, refusalWords, titleFor, unavailableLine, wayWords,
 } from '../check/content';
 import type { CheckData } from '../check/data';
+import { inexactLine } from '../services/content';
 
 // The Check page as Markdown: the same facts as the page, from the same reads. Text that came from the
 // link's own API is put on one line and cut, so it can't add structure to the page.
@@ -39,7 +40,7 @@ const numbers = (stats: ApiResult<EndpointStats>): string => {
 - Median time: ${figures.p50Ms === null ? '-' : ms(figures.p50Ms)}
 - Buyers paid with: ${ways.length === 0 ? 'no paid call in this period' : ways.map(way => `${paidWithName(way.paidWith)} ${count(way.calls)}`).join(', ')}
 
-Another period: add \`&period=7d\` to the address (today, 7d, 30d or all). Another page of calls: \`&page=2\`.`;
+${stats.value.exact ? '' : `${inexactLine}\n\n`}Another period: add \`&period=7d\` to the address (today, 7d, 30d or all). Another page of calls: \`&page=2\`.`;
 };
 
 const callsList = (siteUrl: string, calls: ApiResult<CallsPage>): string => {

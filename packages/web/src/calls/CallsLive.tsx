@@ -17,13 +17,13 @@ import { LiveDot } from '../components/LiveDot';
 import { Pager } from '../components/Pager';
 import { useSettings } from '../components/Settings';
 import { Skeleton } from '../components/Skeleton';
-import { paidWithName } from '../content/home';
+import { paidWithFilterName } from '../content/home';
 import { count, usd } from '../format';
 import { useCallStream } from '../live/useCallStream';
 import { useNow } from '../live/useNow';
 import { CallTableRow } from './CallTableRow';
 import { callsLine, callsTitle } from './content';
-import { apiFilter, apiQuery, callsHref, isFiltered, pageSize, paidWithChoices, parseFilters, withFilter, type CallsFilters } from './filters';
+import { apiFilter, apiQuery, callsHref, isFiltered, pageSize, paidWithChoices, parseFilters, withFilter, withoutControls, type CallsFilters } from './filters';
 
 export interface CallsLiveProps {
   // The live numbers, or null when that read failed
@@ -263,32 +263,38 @@ export const CallsLive = ({ live, calls: firstCalls, suggestions, now: serverNow
             <>
               <div className="grid-bar">
                 <div className="filters">
-                  <label className="filter-label" htmlFor="f-rail">Paid with</label>
-                  <select id="f-rail" className="input f-rail" value={filters.paidWith ?? ''} onChange={event => go(withFilter(filters, 'paidWith', event.target.value))}>
-                    <option value="">Any</option>
-                    {paidWithChoices.map(choice => <option key={choice} value={choice}>{paidWithName(choice)}</option>)}
-                  </select>
-                  <label className="filter-label" htmlFor="f-svc">Service</label>
-                  <div className="search">
-                    <Icon name="search" />
-                    <input
-                      id="f-svc"
-                      className="input f-svc"
-                      list="svc-list"
-                      placeholder="Name or host"
-                      autoComplete="off"
-                      maxLength={100}
-                      value={serviceText}
-                      onChange={event => setServiceText(event.target.value)}
-                    />
+                  <div className="filter-field">
+                    <label className="filter-label" htmlFor="f-rail">Paid with</label>
+                    <select id="f-rail" className="input f-rail" value={filters.paidWith ?? ''} onChange={event => go(withFilter(filters, 'paidWith', event.target.value))}>
+                      <option value="">Any</option>
+                      {paidWithChoices.map(choice => <option key={choice} value={choice}>{paidWithFilterName(choice)}</option>)}
+                    </select>
                   </div>
-                  <datalist id="svc-list">{suggestions.map(host => <option key={host} value={host} />)}</datalist>
-                  <label className="filter-label" htmlFor="f-status">Status</label>
-                  <select id="f-status" className="input f-status" value={filters.status ?? ''} onChange={event => go(withFilter(filters, 'status', event.target.value))}>
-                    <option value="">Any</option>
-                    <option value="paid">Paid</option>
-                    <option value="free">Failed, free</option>
-                  </select>
+                  <div className="filter-field">
+                    <label className="filter-label" htmlFor="f-svc">Service</label>
+                    <div className="search">
+                      <Icon name="search" />
+                      <input
+                        id="f-svc"
+                        className="input f-svc"
+                        list="svc-list"
+                        placeholder="Name or host"
+                        autoComplete="off"
+                        maxLength={100}
+                        value={serviceText}
+                        onChange={event => setServiceText(withoutControls(event.target.value))}
+                      />
+                    </div>
+                    <datalist id="svc-list">{suggestions.map(host => <option key={host} value={host} />)}</datalist>
+                  </div>
+                  <div className="filter-field">
+                    <label className="filter-label" htmlFor="f-status">Status</label>
+                    <select id="f-status" className="input f-status" value={filters.status ?? ''} onChange={event => go(withFilter(filters, 'status', event.target.value))}>
+                      <option value="">Any</option>
+                      <option value="paid">Paid</option>
+                      <option value="free">Failed, free</option>
+                    </select>
+                  </div>
                 </div>
                 <Button variant="secondary" onClick={togglePause}>
                   <Icon name={paused ? 'play' : 'pause'} />{paused ? 'Resume' : 'Pause'}
