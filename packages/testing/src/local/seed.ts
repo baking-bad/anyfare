@@ -16,8 +16,8 @@ import { createAllStats, createRecentStats } from '@anyfare/workers';
 import { createFakeClock } from '../clock.js';
 import { createSeededRandom, type SeededRandom } from './random.js';
 import {
-  checkedOnPaidHost, checkedServices, fakeTransactionHash, longHost, merchantAddress, payerAddresses, seedAccountPrefix, seedKeyPrefix, seedLedgerPrefix, seedRequestPrefix, services,
-  veryLongPath, veryLongPathService, type ChainName, type EndpointDefinition, type ServiceDefinition,
+  checkedOnPaidHost, checkedServices, fakeTransactionHash, longHost, merchantAddress, payerAddresses, quietAgoMs, quietEndpoint, quietService, seedAccountPrefix, seedKeyPrefix, seedLedgerPrefix, seedRequestPrefix,
+  services, veryLongPath, veryLongPathService, type ChainName, type EndpointDefinition, type ServiceDefinition,
 } from './seedData.js';
 import { creditedFor, seedTopup, type TopupSeeding } from './seedTopups.js';
 import { wipeSeededRows } from './wipe.js';
@@ -374,7 +374,9 @@ export const seedLocal = async ({
     hash: fakeTransactionHash,
   };
   const firstSeen = new Set<string>();
-  const merchants = plan.merchants;
+  // The quiet service's merchant follows the others'
+  const merchants = [...plan.merchants, merchantAddress(quietService.paidOn, services.length, random)];
+  const quietHostIndex = services.findIndex(service => service.host === quietEndpoint.host);
   let done = 0;
   let topups = 0;
 
@@ -496,6 +498,22 @@ export const seedLocal = async ({
   for (const [index, state] of states.entries()) {
     await seedTopup(topupSeeding, { account: accounts[index % accounts.length]!, ...state, at: new Date(now.getTime() - state.agoMinutes * minuteMs) });
     topups += 1;
+  }
+
+  // The calls 40 days old: a paid service and a paid endpoint with no call in the last 30 days
+  log('Writing the paid service and the paid endpoint with no call in 30 days');
+  const quietCalls = [
+    { service: quietService, serviceIndex: services.length, endpoint: quietService.endpoints[0]! },
+    { service: quietService, serviceIndex: services.length, endpoint: quietService.endpoints[1]! },
+    { service: services[quietHostIndex]!, serviceIndex: quietHostIndex, endpoint: quietEndpoint.endpoint },
+  ];
+  for (const [position, quiet] of quietCalls.entries()) {
+    const { quote, fee } = routingQuote(quiet.endpoint.price as MicroUsd, config.routingFeeBps);
+    await runCall({
+      index: plan.calls.length + position, at: new Date(now.getTime() - quietAgoMs - position * hourMs), paymentId: `pay_${uuidOf(random)}`, ...quiet, path: quiet.endpoint.path,
+      way: { kind: 'chain', chain: chains.base }, payer: `0x${'ab'.repeat(20)}`, account: undefined, key: undefined, quote: BigInt(quote), fee: BigInt(fee),
+      arrivalMs: 200, latencyMs: 180, status: 200, failure: undefined, freeStatus: 'cancelled', withDetails: true,
+    });
   }
 
   log('Writing the services a check listed');

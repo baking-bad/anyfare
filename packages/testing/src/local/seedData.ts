@@ -82,7 +82,22 @@ export const services: readonly ServiceDefinition[] = [
 export const veryLongPath = `/v1/lookup/${'x'.repeat(2_989)}`;
 export const veryLongPathService = 'api.example.com';
 
-export const seededHosts: readonly string[] = services.map(service => service.host);
+/**
+ * A paid service whose only paid calls are 40 days old: it stays in the list, with zero numbers for the last 30 days.
+ * It is not among `services`, so the plan of the other calls does not move.
+ */
+export const quietService: ServiceDefinition = {
+  host: 'archive.example.net', weight: 0, paidOn: 'near',
+  endpoints: [endpoint('GET', '/v1/records', 1_400, 1), endpoint('POST', '/v1/records/export', 6_000, 1)],
+};
+
+/** A paid endpoint of a busy service whose only paid call is 40 days old: no call in the last 30 days. */
+export const quietEndpoint = { host: 'weather.example.net', endpoint: endpoint('GET', '/v1/forecast/archive', 1_000, 1) } as const;
+
+/** How long before now the calls of the quiet service and of the quiet endpoint were made. */
+export const quietAgoMs = 40 * 86_400_000;
+
+export const seededHosts: readonly string[] = [...services, quietService].map(service => service.host);
 
 export interface CheckedEndpointDefinition {
   readonly method: 'GET' | 'POST';

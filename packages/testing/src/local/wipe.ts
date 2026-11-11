@@ -19,7 +19,7 @@ const buyerOf = sql`(case when payments.rail = 'credits' then 'account:' || md5(
   else 'payer:' || call_details.payer end)`;
 
 /**
- * Deletes every row the seed wrote, the kept buyers of its calls and its checked hosts, and puts the platform's shared ledger balances back as they were,
+ * Deletes every row the seed wrote, the kept buyers of its calls and its checked and paid hosts, and puts the platform's shared ledger balances back as they were,
  * in one transaction. Rows made any other way, such as by the local stack, stay.
  */
 export const wipeSeededRows = async (db: Database): Promise<void> => {
@@ -51,6 +51,7 @@ export const wipeSeededRows = async (db: Database): Promise<void> => {
     for (const host of allSeededHosts) {
       await tx.execute(sql`delete from routed_endpoints where host = ${host}`);
       await tx.execute(sql`delete from checked_hosts where host = ${host}`);
+      await tx.execute(sql`delete from paid_hosts where host = ${host}`);
     }
   });
 };

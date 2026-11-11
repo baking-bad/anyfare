@@ -4,14 +4,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLogger, systemClock, type Server } from '@anyfare/common';
 import type { PlatformConfig } from '@anyfare/core';
 import {
-  createCallRepository, createLedger, createPaymentRepository, createRoutingRepository, routedEndpoints, statsBuyers, checkedHosts,
+  createCallRepository, createLedger, createPaymentRepository, createRoutingRepository, routedEndpoints, statsBuyers, checkedHosts, paidHosts,
 } from '@anyfare/db';
 import { createApp } from '@anyfare/api';
 
 import { createFakeClock, createTestDatabase, createTestRedis, type TestDatabase, type TestRedis } from '../../src/index.js';
 import { loadLocalConfig } from '../../src/local/config.js';
 import { countPublicNumbers, emptyLocal, seedLocal } from '../../src/local/seed.js';
-import { checkedOnPaidHost, checkedServices } from '../../src/local/seedData.js';
+import { allSeededHosts, checkedOnPaidHost, checkedServices, quietEndpoint, quietService } from '../../src/local/seedData.js';
 import { createScratchDatabase, isScratchName } from '../../src/local/scratch.js';
 
 // The seed's own options and the rows of a developer's own, on databases of their own, read through the
@@ -128,7 +128,67 @@ describe('the seed with services a check listed', () => {
   }, slow);
 });
 
+describe('the paid service and the paid endpoint with no call in 30 days', () => {
+  it('are paid, in the list and on their pages with zero numbers, beside a busy service whose other endpoints have calls', async () => {
+    await seedLocal({ postgres: database.postgres, config, calls: 300 });
+
+    // Only calls 40 days old: the service is in the list, paid, with zero numbers for the 30 days
+    const listed = (await read(`/v1/services?q=${quietService.host}`)).body.services as { host: string; status: string; calls: number; buyers: number; volume: string; paidEndpoints: number; trend: number[] }[];
+    expect(listed).toEqual([expect.objectContaining({ host: quietService.host, status: 'paid', calls: 0, buyers: 0, volume: '0', paidEndpoints: quietService.endpoints.length })]);
+    expect(listed[0]!.trend.every(value => value === 0)).toBe(true);
+    const page = (await read(`/v1/services/${quietService.host}`)).body;
+    expect(page).toMatchObject({ status: 'paid', stats: { calls: 0, buyers: 0 }, paidEndpoints: quietService.endpoints.length });
+    expect(page.endpoints.map((endpoint: { path: string }) => endpoint.path).sort()).toEqual(quietService.endpoints.map(endpoint => endpoint.path).sort());
+    for (const endpoint of page.endpoints)
+      expect(endpoint).toMatchObject({ status: 'paid', calls: 0, volume: '0', link: expect.stringContaining(quietService.host) });
+    // Its calls are there, in all time
+    expect((await read(`/v1/services/${quietService.host}?period=all`)).body.stats.calls).toBe(quietService.endpoints.length);
+
+    // A busy service with one paid endpoint that has no call in the 30 days: listed with zeros after those with calls
+    const busy = (await read(`/v1/services/${quietEndpoint.host}`)).body;
+    const paths = busy.endpoints.map((endpoint: { path: string }) => endpoint.path);
+    const quiet = busy.endpoints.find((endpoint: { path: string }) => endpoint.path === quietEndpoint.endpoint.path);
+    expect(busy.stats.calls).toBeGreaterThan(0);
+    expect(quiet).toMatchObject({ status: 'paid', calls: 0, buyers: 0, volume: '0', link: expect.stringContaining(quietEndpoint.endpoint.path) });
+    expect(busy.endpoints.filter((endpoint: { status: string; calls: number }) => endpoint.status === 'paid' && endpoint.calls > 0).length).toBeGreaterThan(0);
+    for (const endpoint of busy.endpoints.slice(0, paths.indexOf(quietEndpoint.endpoint.path)))
+      expect(endpoint.calls > 0 || endpoint.path === quietEndpoint.endpoint.path).toBe(true);
+    expect(await count(`routed_endpoints where host = '${quietService.host}' and status = 'paid'`)).toBe(quietService.endpoints.length);
+
+    await emptyLocal({ postgres: database.postgres, config });
+  }, slow);
+});
+
 describe('--empty', () => {
+  it('leaves no row of a seeded host in the paid and checked hosts, and keeps those of a host the seed did not write', async () => {
+    await seedLocal({ postgres: database.postgres, config, calls: 300 });
+    // A developer's own paid host and checked host, on names the seed does not write
+    const routing = createRoutingRepository({ db: database.db, clock: createFakeClock(new Date(Date.now() - 30_000)) });
+    expect(await routing.registerEndpoint({ host: 'dev-paid.example.com', path: '/own', lastPrice: 900n })).toBe('created');
+    expect(await routing.registerEndpoint({ host: 'dev-checked.example.com', path: '/own', lastPrice: 900n, checked: { method: 'GET', mayAddHost: true } })).toBe('created');
+    const hostsOf = async (table: typeof paidHosts | typeof checkedHosts): Promise<string[]> => (await database.db.select({ host: table.host }).from(table)).map(row => row.host).sort();
+
+    try {
+      // Before: the seed's hosts are in both tables, the quiet service among them
+      expect((await hostsOf(paidHosts)).filter(host => allSeededHosts.includes(host))).toContain(quietService.host);
+      expect((await hostsOf(checkedHosts)).filter(host => allSeededHosts.includes(host)).length).toBeGreaterThan(5);
+
+      await emptyLocal({ postgres: database.postgres, config });
+
+      expect(await hostsOf(paidHosts)).toEqual(['dev-paid.example.com']);
+      expect(await hostsOf(checkedHosts)).toEqual(['dev-checked.example.com']);
+      expect((await database.db.select().from(routedEndpoints)).map(row => row.host).sort()).toEqual(['dev-checked.example.com', 'dev-paid.example.com']);
+    }
+    finally {
+      // This test's own rows, by their exact hosts
+      for (const host of ['dev-paid.example.com', 'dev-checked.example.com']) {
+        await database.db.execute(sql`delete from routed_endpoints where host = ${host}`);
+        await database.db.execute(sql`delete from checked_hosts where host = ${host}`);
+        await database.db.execute(sql`delete from paid_hosts where host = ${host}`);
+      }
+    }
+  }, slow);
+
   it('leaves a truly empty state, and keeps and counts the rows of a developer\'s own call', async () => {
     await seedLocal({ postgres: database.postgres, config, calls: 400 });
     await developerCall();
