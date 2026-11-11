@@ -145,11 +145,11 @@ describe('config/production.yaml', () => {
     ]);
   });
 
-  it('has the sign-up gift off, at $0.10 for three new accounts a day per client IP, with no daily cap', async () => {
+  it('has the sign-up gift on, at $0.10 for three new accounts a day per client IP, with a daily cap of $5', async () => {
     const config = await loadText(text);
 
-    expect(config.freeCredits).toEqual({ enabled: false, amount: 100_000n, perIp: { requests: 3, windowSeconds: 86_400 }, maxPerDay: undefined });
-    expect(platformSummary(config).freeCredits).toEqual({ enabled: false, amount: '0.1' });
+    expect(config.freeCredits).toEqual({ enabled: true, amount: 100_000n, perIp: { requests: 3, windowSeconds: 86_400 }, maxPerDay: 5_000_000n });
+    expect(platformSummary(config).freeCredits).toEqual({ enabled: true, amount: '0.1' });
   });
 
   it('refuses an unquoted 0x… address, which YAML reads as a number, and says to quote it', async () => {

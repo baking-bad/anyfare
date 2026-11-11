@@ -92,12 +92,12 @@ rateLimits:
 callStream:
   maxPerIp: 200
 
-# Free Credits for each new account: off until the operator turns the gift on
+# Free Credits for each new account
 freeCredits:
-  enabled: false
+  enabled: true
   amount: "0.1"
   perIp: { requests: 3, windowSeconds: 86400 }   # Per client IP. Later accounts are created with none
-  # maxPerDay: "5"   # Optional. The most given across all IPs in one UTC day. Without it there is no cap
+  maxPerDay: "5"   # The most given across all IPs in one UTC day: 50 gifts
 
 # Top-ups: a client sends any token on any chain to a deposit address, and the 1Click API of NEAR Intents
 # swaps it to near-usdc and delivers it to the recipient.
