@@ -448,6 +448,10 @@ const payableSchema = object({
     required: ['calls', 'buyers', 'volume', 'successRate', 'p50Ms'],
     additionalProperties: false,
   },
+  listed: {
+    type: 'boolean',
+    description: 'Whether the endpoint is listed among the services, by this check or before it. False: a cap or a limit kept it out, or it wasn\'t known in time.',
+  },
   checkedAt: { type: 'string', format: 'date-time' },
   ms: integer,
 });

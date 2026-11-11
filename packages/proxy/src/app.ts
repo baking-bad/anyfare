@@ -21,6 +21,7 @@ import { registerKeyRoute } from './platform/key.js';
 import { createCallDetailsRecorder } from './routing/callDetails.js';
 import { checkHeadersSchema, checkQuerySchema, checkResponseSchema, createPayWays, type CheckQuery } from './routing/check.js';
 import { createEndpointStats } from './routing/checkStats.js';
+import { createCheckListing, createNewHostLimit, type NewHostLimit } from './routing/listing.js';
 import { createRouting, type Routing } from './routing/routes.js';
 import { createEndpointRegistrar, createOptOutCheck, type SignerClient } from './routing/support.js';
 
@@ -71,6 +72,10 @@ export interface ProxyDependencies {
   readonly internalApi?: { readonly url: string; readonly secret: Secret };
   // The blocklist, endpoint fees, and target legs. Default: the routing tables.
   readonly routingRepository?: Pick<RoutingRepository, 'isBlocked' | 'endpointFee' | 'recordTargetPayment' | 'updateTargetPayment'>;
+  // Whether a payable check's endpoint and host are listed already. Default: the routed endpoints.
+  readonly listing?: Pick<RoutingRepository, 'endpointListing'>;
+  // How many hosts each client's checks add to the checked pool a day. Default: a set per client in Redis.
+  readonly newHostLimit?: NewHostLimit;
   // Where a paid call's method, payer and arrival are kept, best effort. Default: the call_details table.
   readonly callDetails?: Pick<CallRepository, 'recordDetails'>;
   // The endpoints' counted numbers `GET /_/check` shows. Default: the stats tables.
@@ -192,6 +197,20 @@ const poolBusy = (postgres: Postgres) => (): boolean => {
 };
 
 /**
+ * Whether the database pool is at its most connections with none idle, or has requests waiting while it
+ * is: a check's listing then reads nothing. Below its most, a request waits only for a connection being
+ * opened, which is no shortage. Never full without a pool to count.
+ */
+const poolFull = (postgres: Postgres) => (): boolean => {
+  const pool = (postgres.db as unknown as { readonly $client?: Partial<PoolCounts> }).$client;
+  if (typeof pool?.waitingCount !== 'number' || typeof pool.idleCount !== 'number' || typeof pool.totalCount !== 'number')
+    return false;
+  const atMost = pool.totalCount >= (pool.options?.max ?? 10);
+
+  return atMost && (pool.waitingCount > 0 || pool.idleCount === 0);
+};
+
+/**
  * The proxy on the pay host: routing links, `GET /_/check`, and `GET /_/key`. Readiness covers Postgres
  * and Redis, the enabled facilitators with x402, and the Tempo RPC with MPP.
  */
@@ -215,6 +234,8 @@ export const createApp = ({
   signer,
   internalApi,
   routingRepository = createRoutingRepository({ db: postgres.db, clock }),
+  listing = createRoutingRepository({ db: postgres.db, clock }),
+  newHostLimit = createNewHostLimit({ redis }),
   callDetails: callDetailsStore = createCallRepository({ db: postgres.db }),
   stats = createStatsRepository({ db: postgres.db }),
 }: ProxyDependencies): ProxyServer => {
@@ -297,6 +318,7 @@ export const createApp = ({
   });
   registerKeyRoute(app, { credits, limits, ledger, clock });
   const callDetails = createCallDetailsRecorder({ store: callDetailsStore });
+  const registrar = createEndpointRegistrar({ url: internalApi?.url, secret: internalApi?.secret, logger });
   const routing = createRouting({
     config,
     http: targets,
@@ -306,13 +328,14 @@ export const createApp = ({
     ledger,
     signer,
     optedOut: createOptOutCheck({ http: targets, redis, logger }),
-    registrar: createEndpointRegistrar({ url: internalApi?.url, secret: internalApi?.secret, logger }),
+    registrar,
     callDetails,
     limitIp: ip => limits.unpaid(ip),
     limitProbe: ip => limits.probe(ip),
     // As the combined 402 offers them: the assets of the rails that take payments here
     payWays: createPayWays(config, { x402: x402?.assets ?? [], mpp: mpp && { network: mpp.network, assets: mpp.assets } }),
     endpointStats: createEndpointStats({ stats, busy: poolBusy(postgres), clock }).get,
+    listEndpoint: createCheckListing({ registrar, endpoints: listing, newHosts: newHostLimit, busy: poolFull(postgres), clock }).list,
     metrics,
     clock,
     logger,

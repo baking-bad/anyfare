@@ -21,9 +21,11 @@ export {
 } from './routing/headers.js';
 export type { RoutingLinkOptions } from './routing/headers.js';
 export {
-  createEndpointRegistrar, createOptOutCheck, createSignerClient, internalSecretHeader, isOwnHost, optOutBodyLimit, optOutPath, optOutTimeoutMs,
-  optOutTtlSeconds, ownDomainsOf, releasePath, routedEndpointsPath, signerSecretHeader, SignerUnavailableError, signPath,
+  createEndpointRegistrar, createOptOutCheck, createSignerClient, internalSecretHeader, isOwnHost, maxRegisteredPathBytes, optOutBodyLimit, optOutPath,
+  optOutTimeoutMs, optOutTtlSeconds, ownDomainsOf, releasePath, routedEndpointsPath, signerSecretHeader, SignerUnavailableError, signPath,
 } from './routing/support.js';
 export type {
-  EndpointRegistrar, OptOutCheck, ReleaseContext, SignedPayment, SignerClient, SignerFailure, SignInput, X402Requirement,
+  CheckedEndpoint, EndpointRegistrar, ListingOutcome, OptOutCheck, ReleaseContext, SignedPayment, SignerClient, SignerFailure, SignInput, X402Requirement,
 } from './routing/support.js';
+export { checkListingDefaults, createCheckListing, createNewHostLimit, newHostsPerClient } from './routing/listing.js';
+export type { CheckListing, CheckListingOptions, ListingRequest, NewHostLimit } from './routing/listing.js';

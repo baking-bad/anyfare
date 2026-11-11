@@ -26,6 +26,7 @@ import {
 } from './check.js';
 import type { CheckStats, EndpointStats } from './checkStats.js';
 import { routedRequestHeaders, routedResponseHeaders } from './headers.js';
+import type { CheckListing } from './listing.js';
 import { isOwnHost, ownDomainsOf, SignerUnavailableError, type EndpointRegistrar, type SignerClient, type X402Requirement } from './support.js';
 
 // A quote is reused for this long, so a repeat call skips the probe
@@ -58,6 +59,8 @@ export interface RoutingOptions {
   readonly payWays: PayWays;
   // An endpoint's counted numbers over 30 days, for `GET /_/check`: null when they can't be read now
   readonly endpointStats: EndpointStats['get'];
+  // Lists a payable check's endpoint without waiting for it, and says whether it is listed
+  readonly listEndpoint: CheckListing['list'];
   readonly metrics: Pick<ProxyMetrics, 'upstream' | 'routing'>;
   // Whether an MPP challenge has expired, and how long a buyer's payment has left
   readonly clock: Clock;
@@ -213,6 +216,8 @@ export interface PayableCheck {
   readonly upstream: UpstreamAnswer;
   readonly payWith: readonly PayWay[];
   readonly stats: CheckStats | null;
+  // Whether the endpoint is listed among the services: false when a cap or a limit kept it out, or it wasn't known in time
+  readonly listed: boolean;
   readonly checkedAt: string;
   readonly ms: number;
 }
@@ -229,7 +234,8 @@ export interface RefusedCheck {
 
 /** Payment routing: `/<host>/<path>` pays any x402 or MPP API for the buyer, and `GET /_/check` quotes one. */
 export const createRouting = ({
-  config, http, redis, payments, routing, ledger, signer, optedOut, registrar, callDetails, limitIp, limitProbe, payWays, endpointStats, metrics, clock,
+  config, http, redis, payments, routing, ledger, signer, optedOut, registrar, callDetails, limitIp, limitProbe, payWays, endpointStats, listEndpoint, metrics,
+  clock,
 }: RoutingOptions) => {
   const payUrl = config.urls.pay.replace(/\/+$/, '');
   const ownDomains = ownDomainsOf(config);
@@ -250,7 +256,11 @@ export const createRouting = ({
       refuseHost(log, target, 'own_host');
   };
 
-  /** Blocklisted hosts and hosts that opted out. A blocklisted host gets no request from us at all. */
+  /**
+   * Blocklisted hosts and hosts that opted out. A blocklisted host gets no request from us at all. Routing refuses
+   * the exact name only, on the paid path and in a check alike; a check's listing, and the public lists, also leave
+   * out a host whose parent domain is on the blocklist.
+   */
   const checkHost = async (target: RoutingTarget, log: LogSink): Promise<void> => {
     if (await routing.isBlocked(target.hostname))
       refuseHost(log, target, 'blocklisted');
@@ -784,7 +794,8 @@ export const createRouting = ({
    * came, the ways we take the quote, and the endpoint's numbers, without paying. The probe goes with
    * `method`, GET or POST, and no body, under every check and limit a routed call has. POST needs the
    * header `X-Anyfare-Check: 1`, which a link, a prefetch or an image tag never sends. A link it won't
-   * quote is a 200 with the reason, and a detail the page can word.
+   * quote is a 200 with the reason, and a detail the page can word. A payable link's host and path, never
+   * its query, join the services, without the answer waiting for it, as a quote from its cache does too.
    */
   const check = async (request: FastifyRequest<{ Querystring: CheckQuery }>): Promise<PayableCheck | RefusedCheck> => {
     // The schema takes only these, GET when none is given
@@ -833,6 +844,10 @@ export const createRouting = ({
     }
     const asset = findAsset(config, quoted.asset);
     metrics.routing('quoted');
+    const [stats, listed] = await Promise.all([
+      endpointStats(target.host, target.path, request.log),
+      listEndpoint({ host: target.host, path: target.path, method, quote: quoted.quote, ip: request.ip, requestId: request.id, log: request.log }),
+    ]);
 
     return {
       payable: true,
@@ -845,7 +860,8 @@ export const createRouting = ({
       asks: asksOf(quoted, paidWithOf),
       upstream: upstreamOf(view),
       payWith: payWays(quoted.quote),
-      stats: await endpointStats(target.host, target.path, request.log),
+      stats,
+      listed,
       checkedAt: view.probedAt,
       ms: view.ms,
     };

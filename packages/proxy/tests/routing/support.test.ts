@@ -259,6 +259,162 @@ describe('the routed endpoint registrar', () => {
 
     expect(calls).toBe(2);
   });
+
+  it('never sends a paid call\'s path past 2,048 bytes: the routed endpoints can\'t keep it', async () => {
+    const sent: string[] = [];
+    const registrar = createEndpointRegistrar({
+      url: 'http://api.internal:8082', secret: Secret.from(internalSecret), logger: createLogger({ level: 'silent' }), fetch: async (_url, init) => {
+        sent.push((JSON.parse(String(init?.body)) as { path: string }).path);
+
+        return new Response(null, { status: 201 });
+      },
+    });
+
+    registrar.register('api.target.test', `/${'a'.repeat(2_047)}`);
+    registrar.register('api.target.test', `/${'b'.repeat(2_048)}`);
+    await registrar.settled();
+
+    expect(sent.map(path => path.length)).toEqual([2_048]);
+  });
+});
+
+describe('the registrar\'s listings of checked endpoints', () => {
+  const checked = (path: string) => ({ host: 'api.target.test', path, quote: 1_100n as MicroUsd, method: 'POST' as const, mayAddHost: true });
+
+  it('sends a check\'s endpoint as checked, with its method, our quote and whether it may add its host, and hears how it ended', async () => {
+    const sent: { headers: Record<string, string>; body: unknown }[] = [];
+    const answers: Record<string, Response> = {
+      '/v1/created': Response.json({ result: 'created' }, { status: 201 }),
+      '/v1/exists': Response.json({ result: 'exists' }),
+      '/v1/capped': Response.json({ result: 'capped' }),
+      '/v1/limited': Response.json({ result: 'limited' }),
+      '/v1/refused': Response.json({ error: { code: 'invalid_request' } }, { status: 400 }),
+      '/v1/broken': Response.json({ error: { code: 'internal_error' } }, { status: 500 }),
+    };
+    const registrar = createEndpointRegistrar({
+      url: 'http://api.internal:8082', secret: Secret.from(internalSecret), logger: createLogger({ level: 'silent' }), fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as { path: string };
+        sent.push({ headers: init?.headers as Record<string, string>, body });
+
+        return answers[body.path]!;
+      },
+    });
+    const outcomes: [string, string][] = [];
+
+    for (const [index, path] of Object.keys(answers).entries())
+      expect(registrar.list(checked(path), { client: `198.51.100.${index}`, requestId: 'req-check-3', onOutcome: outcome => outcomes.push([path, outcome]) })).toBe(true);
+    await registrar.settled();
+
+    expect(sent[0]).toEqual({
+      headers: { 'content-type': 'application/json', 'x-internal-secret': internalSecret, 'x-internal-caller': 'proxy', 'x-request-id': 'req-check-3' },
+      body: { host: 'api.target.test', path: '/v1/created', quote: '0.0011', kind: 'checked', method: 'POST', mayAddHost: true },
+    });
+    expect(outcomes).toEqual([
+      ['/v1/created', 'listed'], ['/v1/exists', 'listed'], ['/v1/capped', 'capped'], ['/v1/limited', 'refused'], ['/v1/refused', 'refused'], ['/v1/broken', 'failed'],
+    ]);
+  });
+
+  it('keeps checks\' listings in a queue of their own: a paid call\'s registration goes first, and a full queue of checks refuses more', async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const held = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const registrar = createEndpointRegistrar({
+      url: 'http://api.internal:8082', secret: Secret.from(internalSecret), logger: createLogger({ level: 'silent' }), checkCapacity: 2,
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as { path: string; kind?: string };
+        order.push(`${body.kind ?? 'paid'} ${body.path}`);
+        if (body.path === '/v1/first')
+          await held;
+
+        return Response.json({ result: 'created' }, { status: 201 });
+      },
+    });
+
+    expect(registrar.list(checked('/v1/first'), { client: 'a' })).toBe(true);
+    expect(registrar.list(checked('/v1/second'), { client: 'b' })).toBe(true);
+    expect(registrar.list(checked('/v1/third'), { client: 'c' })).toBe(true);
+    // The queue holds two while the first is sent
+    expect(registrar.list(checked('/v1/fourth'), { client: 'd' })).toBe(false);
+    registrar.register('api.target.test', '/v1/paid', 1_000n as MicroUsd);
+    release();
+    await registrar.settled();
+
+    expect(order).toEqual(['checked /v1/first', 'paid /v1/paid', 'checked /v1/second', 'checked /v1/third']);
+  });
+
+  it('keeps one client to a small share of the queue: past it, its listings wait for its own to go, and another client\'s go in', async () => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const sent: string[] = [];
+    const registrar = createEndpointRegistrar({
+      url: 'http://api.internal:8082', secret: Secret.from(internalSecret), logger: createLogger({ level: 'silent' }), checkShare: 5,
+      fetch: async (_url, init) => {
+        sent.push((JSON.parse(String(init?.body)) as { path: string }).path);
+        await held;
+
+        return Response.json({ result: 'created' }, { status: 201 });
+      },
+    });
+
+    const one = Array.from({ length: 7 }, (_, index) => registrar.list(checked(`/v1/one/${index}`), { client: '198.51.100.1' }));
+    const other = registrar.list(checked('/v1/other'), { client: '2001:db8:1:2::/64' });
+    release();
+    await registrar.settled();
+
+    expect(one).toEqual([true, true, true, true, true, false, false]);
+    expect(other).toBe(true);
+    expect(sent).toHaveLength(6);
+    // Its own gone, it has its share again
+    expect(registrar.list(checked('/v1/one/later'), { client: '198.51.100.1' })).toBe(true);
+    await registrar.settled();
+  });
+
+  it('never marks a paid call\'s endpoint as registered: the first billable call after a check still sends it', async () => {
+    const kinds: string[] = [];
+    const registrar = createEndpointRegistrar({
+      url: 'http://api.internal:8082', secret: Secret.from(internalSecret), logger: createLogger({ level: 'silent' }), fetch: async (_url, init) => {
+        kinds.push((JSON.parse(String(init?.body)) as { kind?: string }).kind ?? 'paid');
+
+        return Response.json({ result: 'exists' });
+      },
+    });
+
+    registrar.list(checked('/v1/pools'));
+    await registrar.settled();
+    registrar.register('api.target.test', '/v1/pools', 1_100n as MicroUsd);
+    await registrar.settled();
+    registrar.list(checked('/v1/pools'));
+    await registrar.settled();
+
+    expect(kinds).toEqual(['checked', 'paid', 'checked']);
+  });
+
+  it('gives up on a stalled internal API within its own timeout, with one warn line, and lists nothing without it', async () => {
+    const lines: Record<string, unknown>[] = [];
+    const registrar = createEndpointRegistrar({
+      url: 'http://api.internal:8082', secret: Secret.from(internalSecret), checkTimeoutMs: 100,
+      logger: createLogger({}, { write: (line: string) => lines.push(JSON.parse(line) as Record<string, unknown>) }),
+      fetch: async (_url, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+      }),
+    });
+    const outcomes: string[] = [];
+    const started = performance.now();
+
+    expect(registrar.list(checked('/v1/stalled'), { onOutcome: outcome => outcomes.push(outcome) })).toBe(true);
+    expect(performance.now() - started).toBeLessThan(50);
+    await registrar.settled();
+
+    expect(outcomes).toEqual(['failed']);
+    expect(lines).toEqual([expect.objectContaining({ level: 40, msg: 'Failed to list a checked endpoint: a later check lists it', endpointHost: 'api.target.test' })]);
+    expect(JSON.stringify(lines)).not.toContain(internalSecret);
+    const off = createEndpointRegistrar({ url: undefined, secret: undefined, logger: createLogger({ level: 'silent' }) });
+    expect([off.lists(), off.list(checked('/v1/x'))]).toEqual([false, false]);
+  });
 });
 
 describe('the hosts the platform owns', () => {

@@ -329,12 +329,44 @@ export type OptOutCheck = ReturnType<typeof createOptOutCheck>;
 
 export const routedEndpointsPath = '/internal/v1/routed-endpoints';
 export const internalSecretHeader = 'x-internal-secret';
+// The longest path the routed endpoints keep, in bytes: a longer one is routed, never registered
+export const maxRegisteredPathBytes = 2_048;
+
+/** An endpoint a payable check found, as the registrar lists it. */
+export interface CheckedEndpoint {
+  readonly host: string;
+  readonly path: string;
+  readonly quote: MicroUsd;
+  readonly method: 'GET' | 'POST';
+  // The check's client was counted for a new host
+  readonly mayAddHost: boolean;
+}
+
+/**
+ * How a check's listing ended: `listed` (created, or already listed and its time updated), `capped` (its host
+ * holds its cap of checked endpoints, or no host could make room), `refused` (not listed for another reason,
+ * such as a host no longer listed), or `failed` (no answer, or a 5xx).
+ */
+export type ListingOutcome = 'listed' | 'capped' | 'refused' | 'failed';
+
+type Queued =
+  | { readonly kind: 'paid'; readonly endpoint: { readonly host: string; readonly path: string; readonly quote?: string }; readonly requestId: string | undefined }
+  | {
+    readonly kind: 'checked'; readonly endpoint: CheckedEndpoint; readonly requestId: string | undefined; readonly client: string;
+    readonly onOutcome: (outcome: ListingOutcome) => void;
+  };
 
 /**
  * Registers routed endpoints off the hot path, through the internal API, once each. A registration
- * that got no answer or a 5xx is forgotten, so the next call tries again; a 4xx is final.
+ * that got no answer or a 5xx is forgotten, so the next call tries again; a 4xx is final. A check's
+ * listing waits in a queue of its own, smaller, sent only when no paid call's registration waits, each
+ * within a shorter timeout: a check never delays a paid call's registration, nor takes its place. One
+ * client, an IPv4 address or an IPv6 /64, holds a small share of that queue at most.
  */
-export const createEndpointRegistrar = ({ url, secret, logger, fetch = globalThis.fetch, capacity = 1_000, timeoutMs = 5_000, maxSeen = 10_000 }: {
+export const createEndpointRegistrar = ({
+  url, secret, logger, fetch = globalThis.fetch, capacity = 1_000, timeoutMs = 5_000, maxSeen = 10_000, checkCapacity = 100, checkTimeoutMs = 2_000,
+  checkShare = 5,
+}: {
   readonly url: string | undefined;
   readonly secret: Secret | undefined;
   readonly logger: Logger;
@@ -344,47 +376,89 @@ export const createEndpointRegistrar = ({ url, secret, logger, fetch = globalThi
   readonly timeoutMs?: number;
   // How many endpoints it remembers as registered. Past it, it forgets them all: paths are unbounded.
   readonly maxSeen?: number;
+  // How many checks' listings may wait at once, how long each may take, and how many of them one client's
+  readonly checkCapacity?: number;
+  readonly checkTimeoutMs?: number;
+  readonly checkShare?: number;
 }) => {
   const seen = new Set<string>();
-  const queue: { readonly endpoint: { host: string; path: string; quote?: string }; readonly requestId: string | undefined }[] = [];
+  const queue: Queued[] = [];
+  const checks: Queued[] = [];
+  // Each client's listings waiting or being sent
+  const shares = new Map<string, number>();
   let running = false;
+  const release = (client: string): void => {
+    const left = (shares.get(client) ?? 1) - 1;
+    if (left > 0)
+      shares.set(client, left);
+    else
+      shares.delete(client);
+  };
+
+  const send = async (item: Queued): Promise<void> => {
+    const { endpoint, requestId } = item;
+    const target = `${url!.replace(/\/+$/, '')}${routedEndpointsPath}`;
+    const started = performance.now();
+    // The routed call's request ID goes along, so the internal API's lines carry it too
+    const failed = (outcome: { readonly status?: number; readonly error?: unknown }, message: string): void => {
+      logger.warn({
+        ...outboundFields({ url: target, method: 'PUT', ...outcome, durationMs: performance.now() - started }),
+        ...requestId === undefined ? {} : { requestId }, endpointHost: endpoint.host, ...outcome.error === undefined ? {} : { error: outcome.error },
+      }, message);
+    };
+    const body = item.kind === 'paid'
+      ? item.endpoint
+      : { host: endpoint.host, path: endpoint.path, quote: formatUsd(item.endpoint.quote), kind: 'checked', method: item.endpoint.method, mayAddHost: item.endpoint.mayAddHost };
+    try {
+      const response = await fetch(target, {
+        method: 'PUT',
+        headers: {
+          'content-type': 'application/json', [internalSecretHeader]: secret!.expose(), 'x-internal-caller': 'proxy',
+          ...requestId === undefined ? {} : { 'x-request-id': requestId },
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(item.kind === 'paid' ? timeoutMs : checkTimeoutMs),
+      });
+      if (item.kind === 'checked') {
+        // The internal API's own small answer: whether it listed the endpoint
+        const answer: unknown = response.ok ? await response.json().catch(() => undefined) : await response.body?.cancel();
+        const result = isRecord(answer) ? answer['result'] : undefined;
+        item.onOutcome(response.status >= 500 ? 'failed' : result === 'created' || result === 'exists' ? 'listed' : result === 'capped' ? 'capped' : 'refused');
+        if (!response.ok)
+          failed({ status: response.status }, 'The internal API refused to list a checked endpoint');
+        return;
+      }
+      await response.body?.cancel();
+      // A 5xx may pass: the next call tries again. A 4xx refused this endpoint for good.
+      if (response.status >= 500)
+        seen.delete(`${endpoint.host}${endpoint.path}`);
+      if (!response.ok)
+        failed({ status: response.status }, 'The internal API refused to register a routed endpoint');
+    }
+    catch (error) {
+      if (item.kind === 'checked') {
+        item.onOutcome('failed');
+        failed({ error }, 'Failed to list a checked endpoint: a later check lists it');
+        return;
+      }
+      seen.delete(`${endpoint.host}${endpoint.path}`);
+      failed({ error }, 'Failed to register a routed endpoint: the next call registers it');
+    }
+  };
 
   const drain = async (): Promise<void> => {
     if (running)
       return;
     running = true;
     try {
-      while (queue.length > 0) {
-        const { endpoint, requestId } = queue.shift()!;
-        const target = `${url!.replace(/\/+$/, '')}${routedEndpointsPath}`;
-        const started = performance.now();
-        // The routed call's request ID goes along, so the internal API's lines carry it too
-        const failed = (outcome: { readonly status?: number; readonly error?: unknown }, message: string): void => {
-          logger.warn({
-            ...outboundFields({ url: target, method: 'PUT', ...outcome, durationMs: performance.now() - started }),
-            ...requestId === undefined ? {} : { requestId }, endpointHost: endpoint.host, ...outcome.error === undefined ? {} : { error: outcome.error },
-          }, message);
-        };
+      // A paid call's registration first, always
+      for (let item = queue.shift() ?? checks.shift(); item !== undefined; item = queue.shift() ?? checks.shift()) {
         try {
-          const response = await fetch(target, {
-            method: 'PUT',
-            headers: {
-              'content-type': 'application/json', [internalSecretHeader]: secret!.expose(), 'x-internal-caller': 'proxy',
-              ...requestId === undefined ? {} : { 'x-request-id': requestId },
-            },
-            body: JSON.stringify(endpoint),
-            signal: AbortSignal.timeout(timeoutMs),
-          });
-          await response.body?.cancel();
-          // A 5xx may pass: the next call tries again. A 4xx refused this endpoint for good.
-          if (response.status >= 500)
-            seen.delete(`${endpoint.host}${endpoint.path}`);
-          if (!response.ok)
-            failed({ status: response.status }, 'The internal API refused to register a routed endpoint');
+          await send(item);
         }
-        catch (error) {
-          seen.delete(`${endpoint.host}${endpoint.path}`);
-          failed({ error }, 'Failed to register a routed endpoint: the next call registers it');
+        finally {
+          if (item.kind === 'checked')
+            release(item.client);
         }
       }
     }
@@ -395,7 +469,8 @@ export const createEndpointRegistrar = ({ url, secret, logger, fetch = globalThi
 
   return {
     register: (host: string, path: string, quote?: MicroUsd, requestId?: string): void => {
-      if (!url || !secret)
+      // A path the routed endpoints can't keep is routed, never registered
+      if (!url || !secret || Buffer.byteLength(path, 'utf8') > maxRegisteredPathBytes)
         return;
       const key = `${host}${path}`;
       if (seen.has(key) || queue.length >= capacity)
@@ -403,12 +478,40 @@ export const createEndpointRegistrar = ({ url, secret, logger, fetch = globalThi
       if (seen.size >= maxSeen)
         seen.clear();
       seen.add(key);
-      queue.push({ endpoint: { host, path, ...quote === undefined ? {} : { quote: formatUsd(quote) } }, requestId });
+      queue.push({ kind: 'paid', endpoint: { host, path, ...quote === undefined ? {} : { quote: formatUsd(quote) } }, requestId });
       void drain();
     },
-    /** For tests and shutdown: waits until the queue is empty. */
+    /** Whether it lists checks' endpoints at all: only with the internal API. */
+    lists: (): boolean => Boolean(url && secret),
+    /**
+     * Lists an endpoint a payable check found, or updates its time, without waiting. False when it can't: no
+     * internal API, a full queue, or the check's client holding its share of it. `onOutcome` hears how it
+     * ended, once, and never throws into it.
+     */
+    list: (endpoint: CheckedEndpoint, { client = '', requestId, onOutcome = () => undefined }: {
+      readonly client?: string;
+      readonly requestId?: string;
+      readonly onOutcome?: (outcome: ListingOutcome) => void;
+    } = {}): boolean => {
+      if (!url || !secret || checks.length >= checkCapacity || (shares.get(client) ?? 0) >= checkShare)
+        return false;
+      shares.set(client, (shares.get(client) ?? 0) + 1);
+      const heard = (outcome: ListingOutcome): void => {
+        try {
+          onOutcome(outcome);
+        }
+        catch {
+          // The listener's own failure is no listing's
+        }
+      };
+      checks.push({ kind: 'checked', endpoint, requestId, client, onOutcome: heard });
+      void drain();
+
+      return true;
+    },
+    /** For tests and shutdown: waits until both queues are empty. */
     settled: async (): Promise<void> => {
-      while (queue.length > 0 || running)
+      while (queue.length > 0 || checks.length > 0 || running)
         await new Promise(resolve => setTimeout(resolve, 5));
     },
   };
