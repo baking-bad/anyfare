@@ -271,7 +271,7 @@ describe('the interactive mode: the list of ways to pay', () => {
     const account = fake.addAccount('1.5');
     const key = fake.addKey(account, { label: 'demo', dailyBudget: '1', maxPrice: '0.02' });
     // CoinMarketCap, the default pair, Credits, no to pay, no more
-    const result = await run([], { ANYFARE_PAYMENT_KEY: key.key, ...allWallets() }, { isTerminal: true, input: '1\n\n1\nn\nn\n' });
+    const result = await run([], { ANYFARE_PAYMENT_KEY: key.key, ...allWallets() }, { isTerminal: true, input: '3\n1\n\n1\nn\n4\n' });
     expect(result.code).toBe(0);
     expect(result.out).toContain(
       [
@@ -288,7 +288,7 @@ describe('the interactive mode: the list of ways to pay', () => {
   it('shows ✔ alone when a balance can not be read, and ✘ with no read when a setting is missing', async () => {
     nearRpc.failing = { status: 503 };
     baseRpc.failing = 503;
-    const result = await run([], { ...nearEnv(), ...baseEnv() }, { isTerminal: true, input: '1\n\n' });
+    const result = await run([], { ...nearEnv(), ...baseEnv() }, { isTerminal: true, input: '3\n1\n\n' });
     expect(result.out).toContain(
       [
         '  1  Credits  needs ANYFARE_PAYMENT_KEY  ✘',

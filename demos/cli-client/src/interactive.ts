@@ -1,8 +1,8 @@
 // The interactive mode: pick a tool, give its data, pick a way to pay, get ready to pay, then call.
 // Every step that does something is a function of the flags mode, run here with its own question.
 
-import { MASTER_KEY, OTHER_ACCOUNT, PAYMENT_KEY, createPaymentKey, keyOfAccount, masterKeyOf, paymentKeyOf, signUp, useKeysYouHave } from './account.ts';
-import { readWalletBalance, tokenText } from './balances.ts';
+import { MASTER_KEY, OTHER_ACCOUNT, PAYMENT_KEY, createPaymentKey, keyOfAccount, masterKeyOf, paymentKeyOf, showBalance, signUp, useKeysYouHave } from './account.ts';
+import { readWalletBalance, tokenText, walletsOf } from './balances.ts';
 import { runCall } from './call.ts';
 import type { PayWay, ToolArgs } from './cli.ts';
 import { loadConfig } from './config.ts';
@@ -312,6 +312,80 @@ async function oneCall(ctx: Context, config: Config): Promise<void> {
   await runCall(ctx, { args, pay, explain: true, yes: false });
 }
 
+/** Menu 1: the `balance` command's output. With nothing to read, one line says what to add. */
+async function showBalances(ctx: Context): Promise<void> {
+  if (!isSet(ctx, MASTER_KEY) && !isSet(ctx, PAYMENT_KEY) && walletsOf(ctx.session.env).length === 0) {
+    ctx.print(
+      `Nothing to show yet. Add ${MASTER_KEY}, ${PAYMENT_KEY} or a wallet's settings to ${ENV_LOCAL}, or use 2 or 3 to set up keys.`,
+    );
+    return;
+  }
+  await showBalance(ctx);
+}
+
+/** Menu 2: a top-up. It needs the master key: without one, the same choice as the Credits way. */
+async function menuTopup(ctx: Context, config: Config): Promise<void> {
+  if (!isSet(ctx, MASTER_KEY)) {
+    // A sign-up makes a new account, and a payment key that is set already doesn't pay from it
+    const paymentKeySet = isSet(ctx, PAYMENT_KEY);
+    if (paymentKeySet) {
+      ctx.print(
+        `A top-up needs the master key of your payment key's account, and ${MASTER_KEY} is not set. ` +
+          "A sign-up would make a new account, which your payment key doesn't pay from.",
+      );
+    }
+    try {
+      const how = await ctx.prompter().choose(
+        paymentKeySet ? 'How do you go on?' : 'A top-up needs a master key, and none is set. How do you get one?',
+        paymentKeySet
+          ? [
+              { label: 'Type the master key I have', value: 'keys' as const },
+              { label: 'Back to the menu', value: 'back' as const },
+            ]
+          : [
+              { label: 'Sign up: a new account, free', value: 'signup' as const },
+              { label: 'Use keys I have', value: 'keys' as const },
+            ],
+      );
+      if (how === 'back') return;
+      if (how === 'signup') {
+        ctx.print('Sign-up is one call, free, and gives a master key.');
+        await signUp(ctx, { yes: false });
+      } else {
+        await useKeysYouHave(ctx);
+      }
+    } catch (error) {
+      if (!(error instanceof Stop)) throw error;
+      printFailure(ctx, error);
+      return;
+    }
+    if (!isSet(ctx, MASTER_KEY)) {
+      ctx.print(`A top-up needs ${MASTER_KEY}, and it is not set.`);
+      return;
+    }
+  }
+  // A top-up adds to the master key's account: say so when the payment key pays from another one
+  if (isSet(ctx, PAYMENT_KEY)) {
+    const credits = await creditsBalance(ctx, config);
+    const ofAccount =
+      credits === undefined ? undefined : await keyOfAccount(ctx, config, masterKeyOf(ctx.session.env), credits.keyId);
+    if (ofAccount === false) {
+      ctx.print(`${OTHER_ACCOUNT} A top-up adds to the master key's account, which the payment key doesn't spend.`);
+      if (!(await ctx.prompter().confirm("Top up the master key's account anyway?", false))) return;
+    }
+  }
+  if (!(await offerTopup(ctx, config))) return;
+  // Credited: the balance the top-up added to
+  const balance = await platform.balance(ctx.io.fetch, config.apiUrl, masterKeyOf(ctx.session.env));
+  ctx.print([
+    ctx.style.step('Credits, with the master key'),
+    ctx.style.field('Available', ctx.style.styles.money(usd(balance.available)), 12),
+    ctx.style.field('Held', usd(balance.held), 12),
+  ]);
+}
+
+type MenuChoice = 'balances' | 'topup' | 'call' | 'quit';
+
 /** `npm run demo` with no arguments, on a terminal. Returns 0 when the person ends it. */
 export async function runInteractive(ctx: Context): Promise<number> {
   const config = loadConfig(ctx.session.env);
@@ -323,12 +397,20 @@ export async function runInteractive(ctx: Context): Promise<number> {
     '',
   ]);
   for (;;) {
+    const choice = await ctx.prompter().choose<MenuChoice>('What do you want to do?', [
+      { label: 'See my balances: Credits and wallets', value: 'balances' },
+      { label: 'Top up Credits', value: 'topup' },
+      { label: 'Call a paid API', value: 'call' },
+      { label: 'Quit', value: 'quit' },
+    ]);
+    if (choice === 'quit') return 0;
     try {
-      await oneCall(ctx, config);
+      if (choice === 'balances') await showBalances(ctx);
+      else if (choice === 'topup') await menuTopup(ctx, config);
+      else await oneCall(ctx, config);
     } catch (error) {
       if (!(error instanceof Stop)) throw error;
       printFailure(ctx, error);
     }
-    if (!(await ctx.prompter().confirm('Another call?', true))) return 0;
   }
 }

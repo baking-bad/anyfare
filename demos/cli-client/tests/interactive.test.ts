@@ -99,8 +99,8 @@ describe('the interactive mode', () => {
   it('goes from nothing to a paid call with Credits: sign-up, a payment key, the explain lines, the answer', async () => {
     fake.startingBalance = '1';
     fake.rewrite.signup = (body) => ({ ...body, freeCredits: '0.10' });
-    // CoinMarketCap, the default pair, Credits, sign up: 1 and yes, make the key, pay, no more
-    const result = await session(['1', '', '1', '1', 'y', 'y', 'y', 'n']);
+    // The menu: call; CoinMarketCap, the default pair, Credits, sign up: 1 and yes, make the key, pay; quit
+    const result = await session(['3', '1', '', '1', '1', 'y', 'y', 'y', '4']);
     expect(result.err).toBe('');
     expect(result.code).toBe(0);
     const { out } = result;
@@ -134,7 +134,8 @@ describe('the interactive mode', () => {
     expect(out).toContain('Bitcoin Real (BTC)');
     expect(out).toMatch(/Receipt pay_madeup\d+: \$0\.011 of Credits/);
     expect(out).toContain('✔ You paid with Credits. Anyfare paid CoinMarketCap in USDC on Base from its own wallet.');
-    expect(out).toContain('Another call? [Y/n]');
+    expect(out).toContain('What do you want to do?\n  1  See my balances: Credits and wallets\n  2  Top up Credits\n  3  Call a paid API\n  4  Quit\n');
+    expect(out.match(/What do you want to do\?/g)).toHaveLength(2);
 
     const keys = savedKeys();
     expect(keys['ANYFARE_MASTER_KEY']).toMatch(/^afm_live_/);
@@ -146,7 +147,7 @@ describe('the interactive mode', () => {
   it('offers a top-up when the balance is below the price, says the 404, and goes back to the way to pay', async () => {
     const env = { ...funded('0.001'), ...baseWallet() };
     // CoinMarketCap, the default pair, Credits, yes to the top-up, then Base, pay, no more
-    const result = await session(['1', '', '1', 'y', '3', 'y', 'n'], env);
+    const result = await session(['3', '1', '', '1', 'y', '3', 'y', '4'], env);
     expect(result.code).toBe(0);
     expect(result.out).toContain('Your balance is $0.001, and this call costs $0.011 of Credits.');
     expect(result.out).toContain('Add Credits with a top-up? [Y/n]');
@@ -164,7 +165,7 @@ describe('the interactive mode', () => {
     fake.topups.steps = [{ status: 'credited', deposited: '5', credited: '4.95' }];
     const env = funded('0.001');
     // Credits, top up: the first network, the first token, 5; the question; then pay; no more
-    const result = await session(['1', '', '1', 'y', '1', '1', '5', 'y', 'y', 'n'], env);
+    const result = await session(['3', '1', '', '1', 'y', '1', '1', '5', 'y', 'y', '4'], env);
     expect(result.code).toBe(0);
     expect(result.out).toContain('A top-up adds USDC on NEAR to your Credits');
     expect(result.out).toContain('1  base  worth at least $1');
@@ -178,7 +179,7 @@ describe('the interactive mode', () => {
     fake.topups.enabled = true;
     fake.topups.unavailable = true;
     const env = { ...funded('0.001'), ...baseWallet() };
-    const result = await session(['1', '', '1', 'y', '3', 'y', 'n'], env);
+    const result = await session(['3', '1', '', '1', 'y', '3', 'y', '4'], env);
     expect(result.code).toBe(0);
     expect(result.err).toContain('✘ Top-ups are off on this Anyfare now. Nothing was made that could take a transfer');
     expect(result.out).toContain('The operator credits balances.');
@@ -187,7 +188,7 @@ describe('the interactive mode', () => {
   it('takes typed values for 3Route, and asks again after a bad one', async () => {
     const env = funded();
     // 3Route; a token it does not list; then the chain by its ID, USDC, WETH, 1; Credits; pay; no more
-    const result = await session(['2', 'base', 'NOPE', 'WETH', '1', '8453', 'USDC', 'WETH', '1', '1', 'y', 'n'], env);
+    const result = await session(['3', '2', 'base', 'NOPE', 'WETH', '1', '8453', 'USDC', 'WETH', '1', '1', 'y', '4'], env);
     expect(result.code).toBe(0);
     expect(result.err).toContain('"NOPE" is not in 3Route\'s token list');
     expect(result.out.match(/Chain \[base\]/g)).toHaveLength(2);
@@ -196,19 +197,19 @@ describe('the interactive mode', () => {
     expect(paidRequests()).toHaveLength(1);
   });
 
-  it('ends the call after three bad values, and asks whether to call again', async () => {
-    const bad = ['2', 'base', 'NOPE', 'WETH', '1'];
-    const result = await session([...bad, 'base', 'NOPE', 'WETH', '1', 'base', 'NOPE', 'WETH', '1', 'n'], funded());
+  it('ends the call after three bad values, and shows the menu again', async () => {
+    const bad = ['3', '2', 'base', 'NOPE', 'WETH', '1'];
+    const result = await session([...bad, 'base', 'NOPE', 'WETH', '1', 'base', 'NOPE', 'WETH', '1', '4'], funded());
     expect(result.code).toBe(0);
     expect(result.err).toContain('No valid value after 3 tries.');
-    expect(result.out).toContain('Another call?');
+    expect(result.out.match(/What do you want to do\?/g)).toHaveLength(2);
     expect(fake.routed()).toEqual([]);
   });
 
   it('names the variables of a way whose settings are missing, and asks again', async () => {
     const env = funded();
     // The evidence API, the default account; NEAR, Tempo, Base: each is missing; then Credits
-    const result = await session(['3', '', '2', '4', '3', '1', 'y', 'n'], env);
+    const result = await session(['3', '3', '', '2', '4', '3', '1', 'y', '4'], env);
     expect(result.code).toBe(0);
     expect(result.out).toContain('USDC on NEAR needs NEAR_ACCOUNT_ID and NEAR_PRIVATE_KEY in .env.local.');
     expect(result.out).toContain('USDC.e on Tempo needs TEMPO_PRIVATE_KEY in .env.local.');
@@ -222,7 +223,7 @@ describe('the interactive mode', () => {
 
   it('pays on Base from a key made in the test, end to end, and shows no part of it', async () => {
     const key = generatePrivateKey();
-    const result = await session(['1', '', '3', 'y', 'n'], baseWallet(key));
+    const result = await session(['3', '1', '', '3', 'y', '4'], baseWallet(key));
     expect(result.err).toBe('');
     expect(result.code).toBe(0);
     // With the made-up balance of the wallet
@@ -237,29 +238,29 @@ describe('the interactive mode', () => {
     expect(() => readFileSync(join(app.dir, '.env.local'))).toThrow();
   });
 
-  it('prints the line of a call that failed, and asks "Another call?" all the same', async () => {
+  it('prints the line of a call that failed, and shows the menu all the same', async () => {
     const env = funded();
     fake.nextPaid = { status: 402, body: { error: { code: 'insufficient_balance', message: 'A made-up message' } } };
-    const result = await session(['1', '', '1', 'y', 'n'], env);
+    const result = await session(['3', '1', '', '1', 'y', '4'], env);
     expect(result.code).toBe(0);
     expect(result.err).toMatch(/^✘ Your Credits don't cover this call\. Top up, or ask the operator \(request req-made-up-\d+\)\. Not charged\.\n$/);
-    expect(result.out.trimEnd().endsWith('Another call? [Y/n]')).toBe(true);
+    expect(result.out.trimEnd().endsWith('Choose 1-4:')).toBe(true);
   });
 
   it('makes two calls in one session, with one set of answers read in order', async () => {
     const env = funded();
-    // CoinMarketCap with Credits; another call; the evidence API with Credits; no more
-    const result = await session(['1', '', '1', 'y', 'y', '3', '', '1', 'y', 'n'], env);
+    // Call: CoinMarketCap with Credits; call again: the evidence API with Credits; quit
+    const result = await session(['3', '1', '', '1', 'y', '3', '3', '', '1', 'y', '4'], env);
     expect(result.err).toBe('');
     expect(result.code).toBe(0);
-    expect(result.out.match(/Another call\?/g)).toHaveLength(2);
+    expect(result.out.match(/What do you want to do\?/g)).toHaveLength(3);
     expect(result.out).toContain('✔ You paid with Credits. Anyfare paid CoinMarketCap');
     expect(result.out).toContain('✔ You paid with Credits. Anyfare paid the evidence API');
     expect(paidRequests().map((item) => item.method)).toEqual(['GET', 'POST']);
   });
 
   it('says that nothing was sent when the person answers no to "Pay"', async () => {
-    const result = await session(['1', '', '1', 'n', 'n'], funded());
+    const result = await session(['3', '1', '', '1', 'n', '4'], funded());
     expect(result.code).toBe(0);
     expect(result.err).toBe('✘ Nothing was sent. Not charged.\n');
     expect(paidRequests()).toEqual([]);
@@ -267,7 +268,7 @@ describe('the interactive mode', () => {
 
   it('offers only a payment key to an account that has a master key and no payment key', async () => {
     const account = fake.addAccount('1');
-    const result = await session(['1', '', '1', 'y', 'y', 'n'], { ANYFARE_MASTER_KEY: account.masterKey });
+    const result = await session(['3', '1', '', '1', 'y', 'y', '4'], { ANYFARE_MASTER_KEY: account.masterKey });
     expect(result.code).toBe(0);
     expect(result.out).not.toContain('Sign up creates');
     expect(result.out).toContain('✔ Payment key created');
@@ -277,7 +278,7 @@ describe('the interactive mode', () => {
 
   it('goes back to the way to pay when the person declines the sign-up, and creates nothing', async () => {
     // Credits, sign up: 1, then no
-    const result = await session(['1', '', '1', '1', 'n', '3', 'y', 'n'], baseWallet());
+    const result = await session(['3', '1', '', '1', '1', 'n', '3', 'y', '4'], baseWallet());
     expect(result.code).toBe(0);
     expect(result.err).toContain('✘ Nothing was created.');
     expect(fake.requests.some((item) => item.method === 'POST' && item.path === '/v1/accounts')).toBe(false);
@@ -287,13 +288,13 @@ describe('the interactive mode', () => {
 
 describe('the interactive mode: the top-up minimum', () => {
   // CoinMarketCap, the default pair, Credits, yes to the top-up, the first network (base, $1), the first token (USDC)
-  const TO_AMOUNT = ['1', '', '1', 'y', '1', '1'];
+  const TO_AMOUNT = ['3', '1', '', '1', 'y', '1', '1'];
   const posts = () => fake.requests.filter((item) => item.method === 'POST' && item.path === '/v1/topups');
 
   it('says the amount is under the minimum, sends nothing, and asks for the amount again', async () => {
     fake.topups.enabled = true;
     fake.topups.steps = [{ status: 'credited', deposited: '5', credited: '4.95' }];
-    const result = await session([...TO_AMOUNT, '0.1', '5', 'y', 'y', 'n'], funded('0.001'));
+    const result = await session([...TO_AMOUNT, '0.1', '5', 'y', 'y', '4'], funded('0.001'));
     expect(result.code).toBe(0);
     expect(result.out.match(/A top-up on base must be worth at least \$1\. 0\.1 USDC is worth \$0\.10\./g)).toHaveLength(1);
     expect(result.out.match(/Amount of USDC to send/g)).toHaveLength(2);
@@ -304,7 +305,7 @@ describe('the interactive mode: the top-up minimum', () => {
 
   it('gives up after three amounts under the minimum, with nothing sent', async () => {
     fake.topups.enabled = true;
-    const result = await session([...TO_AMOUNT, '0.1', '0.2', '0.3', 'n'], funded('0.001'));
+    const result = await session([...TO_AMOUNT, '0.1', '0.2', '0.3', '4'], funded('0.001'));
     expect(result.out.match(/must be worth at least \$1\./g)).toHaveLength(3);
     expect(result.err).toContain('No valid amount.');
     expect(posts()).toEqual([]);
@@ -314,7 +315,7 @@ describe('the interactive mode: the top-up minimum', () => {
     fake.topups.enabled = true;
     fake.topups.refuse = 'Amount is too low for this route (made up)';
     // The second network (near), its second token (wNEAR), 0.1
-    const result = await session(['1', '', '1', 'y', '2', '2', '0.1', 'y', 'n'], funded('0.001'));
+    const result = await session(['3', '1', '', '1', 'y', '2', '2', '0.1', 'y', '4'], funded('0.001'));
     expect(result.out).not.toContain('must be worth at least');
     expect(posts()).toHaveLength(1);
     expect(result.err).toContain('✘ The swap service refused the top-up. No address was made: Amount is too low for this route (made up)');
@@ -343,7 +344,7 @@ describe('the interactive mode: stopping the wait for a deposit', () => {
   }
 
   // CoinMarketCap, the default pair, Credits, yes to the top-up, base, USDC, 5, yes to the address
-  const TO_WAIT = ['1', '', '1', 'y', '1', '1', '5', 'y'];
+  const TO_WAIT = ['3', '1', '', '1', 'y', '1', '1', '5', 'y'];
 
   it('stops on Enter, and goes back to "How do you pay?"', async () => {
     fake.topups.enabled = true;
@@ -385,9 +386,123 @@ describe('the interactive mode: stopping the wait for a deposit', () => {
     await waitUntil(() => run.io.out().includes('Pay $0.011 of Credits? [y/N]'), 'the question to pay');
     expect(run.io.out()).not.toContain(STOPPED);
     expect(run.io.out()).toContain('✔ Added to your balance');
-    // The answers typed now are read by the questions, in order: no to the payment, no to another call
-    run.type('n', 'n');
+    // The answers typed now are read by the questions, in order: no to the payment, quit
+    run.type('n', '4');
     expect(await run.running).toBe(0);
     expect(run.io.err()).toBe('✘ Nothing was sent. Not charged.\n');
+  });
+});
+
+describe('the interactive mode: the start menu', () => {
+  const MENU = 'What do you want to do?';
+
+  it('asks the menu first, and quits with 0', async () => {
+    const result = await session(['4']);
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+    expect(result.out).toContain(`${MENU}\n  1  See my balances: Credits and wallets\n  2  Top up Credits\n  3  Call a paid API\n  4  Quit\n`);
+    expect(result.out.match(/What do you want to do\?/g)).toHaveLength(1);
+    expect(fake.requests).toEqual([]);
+  });
+
+  it('shows the Credits and the wallets with 1, then the menu again', async () => {
+    const env = { ...funded('0.5'), ...baseWallet() };
+    const result = await session(['1', '4'], env);
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+    expect(result.out).toContain('Credits, with the master key');
+    expect(result.out).toContain('The payment key "demo"');
+    expect(result.out).toContain('Wallets');
+    expect(result.out).toMatch(/USDC on Base\s+1 USDC/);
+    expect(result.out.match(/What do you want to do\?/g)).toHaveLength(2);
+    expect(paidRequests()).toEqual([]);
+  });
+
+  it('says what to add with 1 when no key and no wallet is set', async () => {
+    const result = await session(['1', '4']);
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+    expect(result.out).toContain('Nothing to show yet. Add ANYFARE_MASTER_KEY, ANYFARE_PAYMENT_KEY or a wallet\'s settings to .env.local, or use 2 or 3 to set up keys.');
+    expect(result.out.match(/What do you want to do\?/g)).toHaveLength(2);
+    expect(fake.requests).toEqual([]);
+  });
+
+  it('tops up from the menu, shows the Credits when it is credited, and shows the menu again', async () => {
+    fake.topups.enabled = true;
+    fake.topups.steps = [{ status: 'credited', deposited: '5', credited: '4.95' }];
+    // Top up: the first network, the first token, 5, yes to the address; quit
+    const result = await session(['2', '1', '1', '5', 'y', '4'], funded('0.001'));
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+    expect(fake.topups.created).toEqual([{ network: 'base', token: 'USDC', amount: '5' }]);
+    expect(result.out).toContain('✔ Added to your balance');
+    const added = result.out.indexOf('✔ Added to your balance');
+    expect(result.out.indexOf('Credits, with the master key', added)).toBeGreaterThan(added);
+    expect(result.out.lastIndexOf(MENU)).toBeGreaterThan(result.out.indexOf('Credits, with the master key', added));
+    expect(paidRequests()).toEqual([]);
+  });
+
+  it('offers sign-up for a top-up without a master key, and creates nothing when it is declined', async () => {
+    const result = await session(['2', '1', 'n', '4']);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('A top-up needs a master key, and none is set. How do you get one?\n  1  Sign up: a new account, free\n  2  Use keys I have\n');
+    expect(result.err).toContain('✘ Nothing was created.');
+    expect(fake.requests.some((item) => item.method === 'POST' && item.path === '/v1/accounts')).toBe(false);
+    expect(fake.requests.some((item) => item.path === '/v1/topups/options')).toBe(false);
+    expect(result.out.match(/What do you want to do\?/g)).toHaveLength(2);
+  });
+
+  it('offers no sign-up for a top-up when only a payment key is set, since a new account would not be its own', async () => {
+    const paymentKey = funded('0')['ANYFARE_PAYMENT_KEY'] ?? '';
+    // Top up; back to the menu; quit
+    const result = await session(['2', '2', '4'], { ANYFARE_PAYMENT_KEY: paymentKey });
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("A top-up needs the master key of your payment key's account, and ANYFARE_MASTER_KEY is not set.");
+    expect(result.out).toContain('How do you go on?\n  1  Type the master key I have\n  2  Back to the menu\n');
+    expect(result.out).not.toContain('Sign up: a new account, free');
+    expect(fake.requests.some((item) => item.method === 'POST' && item.path === '/v1/accounts')).toBe(false);
+    expect(fake.topups.created).toEqual([]);
+    expect(result.out.match(/What do you want to do\?/g)).toHaveLength(2);
+  });
+
+  it("warns before a top-up to the master key's account when the payment key pays from another, and stops on Enter", async () => {
+    fake.topups.enabled = true;
+    // Made up: the master key of account A, the payment key of account B
+    const a = funded('0');
+    const b = funded('0');
+    // Top up; Enter at "anyway?" (No); quit
+    const result = await session(['2', '', '4'], { ANYFARE_MASTER_KEY: a.ANYFARE_MASTER_KEY ?? '', ANYFARE_PAYMENT_KEY: b.ANYFARE_PAYMENT_KEY ?? '' });
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("A top-up adds to the master key's account, which the payment key doesn't spend.");
+    expect(result.out).toContain("Top up the master key's account anyway? [y/N]");
+    expect(fake.topups.created).toEqual([]);
+    expect(result.out.match(/What do you want to do\?/g)).toHaveLength(2);
+  });
+
+  it('calls a paid API from the menu, then shows the menu again', async () => {
+    const result = await session(['3', '1', '', '1', 'y', '4'], funded());
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+    expect(result.out).toContain('✔ You paid with Credits. Anyfare paid CoinMarketCap');
+    expect(result.out).not.toContain('Another call?');
+    expect(result.out.trimEnd().endsWith('Choose 1-4:')).toBe(true);
+    expect(result.out.match(/What do you want to do\?/g)).toHaveLength(2);
+    expect(paidRequests()).toHaveLength(1);
+  });
+
+  it('prints the one line of a failed action, then the menu again', async () => {
+    // A top-up when the Anyfare has none: its line, then the menu
+    const result = await session(['2', '4'], funded('0.001'));
+    expect(result.code).toBe(0);
+    expect(result.err).toContain('✘ Top-ups are not available on this Anyfare yet.');
+    expect(result.out.match(/What do you want to do\?/g)).toHaveLength(2);
+    expect(fake.requests.some((item) => item.method === 'POST' && item.path === '/v1/topups')).toBe(false);
+  });
+
+  it('shows the line of a balance that fails, then the menu again', async () => {
+    const result = await session(['1', '4'], { ANYFARE_MASTER_KEY: 'afm_live_madeupmadeupmadeupmadeup1234' });
+    expect(result.code).toBe(0);
+    expect(result.err).toMatch(/^✘ /);
+    expect(result.out.match(/What do you want to do\?/g)).toHaveLength(2);
   });
 });

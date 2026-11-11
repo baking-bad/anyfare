@@ -186,7 +186,7 @@ describe('runCli', () => {
     (fake.io.stdin as PassThrough).end();
     expect(await runCli([], fake.io)).toBe(1);
     expect(fake.err()).toContain('No more input');
-    expect(fake.out()).toContain('Which API do you call?');
+    expect(fake.out()).toContain('What do you want to do?');
   });
 });
 

@@ -143,13 +143,19 @@ Run every command from `demos/cli-client`. Add `--` after `npm run demo`, so npm
 ### Interactive mode
 
 - Command: `npm run demo`
-- You see: questions. Pick a tool, give its data, pick a way to pay, then confirm.
+- You see: a menu, "What do you want to do?". It comes back after each action.
+  - `1` See my balances: the same as `balance`, the Credits and the wallets. With no key and no wallet set, it says what to add to `.env.local`.
+  - `2` Top up Credits: it needs the master key. Without one, it asks: sign up, or use keys you have. Then you pick the network, the token and the amount, confirm, and send to the address. When the top-up is credited, it shows your Credits.
+    - A top-up adds to the master key's account. If only a payment key is set, the app doesn't offer sign-up: a new account is not the one your payment key pays from. If the two keys are of different accounts, it warns and asks first.
+  - `3` Call a paid API: pick a tool, give its data, pick a way to pay, then confirm.
+  - `4` Quit.
+- If an action fails, the app prints one line and shows the menu again.
 - The list of ways to pay shows `✔` when a way's settings are present. After `✔` it shows the balance, such as `✔  0.979 USDC`, when it can read it within 5 seconds. For Credits, it is the Credits of the payment key's account, from `GET <pay>/_/key`. A balance it can't read leaves `✔` alone.
 - For Credits with no Anyfare key, it asks: `1` Sign up: a new account, free; `2` Use keys I have.
 - `2` runs the steps of `key save`: hidden input, the free check, then "Save to .env.local? [y/N]". Anything but a `y`, Enter too, uses the keys for this session only.
 - For Credits, it also offers `key create` and a top-up when something is missing. It offers a top-up only when the payment key is of the master key's account. Why: a top-up adds to the master key's account, and the payment key pays from its own.
-- It needs a terminal. After each call it asks "Another call?".
-- While it waits for a deposit, press Enter, or Ctrl-C once, to stop waiting. It goes back to "How do you pay?". A second Ctrl-C ends the app.
+- It needs a terminal.
+- While it waits for a deposit, press Enter, or Ctrl-C once, to stop waiting. It goes back to the menu, or to "How do you pay?" if you were making a call. A second Ctrl-C ends the app.
 - Cost: free until you confirm a call. Then the cost is the call's.
 
 ### `explain`

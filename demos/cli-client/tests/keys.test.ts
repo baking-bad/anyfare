@@ -199,7 +199,7 @@ describe('the key flags', () => {
   it('start the interactive mode with the key, which pays the call and is not saved', async () => {
     const { key } = funded();
     // CoinMarketCap, the default pair, Credits, pay, no more
-    const result = await run(['--payment-key', key.key], {}, { isTerminal: true, input: '1\n\n1\ny\nn\n' });
+    const result = await run(['--payment-key', key.key], {}, { isTerminal: true, input: '3\n1\n\n1\ny\n4\n' });
     expect(result.err).toBe(`${FLAG_KEY_WARNING}\n`);
     expect(result.code).toBe(0);
     expect(result.out).toMatch(/1 {2}Credits {2}needs ANYFARE_PAYMENT_KEY {2}✔ {2}\$1\n/);
@@ -382,7 +382,7 @@ describe('the interactive mode: "Use keys I have"', () => {
   it('checks the key, saves it on a yes, and pays with it', async () => {
     const { key } = funded();
     // CoinMarketCap, the default pair, Credits, keys I have: the payment key, no master key (Enter, then yes to skip); save; pay; no more
-    const result = await session(['1', '', '1', '2', key.key, '', 'y', 'y', 'y', 'n']);
+    const result = await session(['3', '1', '', '1', '2', key.key, '', 'y', 'y', 'y', '4']);
     expect(result.err).toBe('');
     expect(result.code).toBe(0);
     expect(result.out).toContain('Credits need an Anyfare key, and none is set. How do you get one?\n  1  Sign up: a new account, free\n  2  Use keys I have\n');
@@ -395,7 +395,7 @@ describe('the interactive mode: "Use keys I have"', () => {
 
   it('uses the key for this session only on a "no", saves nothing, and pays with it', async () => {
     const { key } = funded();
-    const result = await session(['1', '', '1', '2', key.key, '', 'y', 'n', 'y', 'n']);
+    const result = await session(['3', '1', '', '1', '2', key.key, '', 'y', 'n', 'y', '4']);
     expect(result.err).toBe('');
     expect(result.code).toBe(0);
     expect(result.out).toContain('Nothing was saved: the key works for this session only.');
@@ -405,7 +405,7 @@ describe('the interactive mode: "Use keys I have"', () => {
 
   it('with only a master key, saves it and makes the payment key after its own question', async () => {
     const { account } = funded();
-    const result = await session(['1', '', '1', '2', '', account.masterKey, 'y', 'y', 'y', 'n']);
+    const result = await session(['3', '1', '', '1', '2', '', account.masterKey, 'y', 'y', 'y', '4']);
     expect(result.err).toBe('');
     expect(result.code).toBe(0);
     expect(result.out).toContain('Create a payment key "demo": daily budget $1, at most $0.02 a call, saved to .env.local? [y/N]');
@@ -417,7 +417,7 @@ describe('the interactive mode: "Use keys I have"', () => {
   });
 
   it('saves nothing, and goes back to the way to pay, when Anyfare refuses the key', async () => {
-    const result = await session(['1', '', '1', '2', unknownKey('af_live_'), '', 'y']);
+    const result = await session(['3', '1', '', '1', '2', unknownKey('af_live_'), '', 'y']);
     expect(result.err).toMatch(/^✘ The payment key was refused: unknown, revoked or expired \(request req-made-up-\d+\)\. Nothing was saved\.\n/);
     expect(result.out.match(/How do you pay\?/g)).toHaveLength(2);
     expect(savedKeys()).toBeUndefined();
@@ -523,7 +523,7 @@ describe('key save on a terminal: a stray Enter, and a key at a visible question
   it('the interactive mode saves nothing on Enter at its save question: the key is for this session only', async () => {
     const { key } = funded();
     // CoinMarketCap, the default pair, Credits, keys I have: the payment key, no master key; Enter at the save; pay; no more
-    const result = await run([], {}, { isTerminal: true, input: ['1', '', '1', '2', key.key, '', 'y', '', 'y', 'n', ''].join('\n') });
+    const result = await run([], {}, { isTerminal: true, input: ['3', '1', '', '1', '2', key.key, '', 'y', '', 'y', '4', ''].join('\n') });
     expect(result.code).toBe(0);
     expect(result.out).toContain('Save to .env.local? [y/N] Nothing was saved: the key works for this session only.');
     expect(savedKeys()).toBeUndefined();
@@ -569,13 +569,13 @@ describe('a payment key and a master key of two accounts', () => {
   });
 
   it("the way-to-pay list shows the payment key's Credits", async () => {
-    const result = await run([], twoAccounts(), { isTerminal: true, input: '1\n\n' });
+    const result = await run([], twoAccounts(), { isTerminal: true, input: '3\n1\n\n' });
     expect(result.out).toContain('  1  Credits  needs ANYFARE_PAYMENT_KEY  ✔  $0.25\n');
   });
 
   it("the check before a Credits call reads the payment key's Credits, and offers no top-up to the other account", async () => {
     // CoinMarketCap, the default pair, Credits; then the input ends
-    const result = await run([], twoAccounts('0.001'), { isTerminal: true, input: '1\n\n1\n' });
+    const result = await run([], twoAccounts('0.001'), { isTerminal: true, input: '3\n1\n\n1\n' });
     expect(result.out).toContain('Your balance is $0.001, and this call costs $0.011 of Credits.');
     expect(result.out).toContain(
       "The payment key is of another account than the master key: a call it pays takes its own account's Credits. A top-up with the master key would not reach it.",
