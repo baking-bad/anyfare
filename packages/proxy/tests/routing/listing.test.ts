@@ -14,8 +14,10 @@ const log = createLogger({ level: 'silent' });
 const request = (changes: Partial<ListingRequest> = {}): ListingRequest => ({
   host: 'api.target.test', path: '/v1/pools', method: 'GET', quote: 1_100n as MicroUsd, ip: '198.51.100.7', requestId: 'req-listing-1', log, ...changes,
 });
-const unlisted: EndpointListing = { status: undefined, hostListed: false, checkedEndpoints: 0, stored: false, checkedHost: false, blocked: false };
-const inPool: EndpointListing = { status: 'checked', hostListed: true, checkedEndpoints: 1, stored: false, checkedHost: true, blocked: false };
+const unlisted: EndpointListing = { status: undefined, hostListed: false, checkedEndpoints: 0, stored: false, checkedHost: false, blocked: false, paidCapped: false };
+const inPool: EndpointListing = { status: 'checked', hostListed: true, checkedEndpoints: 1, stored: false, checkedHost: true, blocked: false, paidCapped: false };
+// A host the count stores, with an endpoint a check listed
+const stored: EndpointListing = { ...inPool, stored: true };
 
 interface Fixture {
   readonly reads: { host: string; path: string }[];
@@ -117,19 +119,22 @@ describe('a payable check\'s listing', () => {
     }]);
   });
 
-  it('updates the time of a listed endpoint without charging its client, at most once a minute however often it is checked', async () => {
-    const { list, reads, listed, admitted, clock } = fixture({ state: () => inPool });
+  it('updates the time of a listed endpoint at most once a minute however often it is checked, charging its client only for a host in the pool', async () => {
+    for (const [state, charged] of [[stored, false], [inPool, true]] as const) {
+      const { list, reads, listed, admitted, clock } = fixture({ state: () => state });
 
-    const answers = [await list(request()), await list(request()), await list(request())];
-    clock.advance(59_999);
-    answers.push(await list(request()));
-    clock.advance(1);
-    answers.push(await list(request()));
+      const answers = [await list(request()), await list(request()), await list(request())];
+      clock.advance(59_999);
+      answers.push(await list(request()));
+      clock.advance(1);
+      answers.push(await list(request()));
 
-    expect(answers).toEqual([true, true, true, true, true]);
-    expect(reads).toHaveLength(2);
-    expect(listed.map(item => item.endpoint.mayAddHost)).toEqual([false, false]);
-    expect(admitted).toEqual([]);
+      expect(answers).toEqual([true, true, true, true, true]);
+      expect(reads).toHaveLength(2);
+      expect(listed.map(item => item.endpoint.mayAddHost)).toEqual([charged, charged]);
+      // One of its 20 hosts a day, asked at each refresh, the second time at no cost
+      expect(admitted).toEqual(charged ? ['198.51.100.7 api.target.test', '198.51.100.7 api.target.test'] : []);
+    }
   });
 
   it('reads and lists once for a burst of checks of one link at once', async () => {
@@ -149,7 +154,7 @@ describe('a payable check\'s listing', () => {
     expect([reads.length, listed.length, admitted.length]).toEqual([1, 1, 1]);
   });
 
-  it('charges a host joining the pool, one of a paid call outside the count included, and none in it or stored', async () => {
+  it('charges every check of a host the count doesn\'t store, new to the pool or in it, one of a paid call outside the count included, and none of a stored one', async () => {
     const states: Record<string, EndpointListing> = {
       'pool.target.test': { ...unlisted, hostListed: true, checkedHost: true, checkedEndpoints: 3 },
       'stored.target.test': { ...unlisted, status: 'paid', hostListed: true, stored: true },
@@ -160,10 +165,49 @@ describe('a payable check\'s listing', () => {
     for (const host of Object.keys(states))
       expect(await list(request({ host })), host).toBe(true);
 
-    expect(admitted).toEqual(['198.51.100.7 old-paid.target.test']);
+    expect(admitted).toEqual(['198.51.100.7 pool.target.test', '198.51.100.7 old-paid.target.test']);
     expect(listed.map(item => [item.endpoint.host, item.endpoint.mayAddHost])).toEqual([
-      ['pool.target.test', false], ['stored.target.test', false], ['old-paid.target.test', true],
+      ['pool.target.test', true], ['stored.target.test', false], ['old-paid.target.test', true],
     ]);
+  });
+
+  it('refreshes no host of the pool for a client past its 20 of the day, the pool\'s own hosts included', async () => {
+    const { list, listed } = fixture({ state: host => (host.startsWith('pool-') ? { ...inPool, hostListed: true } : unlisted) });
+
+    for (let index = 0; index < 20; index += 1)
+      expect(await list(request({ host: `new-${index}.target.test` }))).toBe(true);
+
+    // A host a check reached before is no free refresh
+    expect(await list(request({ host: 'pool-1.target.test' }))).toBe(false);
+    expect(listed).toHaveLength(20);
+  });
+
+  it('lists no new endpoint of a host at its 1,000 paid ones, and says so for a minute, while one listed already still updates', async () => {
+    const { list, reads, listed, clock } = fixture({
+      state: (_host, path) => ({ ...stored, status: path === '/v1/listed' ? 'paid' : undefined, checkedEndpoints: 0, paidCapped: true }),
+    });
+
+    expect(await list(request({ path: '/v1/new' }))).toBe(false);
+    expect(await list(request({ path: '/v1/new' }))).toBe(false);
+    expect(await list(request({ path: '/v1/listed' }))).toBe(true);
+    clock.advance(60_000);
+    expect(await list(request({ path: '/v1/new' }))).toBe(false);
+
+    expect(reads.map(read => read.path)).toEqual(['/v1/new', '/v1/listed', '/v1/new']);
+    expect(listed.map(item => item.endpoint.path)).toEqual(['/v1/listed']);
+  });
+
+  it('lists no host of more than 8 labels, and reads nothing for one: it is checked, never listed', async () => {
+    const { list, reads, listed } = fixture();
+    const named = (labels: number) => Array.from({ length: labels }, (_, index) => `l${index}`).join('.');
+
+    expect(await list(request({ host: named(8) }))).toBe(true);
+    expect(await list(request({ host: `${named(8)}:8443` }))).toBe(true);
+    expect(await list(request({ host: named(9) }))).toBe(false);
+    expect(await list(request({ host: Array.from({ length: 127 }, () => 'a').join('.') }))).toBe(false);
+
+    expect(reads.map(read => read.host)).toEqual([named(8), `${named(8)}:8443`]);
+    expect(listed).toHaveLength(2);
   });
 
   it('lists nothing of a host the blocklist names or names a parent domain of, nor a new endpoint of a host that holds 20, and says so for a minute', async () => {
@@ -211,15 +255,16 @@ describe('a payable check\'s listing', () => {
     expect(limit.asked).toEqual(['2001:db8:1:2::/64 a.target.test', '2001:db8:1:2::/64 b.target.test', '2001:db8:1:3::/64 c.target.test']);
   });
 
-  it('lists no new host while the limit can\'t be read, and still updates a listed one', async () => {
+  it('lists no host of the pool while the limit can\'t be read, new or not, and still updates one the count stores', async () => {
     const failing: NewHostLimit = { admit: async () => { throw new Error('Redis is down'); } };
     const down = fixture({ newHosts: failing });
     const pooled = fixture({ newHosts: failing, state: () => inPool });
+    const counted = fixture({ newHosts: failing, state: () => stored });
 
-    expect(await down.list(request())).toBe(false);
-    expect(down.listed).toEqual([]);
-    expect(await pooled.list(request())).toBe(true);
-    expect(pooled.listed).toHaveLength(1);
+    expect([await down.list(request()), await pooled.list(request())]).toEqual([false, false]);
+    expect([down.listed, pooled.listed]).toEqual([[], []]);
+    expect(await counted.list(request())).toBe(true);
+    expect(counted.listed).toHaveLength(1);
   });
 
   it('lists nothing for a path past 512 characters, one with a query or not of printable ASCII, or a host past 259; and reads nothing for them', async () => {

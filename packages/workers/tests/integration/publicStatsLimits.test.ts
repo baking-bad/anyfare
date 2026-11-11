@@ -228,10 +228,40 @@ describe('the public numbers\' counts, next to the payments', () => {
     expect(await count('stats_endpoints', sql`host_hash not in (select host_hash from stats_services)`)).toBe(0);
     // Past the few seconds the API keeps a page of the list in its process
     clock.advance(10_000);
-    const listed = (await api.get<{ services: { host: string }[]; totalCapped: boolean; totals: { services: number } }>('/v1/services')).body;
-    expect([listed.services.length, listed.totalCapped, listed.totals.services]).toEqual([1, true, before]);
+    const listed = (await api.get<{ services: { host: string }[]; totalCapped: boolean; totals: { services: number; calls30d: number } }>('/v1/services')).body;
+    // The totals count what the list shows; more services had a paid call, and their calls are counted
+    expect([listed.services.length, listed.totalCapped, listed.totals.services]).toEqual([1, true, 1]);
+    expect(listed.totals.calls30d).toBeGreaterThan(5);
     expect((await api.get('/v1/services/unknown.example.com?period=7d')).body).toMatchObject({ stats: { calls: 5, buyers: 3 }, exact: true });
     await jobs().recent();
+  });
+
+  it('fill the rows of paid hosts registered before their table, a batch at a time each run, so the list shows them', async () => {
+    const routing = createRoutingRepository({ db: database.db, clock });
+    const hosts = Array.from({ length: 3 }, (_, index) => `before-table-${index}.example.com`);
+    await database.db.insert(db.routedEndpoints).values(hosts.map(host => ({ host, path: '/v1/x', lastPrice: 1_000n, createdAt: clock.now(), status: 'paid' as const })));
+    await database.db.delete(db.paidHosts);
+    await database.db.delete(db.statsAnswers).where(sql`key = 'backfill:paid_hosts'`);
+    const batches: number[] = [];
+    const recording = { backfillPaidHosts: async (input: { readonly batch: number; readonly timeoutMs: number }) => {
+      const result = await routing.backfillPaidHosts({ ...input, batch: 2 });
+      batches.push(result.hosts);
+
+      return result;
+    } };
+
+    await statsJobs(database.db, config, clock, { routing: recording }).recent();
+
+    expect(await count('paid_hosts', sql`host like 'before-table-%'`)).toBe(3);
+    // Two, then the last one, and done
+    expect(batches).toEqual([2, 1]);
+    clock.advance(10_000);
+    const listed = (await api.get<{ services: { host: string; status: string; calls: number }[] }>('/v1/services?q=before-table')).body;
+    expect(listed.services.map(service => [service.host, service.status, service.calls])).toEqual(hosts.map(host => [host, 'paid', 0]));
+    // Done: a later run reads its mark alone
+    batches.length = 0;
+    await statsJobs(database.db, config, clock, { routing: recording }).recent();
+    expect(batches).toEqual([0]);
   });
 
   it('run each statement on its own: a call written between two is seen by the later one', async () => {

@@ -206,9 +206,10 @@ describe('a payable check\'s listing', () => {
       await landed(() => sentFor(host).length, 2);
 
       expect([first['payable'], first['listed'], ...repeats.map(answer => answer['listed']), later['listed']]).toEqual([true, true, true, true, true]);
+      // A host in the pool is counted for its client at each listing, the refresh too: once a day, at no more cost
       expect(sentFor(host)).toEqual([
         { host, path: '/v1/listed', quote: '0.0011', kind: 'checked', method: 'GET', mayAddHost: true },
-        { host, path: '/v1/listed', quote: '0.0011', kind: 'checked', method: 'GET', mayAddHost: false },
+        { host, path: '/v1/listed', quote: '0.0011', kind: 'checked', method: 'GET', mayAddHost: true },
       ]);
       const [row] = await rowsOf(host);
       expect(row).toMatchObject({ path: '/v1/listed', status: 'checked', lastPrice: 1_100n, checkMethod: 'GET', feeBps: null });

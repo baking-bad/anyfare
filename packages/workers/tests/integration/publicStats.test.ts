@@ -81,7 +81,7 @@ beforeAll(async () => {
   // A host with free calls only is no service
   await seed({ host: gamma, path: '/x', at: day('12-15', '09:00:00.000'), way: 'base', status: 'failed', ms: 700, payer: evmPayer, method: 'GET' });
 
-  // The routed endpoints' last quotes: one endpoint was never paid, so its price is no service's
+  // The routed endpoints' last quotes: one endpoint has no paid call, and is listed all the same, at its price
   const routing = createRoutingRepository({ db: database.db, clock });
   for (const [host, path, lastPrice] of [[alpha, '/v1/quote', 10_000n], [alpha, '/v1/pools', 5_000n], [alpha, '/v1/unused', 1_000n], [beta, '/v2/data', 20_000n]] as const)
     await routing.registerEndpoint({ host, path, lastPrice });
@@ -232,7 +232,8 @@ describe('the public numbers\' counts', () => {
     const month = await read<Service>(`/v1/services/${alpha}?period=30d`);
     const today = await read<Service>(`/v1/services/${alpha}?period=today`);
 
-    expect(month).toMatchObject({ host: alpha, period: '30d', paidEndpoints: 2 });
+    // Every listed endpoint, each once: the one with no call too
+    expect(month).toMatchObject({ host: alpha, period: '30d', paidEndpoints: 3 });
     expect(month.endpoints).toEqual([
       {
         path: '/v1/quote', method: 'GET', priceNow: '0.01', calls: 8, buyers: 5, volume: '0.08', successRate: 0.8, p50Ms: 140,
@@ -242,8 +243,13 @@ describe('the public numbers\' counts', () => {
         path: '/v1/pools', method: 'GET', priceNow: '0.005', calls: 3, buyers: 3, volume: '0.02', successRate: 1, p50Ms: 250,
         link: 'https://pay.anyfare.test/alpha.example.com/v1/pools', status: 'paid', checkedAt: null,
       },
+      // With no call: its pay link, and no numbers
+      {
+        path: '/v1/unused', method: null, priceNow: '0.001', calls: 0, buyers: 0, volume: '0', successRate: null, p50Ms: null,
+        link: 'https://pay.anyfare.test/alpha.example.com/v1/unused', status: 'paid', checkedAt: null,
+      },
     ]);
-    expect(today.endpoints.map(endpoint => [endpoint['path'], endpoint['calls']])).toEqual([['/v1/quote', 4], ['/v1/pools', 1]]);
+    expect(today.endpoints.map(endpoint => [endpoint['path'], endpoint['calls']])).toEqual([['/v1/quote', 4], ['/v1/pools', 1], ['/v1/unused', 0]]);
     expect(month.daily).toEqual(thirtyDays({ '11-16': [1, '0.01', 1], '12-08': [1, '0.01', 1], '12-09': [2, '0.02', 1], '12-14': [2, '0.015', 2], '12-15': [5, '0.045', 4] }, [0, '0', 0])
       .map(({ day: date, value: [calls, volume, buyers] }) => ({ day: date, calls, volume, buyers })));
   });
@@ -274,10 +280,11 @@ describe('the public numbers\' counts', () => {
     const listedAt = async (host: string) => (await database.db.execute<{ at: Date }>(sql`select min(created_at) as at from routed_endpoints where host = ${host}`))
       .rows[0]!.at;
 
-    expect([found.total, found.totalCapped, found.totals]).toEqual([2, false, { services: 2, paidServices: 2, paidEndpoints: 3, calls30d: 14 }]);
+    // Each service's listed endpoints, the one with no call too, and the lowest price among them
+    expect([found.total, found.totalCapped, found.totals]).toEqual([2, false, { services: 2, paidServices: 2, paidEndpoints: 4, calls30d: 14 }]);
     expect(found.services).toEqual([
       {
-        host: alpha, status: 'paid', paidEndpoints: 2, priceFrom: '0.005', currency: 'USD', calls: 11, buyers: 7, volume: '0.1', successRate: 0.8462, p50Ms: 150,
+        host: alpha, status: 'paid', paidEndpoints: 3, priceFrom: '0.001', currency: 'USD', calls: 11, buyers: 7, volume: '0.1', successRate: 0.8462, p50Ms: 150,
         trend: trend({ '11-16': 1, '12-08': 1, '12-09': 2, '12-14': 2, '12-15': 5 }), listedAt: new Date(await listedAt(alpha)).toISOString(), checkedAt: null,
       },
       {

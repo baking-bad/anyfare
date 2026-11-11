@@ -352,20 +352,31 @@ export type ListingOutcome = 'listed' | 'capped' | 'refused' | 'failed';
 type Queued =
   | { readonly kind: 'paid'; readonly endpoint: { readonly host: string; readonly path: string; readonly quote?: string }; readonly requestId: string | undefined }
   | {
-    readonly kind: 'checked'; readonly endpoint: CheckedEndpoint; readonly requestId: string | undefined; readonly client: string;
+    readonly kind: 'checked'; readonly endpoint: CheckedEndpoint; readonly requestId: string | undefined;
+    // Its client's networks, the narrowest first: an IPv4 address, or an IPv6 /64 and its /48
+    readonly networks: readonly string[];
     readonly onOutcome: (outcome: ListingOutcome) => void;
   };
+
+/** A check client's networks, the narrowest first: an IPv4 address alone, or an IPv6 /64 and the /48 it is in. */
+export const clientNetworks = (client: string): readonly string[] => {
+  const v6 = /^([0-9a-f]{1,4}:[0-9a-f]{1,4}:[0-9a-f]{1,4}):[0-9a-f]{1,4}::\/64$/.exec(client);
+
+  return v6 ? [client, `${v6[1]}::/48`] : [client];
+};
 
 /**
  * Registers routed endpoints off the hot path, through the internal API, once each. A registration
  * that got no answer or a 5xx is forgotten, so the next call tries again; a 4xx is final. A check's
  * listing waits in a queue of its own, smaller, sent only when no paid call's registration waits, each
  * within a shorter timeout: a check never delays a paid call's registration, nor takes its place. One
- * client, an IPv4 address or an IPv6 /64, holds a small share of that queue at most.
+ * client, an IPv4 address or an IPv6 /64, holds a small share of that queue at most, and one IPv6 /48 twice that.
+ * When it is full, a check of a client holding less than another takes the place of that one's oldest waiting
+ * listing, so a few clients that fill it never keep a newcomer out.
  */
 export const createEndpointRegistrar = ({
   url, secret, logger, fetch = globalThis.fetch, capacity = 1_000, timeoutMs = 5_000, maxSeen = 10_000, checkCapacity = 100, checkTimeoutMs = 2_000,
-  checkShare = 5,
+  checkShare = 5, checkNetworkShare = 2 * checkShare,
 }: {
   readonly url: string | undefined;
   readonly secret: Secret | undefined;
@@ -376,23 +387,56 @@ export const createEndpointRegistrar = ({
   readonly timeoutMs?: number;
   // How many endpoints it remembers as registered. Past it, it forgets them all: paths are unbounded.
   readonly maxSeen?: number;
-  // How many checks' listings may wait at once, how long each may take, and how many of them one client's
+  // How many checks' listings may wait at once, how long each may take, and how many of them one client's, an
+  // IPv4 address or an IPv6 /64, and one IPv6 /48's
   readonly checkCapacity?: number;
   readonly checkTimeoutMs?: number;
   readonly checkShare?: number;
+  readonly checkNetworkShare?: number;
 }) => {
+  type Check = Extract<Queued, { readonly kind: 'checked' }>;
   const seen = new Set<string>();
   const queue: Queued[] = [];
-  const checks: Queued[] = [];
-  // Each client's listings waiting or being sent
+  const checks: Check[] = [];
+  // Each network's listings waiting or being sent
   const shares = new Map<string, number>();
   let running = false;
-  const release = (client: string): void => {
-    const left = (shares.get(client) ?? 1) - 1;
-    if (left > 0)
-      shares.set(client, left);
-    else
-      shares.delete(client);
+  const shareOf = (network: string): number => (network.endsWith('/48') ? checkNetworkShare : checkShare);
+  const take = (networks: readonly string[]): void => {
+    for (const network of networks)
+      shares.set(network, (shares.get(network) ?? 0) + 1);
+  };
+  const release = (networks: readonly string[]): void => {
+    for (const network of networks) {
+      const left = (shares.get(network) ?? 1) - 1;
+      if (left > 0)
+        shares.set(network, left);
+      else
+        shares.delete(network);
+    }
+  };
+  /**
+   * Room in a full queue for a check of the client `holder` names, its widest network: the oldest waiting listing of
+   * the network that holds the most leaves, told it failed, so a later check lists it. Only while that one holds at
+   * least two more than the newcomer, so a place changes hands only when that evens the queue out. False: none does.
+   */
+  const makeRoom = (holder: string): boolean => {
+    const held = new Map<string, number>();
+    for (const item of checks)
+      held.set(item.networks.at(-1)!, (held.get(item.networks.at(-1)!) ?? 0) + 1);
+    let most: string | undefined;
+    for (const [network, count] of held) {
+      if (most === undefined || count > held.get(most)!)
+        most = network;
+    }
+    if (most === undefined || held.get(most)! <= (held.get(holder) ?? 0) + 1)
+      return false;
+    const index = checks.findIndex(item => item.networks.at(-1) === most);
+    const [dropped] = checks.splice(index, 1);
+    release(dropped!.networks);
+    dropped!.onOutcome('failed');
+
+    return true;
   };
 
   const send = async (item: Queued): Promise<void> => {
@@ -452,13 +496,13 @@ export const createEndpointRegistrar = ({
     running = true;
     try {
       // A paid call's registration first, always
-      for (let item = queue.shift() ?? checks.shift(); item !== undefined; item = queue.shift() ?? checks.shift()) {
+      for (let item: Queued | undefined = queue.shift() ?? checks.shift(); item !== undefined; item = queue.shift() ?? checks.shift()) {
         try {
           await send(item);
         }
         finally {
           if (item.kind === 'checked')
-            release(item.client);
+            release(item.networks);
         }
       }
     }
@@ -485,17 +529,21 @@ export const createEndpointRegistrar = ({
     lists: (): boolean => Boolean(url && secret),
     /**
      * Lists an endpoint a payable check found, or updates its time, without waiting. False when it can't: no
-     * internal API, a full queue, or the check's client holding its share of it. `onOutcome` hears how it
-     * ended, once, and never throws into it.
+     * internal API, the check's client or its /48 holding its share of the queue, or a full queue where no client
+     * holds more than it. `onOutcome` hears how it ended, once, and never throws into it: a listing that left a full
+     * queue for another client's ends `failed`.
      */
     list: (endpoint: CheckedEndpoint, { client = '', requestId, onOutcome = () => undefined }: {
       readonly client?: string;
       readonly requestId?: string;
       readonly onOutcome?: (outcome: ListingOutcome) => void;
     } = {}): boolean => {
-      if (!url || !secret || checks.length >= checkCapacity || (shares.get(client) ?? 0) >= checkShare)
+      const networks = clientNetworks(client);
+      if (!url || !secret || networks.some(network => (shares.get(network) ?? 0) >= shareOf(network)))
         return false;
-      shares.set(client, (shares.get(client) ?? 0) + 1);
+      if (checks.length >= checkCapacity && !makeRoom(networks.at(-1)!))
+        return false;
+      take(networks);
       const heard = (outcome: ListingOutcome): void => {
         try {
           onOutcome(outcome);
@@ -504,7 +552,7 @@ export const createEndpointRegistrar = ({
           // The listener's own failure is no listing's
         }
       };
-      checks.push({ kind: 'checked', endpoint, requestId, client, onOutcome: heard });
+      checks.push({ kind: 'checked', endpoint, requestId, networks, onOutcome: heard });
       void drain();
 
       return true;

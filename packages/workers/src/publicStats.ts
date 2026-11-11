@@ -5,7 +5,7 @@ import {
   buildLiveBase, buildPlatformAll, buildPlatformRecent, buildServicePage, buildServiceRow, buildStoredEndpoint, buildTopAnswer, emptyTopAnswer,
   endpointDailyDays, endpointNumbersOf, periodBefore, periodStart, recentPeriods, utcDayStart, type PlatformConfig, type ServicesTotals,
 } from '@anyfare/core';
-import type { CountKind, StatsCounter, StatsRepository } from '@anyfare/db';
+import type { CountKind, RoutingRepository, StatsCounter, StatsRepository } from '@anyfare/db';
 
 import { RunStoppedError } from './scheduler.js';
 
@@ -26,6 +26,9 @@ export const recentBudgetMs = 4 * 60_000;
 export const allBudgetMs = 20 * 60_000;
 // The services a statement counts together
 export const servicesPerBatch = 20;
+// The paid hosts one statement of the fill makes rows for, each from its at most 1,020 endpoints, and the statements a run
+export const paidHostsPerBatch = 500;
+const paidHostBatchesPerRun = 10;
 // Today's buyers kept to tell the live numbers' new ones apart
 export const keptBuyersPerDay = 100_000;
 // Rows a delete takes at a time
@@ -69,6 +72,8 @@ export const createPublicStatsMetrics = (registry: Registry, clock: Clock): Publ
 export interface PublicStatsOptions {
   readonly counter: StatsCounter;
   readonly store: StatsRepository;
+  // Makes the paid hosts' rows of hosts registered before that table, a few batches a run until every host has one
+  readonly routing?: Pick<RoutingRepository, 'backfillPaidHosts'>;
   // The services cap
   readonly config: Pick<PlatformConfig, 'stats'>;
   readonly metrics: PublicStatsMetrics;
@@ -136,7 +141,7 @@ export interface PublicStatsResult {
  * complete as of the cycle's first run, which every row of it is true at least as of.
  */
 export const createRecentStats = ({
-  counter, store, config, metrics, clock, timeoutMs = recentStatementTimeoutMs, budgetMs = recentBudgetMs, batchSize = servicesPerBatch,
+  counter, store, routing, config, metrics, clock, timeoutMs = recentStatementTimeoutMs, budgetMs = recentBudgetMs, batchSize = servicesPerBatch,
 }: PublicStatsOptions) => async (stopping?: AbortSignal): Promise<PublicStatsResult> => {
   const countedAt = clock.now();
   const to = countedAt;
@@ -148,6 +153,11 @@ export const createRecentStats = ({
   let deleted = 0;
   const step = startSteps({ budgetMs, timeoutMs, stopping, result: () => ({ services, written, deleted }) });
 
+  // The paid hosts registered before their table, until each has its row: the list shows those the count doesn't store
+  for (let batch = 0; routing && batch < paidHostBatchesPerRun; batch += 1) {
+    if ((await step(ms => routing.backfillPaidHosts({ batch: paidHostsPerBatch, timeoutMs: ms }))).done)
+      break;
+  }
   const platform = await step(ms => counter.platform({ periods, to, timeoutMs: ms }));
   const daily = await step(ms => counter.platformDays({ from: monthFrom, to, timeoutMs: ms }));
   const topups = await step(ms => counter.topups({ periods, to, timeoutMs: ms }));

@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 
 import { withTimeout, type Clock, type LogSink, type MicroUsd } from '@anyfare/common';
-import { rateLimitClient } from '@anyfare/core';
-import { maxCheckedEndpointsPerHost, maxCheckedPathLength, RedisNotReadyError, type Redis, type RoutingRepository } from '@anyfare/db';
+import { hostLabels, rateLimitClient } from '@anyfare/core';
+import {
+  maxCheckedEndpointsPerHost, maxCheckedHostLabels, maxCheckedPathLength, RedisNotReadyError, type Redis, type RoutingRepository,
+} from '@anyfare/db';
 
 import type { CheckMethod } from './check.js';
 import type { EndpointRegistrar, ListingOutcome } from './support.js';
@@ -13,7 +15,7 @@ import type { EndpointRegistrar, ListingOutcome } from './support.js';
 // pool, never while the pool has no connection to spare. The internal API keeps the caps per host, per
 // parent domain and in all, under its locks.
 
-/** A host name a check lists: at most 253 characters and a port. */
+/** A host name a check lists: at most 253 characters and a port, and at most 8 labels. */
 const maxHostLength = 259;
 // A path of printable ASCII, without a query: a check's comes from a parsed URL, so it always is
 const listablePath = /^\/[\x21-\x3e\x40-\x7e]*$/;
@@ -22,11 +24,11 @@ const listablePath = /^\/[\x21-\x3e\x40-\x7e]*$/;
 export const newHostsPerClient = 20;
 const dayS = 86_400;
 
-/** The per-client limit of hosts a client's checks add to the checked pool, shared by every replica. */
+/** The per-client limit of hosts in the checked pool a client's checks list or refresh, shared by every replica. */
 export interface NewHostLimit {
   /**
-   * Whether the client may add this host today: true when it added it already today, whatever became of that,
-   * or has room for one more of its 20. Throws when it can't tell.
+   * Whether the client may list this host today: true when it did already today, whatever became of that, or has
+   * room for one more of its 20. Throws when it can't tell.
    */
   admit(client: string, host: string): Promise<boolean>;
 }
@@ -86,10 +88,10 @@ export interface ListingRequest {
 /**
  * Whether a payable check's endpoint is listed once its listing goes through: true when it was, or its
  * listing is on its way and nothing the proxy knows keeps it out; false when the blocklist (the host's name or
- * a parent domain's), a cap, the per-client limit of new hosts, a full queue, or a read not made in time keeps
- * it out. A host joining the checked pool, one the count doesn't store and no check reached before, costs its
- * client one of 20 a day, once; while Redis fails, nothing joins. The check waits for this at most `answerMs`,
- * and the listing goes on after it. Never throws.
+ * a parent domain's), a name of more than 8 labels, a cap, the per-client limit of new hosts, a full queue, or a
+ * read not made in time keeps it out. A host in the checked pool, one the count doesn't store, costs the check's
+ * client one of 20 a day, once a day, whenever a check lists or refreshes it, new or not; while Redis fails, no
+ * such host is listed. The check waits for this at most `answerMs`, and the listing goes on after it. Never throws.
  */
 export const createCheckListing = ({
   registrar, endpoints, newHosts, busy, clock, refreshMs = checkListingDefaults.refreshMs, maxEntries = checkListingDefaults.maxEntries,
@@ -135,18 +137,19 @@ export const createCheckListing = ({
 
       return false;
     }
-    // A host the blocklist names, or names a parent domain of; or a new endpoint on a host that holds its 20
-    if (state.blocked || (state.status === undefined && state.checkedEndpoints >= maxCheckedEndpointsPerHost)) {
+    // A host the blocklist names, or names a parent domain of; or a new endpoint on a host that holds its 20, or its 1,000 paid
+    if (state.blocked || (state.status === undefined && (state.checkedEndpoints >= maxCheckedEndpointsPerHost || state.paidCapped))) {
       keep(key, false);
 
       return false;
     }
     const client = rateLimitClient(request.ip);
-    const joinsPool = !state.stored && !state.checkedHost;
-    if (joinsPool && !await admits(client, host, log))
+    // In the checked pool, whether a check reached it before or not: the client pays for it
+    const pooled = !state.stored;
+    if (pooled && !await admits(client, host, log))
       return false;
     const queued = registrar.list(
-      { host, path, quote: request.quote, method: request.method, mayAddHost: joinsPool },
+      { host, path, quote: request.quote, method: request.method, mayAddHost: pooled },
       { client, requestId: request.requestId, onOutcome: heard(key) },
     );
     if (queued)
@@ -167,7 +170,7 @@ export const createCheckListing = ({
 
   const list = async (request: ListingRequest): Promise<boolean> => {
     const { host, path } = request;
-    if (!registrar.lists() || host.length > maxHostLength || path.length > maxCheckedPathLength || !listablePath.test(path))
+    if (!registrar.lists() || host.length > maxHostLength || hostLabels(host) > maxCheckedHostLabels || path.length > maxCheckedPathLength || !listablePath.test(path))
       return false;
     const key = createHash('sha256').update(`${host} ${path}`).digest('hex');
     const hit = kept.get(key);

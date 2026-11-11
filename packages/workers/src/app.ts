@@ -110,12 +110,12 @@ export const createApp = ({
     settleMs: config.timeouts.settleMs,
     logger,
   });
-  const routingLosses = createRoutingLosses({
-    routing: createRoutingRepository({ db: postgres.db, clock }), ledger, metrics: createRoutingLossMetrics(server.registry), logger,
-  });
+  const routing = createRoutingRepository({ db: postgres.db, clock });
+  const routingLosses = createRoutingLosses({ routing, ledger, metrics: createRoutingLossMetrics(server.registry), logger });
   const stats = {
     counter: createStatsCounter({ db: statsPostgres.db, ways: createPaidWith(config).ways }),
     store: createStatsRepository({ db: statsPostgres.db }),
+    routing,
     config,
     metrics: createPublicStatsMetrics(server.registry, clock),
     clock,

@@ -5,7 +5,7 @@ import type { Redis } from '@anyfare/db';
 import { createFakeResolver, startFakeUpstream, type FakeUpstream } from '@anyfare/testing';
 
 import {
-  createEndpointRegistrar, createOptOutCheck, createSignerClient, isOwnHost, optOutTtlSeconds, ownDomainsOf, SignerUnavailableError, type SignInput,
+  clientNetworks, createEndpointRegistrar, createOptOutCheck, createSignerClient, isOwnHost, optOutTtlSeconds, ownDomainsOf, SignerUnavailableError, type SignInput,
 } from '../../src/routing/support.js';
 
 const signerSecret = 'signer-secret-for-the-support-tests-0123456789';
@@ -314,7 +314,7 @@ describe('the registrar\'s listings of checked endpoints', () => {
     ]);
   });
 
-  it('keeps checks\' listings in a queue of their own: a paid call\'s registration goes first, and a full queue of checks refuses more', async () => {
+  it('keeps checks\' listings in a queue of their own: a paid call\'s registration goes first, and a full queue takes no more of the client holding most of it', async () => {
     const order: string[] = [];
     let release!: () => void;
     const held = new Promise<void>(resolve => {
@@ -334,14 +334,74 @@ describe('the registrar\'s listings of checked endpoints', () => {
 
     expect(registrar.list(checked('/v1/first'), { client: 'a' })).toBe(true);
     expect(registrar.list(checked('/v1/second'), { client: 'b' })).toBe(true);
-    expect(registrar.list(checked('/v1/third'), { client: 'c' })).toBe(true);
-    // The queue holds two while the first is sent
-    expect(registrar.list(checked('/v1/fourth'), { client: 'd' })).toBe(false);
+    expect(registrar.list(checked('/v1/third'), { client: 'b' })).toBe(true);
+    // The queue holds two while the first is sent, both of b's: no more of b's
+    expect(registrar.list(checked('/v1/fourth'), { client: 'b' })).toBe(false);
     registrar.register('api.target.test', '/v1/paid', 1_000n as MicroUsd);
     release();
     await registrar.settled();
 
     expect(order).toEqual(['checked /v1/first', 'paid /v1/paid', 'checked /v1/second', 'checked /v1/third']);
+  });
+
+  it('gives a newcomer the place of the oldest waiting listing of the client holding most of a full queue, which ends failed', async () => {
+    const order: string[] = [];
+    const outcomes: [string, string][] = [];
+    let release!: () => void;
+    const held = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const registrar = createEndpointRegistrar({
+      url: 'http://api.internal:8082', secret: Secret.from(internalSecret), logger: createLogger({ level: 'silent' }), checkCapacity: 4,
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as { path: string };
+        order.push(body.path);
+        if (body.path === '/v1/sent')
+          await held;
+
+        return Response.json({ result: 'created' }, { status: 201 });
+      },
+    });
+    const list = (path: string, client: string) => registrar.list(checked(path), { client, onOutcome: outcome => outcomes.push([path, outcome]) });
+
+    expect(list('/v1/sent', '203.0.113.1')).toBe(true);
+    // Filled by three networks of a crowd, one of them holding two, and one other client
+    expect([list('/v1/crowd/a1', '2001:db8:a:1::/64'), list('/v1/crowd/a2', '2001:db8:a:2::/64'), list('/v1/crowd/b1', '198.51.100.9'), list('/v1/honest/1', '192.0.2.1')])
+      .toEqual([true, true, true, true]);
+    // The /48 holds two: it gives way, its oldest first
+    expect(list('/v1/honest/2', '192.0.2.2')).toBe(true);
+    // Now each holds one: a newcomer would even nothing out, and a full queue takes no more
+    expect(list('/v1/honest/3', '192.0.2.3')).toBe(false);
+    release();
+    await registrar.settled();
+
+    expect(order).toEqual(['/v1/sent', '/v1/crowd/a2', '/v1/crowd/b1', '/v1/honest/1', '/v1/honest/2']);
+    expect(outcomes.filter(([, outcome]) => outcome === 'failed')).toEqual([['/v1/crowd/a1', 'failed']]);
+  });
+
+  it('shares the queue per IPv6 /48 as well as per /64: one /48 holds twice a client\'s share at most', async () => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const registrar = createEndpointRegistrar({
+      url: 'http://api.internal:8082', secret: Secret.from(internalSecret), logger: createLogger({ level: 'silent' }), checkShare: 2,
+      fetch: async () => {
+        await held;
+
+        return Response.json({ result: 'created' }, { status: 201 });
+      },
+    });
+
+    // Five /64s of one /48, two listings each: four go in, as the /48 holds twice the share of 2
+    const crowd = Array.from({ length: 10 }, (_, index) => registrar.list(checked(`/v1/crowd/${index}`), { client: `2001:db8:a:${Math.floor(index / 2)}::/64` }));
+    const other = registrar.list(checked('/v1/other'), { client: '2001:db8:b:1::/64' });
+    release();
+    await registrar.settled();
+
+    expect(crowd).toEqual([true, true, true, true, false, false, false, false, false, false]);
+    expect(other).toBe(true);
+    expect([clientNetworks('2001:db8:a:1::/64'), clientNetworks('198.51.100.1')]).toEqual([['2001:db8:a:1::/64', '2001:db8:a::/48'], ['198.51.100.1']]);
   });
 
   it('keeps one client to a small share of the queue: past it, its listings wait for its own to go, and another client\'s go in', async () => {
