@@ -13,6 +13,8 @@ table.t tr.click:focus-within { background: var(--surface-row-hover); }
 .svc-search { width: 240px; }
 .svc-sort { width: 264px; }
 .svc-host { font-size: 14px; }
+/* With ten columns a long host is cut sooner, so the grid stays inside its box */
+@media (min-width: 1101px) { .svc-host.cut { max-width: 240px; } }
 /* "Checked 11 Nov 2026" under the host of a service nobody has paid. It wraps inside its cell. */
 .svc-checked { display: block; margin-top: 2px; overflow-wrap: anywhere; }
 .state-cell { padding: 24px 16px; white-space: normal; }

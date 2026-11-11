@@ -107,7 +107,7 @@ table.t tbody tr.click { cursor: pointer; }
 table.t td.state-cell { white-space: normal; }
 table.t th.r, table.t td.r { text-align: right; font-variant-numeric: tabular-nums; }
 /* The widest grids (Calls, Services) fit a 1024 px window without a scroll: tighter cells (Calls also shortens its service link) */
-@media (min-width: 761px) and (max-width: 1100px) { table.t th, table.t td { padding-left: 10px; padding-right: 10px; } }
+@media (min-width: 761px) and (max-width: 1100px) { table.t th, table.t td { padding-left: 8px; padding-right: 8px; } }
 .t-wrap { background: var(--surface-well); border-radius: var(--radius-2xl); padding: 0 4px 4px; }
 .t-wrap .inner { background: var(--surface-card); border-radius: 14px; outline: 1px solid var(--border); outline-offset: -1px; overflow: hidden; }
 .t-wrap table.t thead tr { background: transparent; }

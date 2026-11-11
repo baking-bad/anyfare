@@ -43,6 +43,8 @@ export const groupTitles: Readonly<Record<EndpointGroup, string>> = {
 export const groupOrder: readonly EndpointGroup[] = ['pay', 'accounts', 'topups', 'public'];
 
 const time = '2026-11-12T09:00:00.000Z';
+// A part of a long answer that a sample leaves out, as the other samples shorten what they hold
+const elided = '{ … }';
 const masterErrors = ['401 unauthorized', '401 invalid_key', '401 wrong_key_type'] as const;
 const publicErrors = ['429 rate_limited'] as const;
 // A public number that couldn't be read within its bounds just now: try again shortly
@@ -174,7 +176,7 @@ export const endpoints: readonly Endpoint[] = [
   },
   {
     id: 'openapi-pay', group: 'pay', method: 'GET', host: 'pay', path: '/openapi.json', summary: 'The OpenAPI document of the pay host\'s public routes', who: 'No key', example: 'openapi-pay',
-    answer: { status: 200, json: { openapi: '3.1.0', info: { title: 'Anyfare pay host', version: '1.0.0' }, servers: [{ url: '<pay host>' }], paths: {}, components: {} } },
+    answer: { status: 200, json: { openapi: '3.1.0', info: { title: 'Anyfare pay host', version: '1.0.0' }, servers: [{ url: '<pay host>' }], paths: { '/_/check': elided, '/_/health': elided, '/_/key': elided, '/openapi.json': elided, '/{host}/{path}': elided }, components: elided } },
     errors: [...publicErrors],
     notes: ['An OpenAPI 3.1 document of the public routes of this host. Limited per address.'],
     source: { package: 'proxy', method: 'GET', path: '/openapi.json' },
@@ -485,7 +487,7 @@ export const endpoints: readonly Endpoint[] = [
   },
   {
     id: 'openapi-api', group: 'public', method: 'GET', host: 'api', path: '/openapi.json', summary: 'The OpenAPI document of the Platform API\'s public routes', who: 'No key', example: 'openapi-api',
-    answer: { status: 200, json: { openapi: '3.1.0', info: { title: 'Anyfare Platform API', version: '1.0.0' }, servers: [{ url: '<API host>' }], paths: {}, components: {} } },
+    answer: { status: 200, json: { openapi: '3.1.0', info: { title: 'Anyfare Platform API', version: '1.0.0' }, servers: [{ url: '<API host>' }], paths: { '/v1/services': elided, '/v1/services/{host}': elided, '/v1/stats': elided, '/v1/calls/{id}': elided, '/openapi.json': elided }, components: elided } },
     errors: [...publicErrors],
     notes: ['An OpenAPI 3.1 document of the public routes of this host. Limited per address.'],
     source: { package: 'api', method: 'GET', path: '/openapi.json' },

@@ -73,7 +73,7 @@ export const TwoWays = ({ payUrl, apiUrl, consoleUrl }: { readonly payUrl: strin
         <div className="grid g2">
           <div className="card pad-lg way-card">
             <div className="row way-head"><span className="tile brand"><Icon name="wallet" /></span><div><h3 className="h4">{ways.wallet.title}</h3><p className="small muted">{ways.wallet.text}</p></div></div>
-            <CodeBlock code={walletCopy(pay)} copyName="Copy the commands of this sample">
+            <CodeBlock code={walletCopy(pay)} wrap copyName="Copy the commands of this sample">
               <span className="p">$</span> curl {pay}/<b>&lt;api host&gt;</b>/&lt;path&gt;{'\n'}
               <span className="warn">402 Payment Required</span>{'\n'}
               {'  '}accepts: <span className="s">NEAR</span> · Base · Solana · Tempo · key{'\n'}
@@ -88,7 +88,7 @@ export const TwoWays = ({ payUrl, apiUrl, consoleUrl }: { readonly payUrl: strin
           </div>
           <div className="card pad-lg way-card">
             <div className="row way-head"><span className="tile brand"><Icon name="key" /></span><div><h3 className="h4">{ways.key.title}</h3><p className="small muted">{ways.key.text}</p></div></div>
-            <CodeBlock code={keyCopy(pay, api)} copyName="Copy the commands of this sample">
+            <CodeBlock code={keyCopy(pay, api)} wrap copyName="Copy the commands of this sample">
               <span className="p">$</span> curl {api}/v1/topups -d &apos;{'{'}&quot;network&quot;:&quot;&lt;network&gt;&quot;,&quot;token&quot;:&quot;&lt;token&gt;&quot;,&quot;amount&quot;:&quot;&lt;amount&gt;&quot;{'}'}&apos;{'\n'}
               {'  '}send at least &lt;amount&gt; to <span className="s">&lt;deposit address&gt;</span>, by &lt;time&gt;{'\n\n'}
               <span className="p">$</span> curl {api}/v1/keys -d &apos;{'{'}&quot;dailyBudget&quot;:&quot;&lt;USD per day&gt;&quot;,&quot;maxPrice&quot;:&quot;&lt;USD per call&gt;&quot;{'}'}&apos;{'\n'}

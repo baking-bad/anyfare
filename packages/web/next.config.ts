@@ -27,6 +27,8 @@ const config: NextConfig = {
   distDir: process.env['NEXT_DIST_DIR'] ?? '.next',
   poweredByHeader: false,
   reactStrictMode: true,
+  // Browsers ask for /favicon.ico on their own: it is the site's icon
+  redirects: async () => [{ source: '/favicon.ico', destination: '/icon', permanent: false }],
 };
 
 export default config;

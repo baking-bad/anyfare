@@ -4,9 +4,8 @@
  * The one rule for a dollar amount, used by every page and every Markdown twin:
  * - zero reads "$0";
  * - from $1 up, two decimals with thousands separators, such as "$18.42" and "$2,140.50";
- * - under $1, the amount's own digits up to six decimals and at least two, with no trailing zero past the
- *   second decimal: "$0.50", "$0.25", "$0.033", "$0.002", "$0.0105". A non-zero amount is never rounded to
- *   zero and no non-zero digit within six decimals is hidden;
+ * - under $1, at most 3 significant digits and at least two decimals, with no trailing zero past the second:
+ *   "$0.652", "$0.11", "$0.50", "$0.00924", "$0.0105". A non-zero amount is never rounded to zero;
  * - a non-zero amount under a millionth of a dollar reads "<$0.000001".
  * A negative amount keeps its sign in front of the dollar sign.
  */
@@ -19,10 +18,12 @@ export const usd = (amount: number): string => {
   const size = Math.abs(amount);
   if (size >= 1)
     return `${sign}$${size.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  const fixed = size.toFixed(6);
-  if (Number(fixed) === 0)
+  if (size < 0.000001)
     return `${sign}<$0.000001`;
-  const trimmed = fixed.replace(/0+$/, '');
+  const rounded = Number(size.toPrecision(3));
+  if (rounded >= 1)
+    return `${sign}$1.00`;
+  const trimmed = rounded.toFixed(12).replace(/0+$/, '');
   const decimals = trimmed.split('.')[1] ?? '';
 
   return `${sign}$${decimals.length < 2 ? `${trimmed}${'0'.repeat(2 - decimals.length)}` : trimmed}`;

@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { ago, count, ms, pct, usd, usdOf } from '../src/format';
 
 describe('usd', () => {
-  // One rule: zero is "$0"; from $1 two decimals; under $1 the amount's own digits up to six decimals, at
-  // least two, no trailing zero past the second; a non-zero amount under a millionth is "<$0.000001".
+  // One rule: zero is "$0"; from $1 two decimals; under $1 at most 3 significant digits and at least
+  // two decimals; a non-zero amount under a millionth is "<$0.000001".
   it.each([
     [0, '$0'],
     [18.42, '$18.42'],
@@ -24,7 +24,13 @@ describe('usd', () => {
     [0.0105, '$0.0105'],
     [0.011, '$0.011'],
     [0.000123, '$0.000123'],
-    [0.0000015, '$0.000002'],
+    [0.0000015, '$0.0000015'],
+    [0.65197, '$0.652'],
+    [0.10978, '$0.11'],
+    [0.00924, '$0.00924'],
+    [0.0011, '$0.0011'],
+    [0.00674, '$0.00674'],
+    [0.0044, '$0.0044'],
     [0.000001, '$0.000001'],
     [0.0000004, '<$0.000001'],
     [-0.002, '-$0.002'],
@@ -39,6 +45,7 @@ describe('usdOf', () => {
   it('reads the API\'s decimal string with the same rule, and a dash for a missing or unreadable one', () => {
     expect(usdOf('0.002')).toBe('$0.002');
     expect(usdOf('0.01')).toBe('$0.01');
+    expect(usdOf('0.0044')).toBe('$0.0044');
     expect(usdOf('0')).toBe('$0');
     expect(usdOf('18.42')).toBe('$18.42');
     expect(usdOf(null)).toBe('-');
