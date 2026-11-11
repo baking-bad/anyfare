@@ -256,31 +256,40 @@ export async function showBalance(ctx: Context): Promise<void> {
   reads.catch(() => undefined);
   const { style } = ctx;
   const field = (label: string, value: string): string => style.field(label, value, FIELD_WIDTH);
-  await showCredits(ctx, master, payment, field);
-  if (wallets.length === 0) return;
-  const balances = await reads;
-  const width = Math.max(...balances.map((balance) => wayLabel(balance.way).length));
-  ctx.print([style.step('Wallets'), ...balances.map((balance) => style.field(wayLabel(balance.way), balanceText(balance), width))]);
+  // Three groups, in this order, with a blank line between them: the Credits, the wallets, the payment key
+  const groups: string[][] = [];
+  if (master !== undefined) groups.push(await masterCredits(ctx, master, field));
+  if (wallets.length > 0) {
+    const balances = await reads;
+    const width = Math.max(...balances.map((balance) => wayLabel(balance.way).length));
+    groups.push([style.step('Wallets'), ...balances.map((balance) => style.field(wayLabel(balance.way), balanceText(balance), width))]);
+  }
+  if (payment !== undefined) groups.push(await paymentKeyLines(ctx, master, payment, field));
+  groups.forEach((group, index) => ctx.print(index === 0 ? group : ['', ...group]));
 }
 
-async function showCredits(
-  ctx: Context,
-  master: string | undefined,
-  payment: string | undefined,
-  field: (label: string, value: string) => string,
-): Promise<void> {
-  if (master === undefined && payment === undefined) return;
+/** The master key's account: its Credits. */
+async function masterCredits(ctx: Context, master: string, field: (label: string, value: string) => string): Promise<string[]> {
   const config = loadConfig(ctx.session.env);
   const { style } = ctx;
-  if (master !== undefined) {
-    const balance = await platform.balance(ctx.io.fetch, config.apiUrl, master);
-    ctx.print([
-      style.step('Credits, with the master key'),
-      field('Available', style.styles.money(usd(balance.available))),
-      field('Held', usd(balance.held)),
-    ]);
-  }
-  if (payment !== undefined) {
+  const balance = await platform.balance(ctx.io.fetch, config.apiUrl, master);
+  return [
+    style.step('Credits, with the master key'),
+    field('Available', style.styles.money(usd(balance.available))),
+    field('Held', usd(balance.held)),
+  ];
+}
+
+/** The payment key: its limits, what is left, and its own account's Credits. */
+async function paymentKeyLines(
+  ctx: Context,
+  master: string | undefined,
+  payment: string,
+  field: (label: string, value: string) => string,
+): Promise<string[]> {
+  const config = loadConfig(ctx.session.env);
+  const { style } = ctx;
+  {
     const key = await platform.keyStatus(ctx.io.fetch, config.payUrl, payment);
     // The payment key pays: its account's Credits are the ones a call takes
     const ofAccount = master === undefined ? undefined : await keyOfAccount(ctx, config, master, key.id);
@@ -288,14 +297,14 @@ async function showCredits(
       key.allowance === null || key.remaining.allowance === null
         ? 'none: only the daily budget limits it'
         : `${usd(key.remaining.allowance)} of ${usd(key.allowance)}`;
-    ctx.print([
+    return [
       style.step(`The payment key ${oneLine(key.label === null ? key.id : `"${key.label}"`)}`),
       field('Left today', `${usd(key.remaining.dailyBudget)} of ${usd(key.dailyBudget)}`),
       field('Allowance', allowance),
       field('Per call', key.maxPrice === null ? 'no limit' : `at most ${usd(key.maxPrice)}`),
       field('Available', style.styles.money(usd(key.remaining.balance))),
       ...(ofAccount === false ? [style.styles.warn(`  ${OTHER_ACCOUNT}`)] : []),
-    ]);
+    ];
   }
 }
 

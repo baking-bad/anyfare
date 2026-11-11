@@ -185,7 +185,21 @@ describe('balance shows the wallets', () => {
     const account = fake.addAccount('1.25');
     const result = await run(['balance'], { ANYFARE_MASTER_KEY: account.masterKey, ...baseEnv() });
     expect(result.code).toBe(0);
-    expect(result.out).toBe(`▸ Credits, with the master key\n  Available       $1.25\n  Held            $0\n▸ Wallets\n  USDC on Base  0.005 USDC in ${BASE_PAYER}\n`);
+    expect(result.out).toBe(`▸ Credits, with the master key\n  Available       $1.25\n  Held            $0\n\n▸ Wallets\n  USDC on Base  0.005 USDC in ${BASE_PAYER}\n`);
+  });
+
+  it('in three groups: the Credits, then the wallets, then the payment key on its own', async () => {
+    madeUpBalances();
+    const account = fake.addAccount('1.25');
+    const key = fake.addKey(account, { label: 'demo', dailyBudget: '1', maxPrice: '0.02' });
+    const result = await run(['balance'], { ANYFARE_MASTER_KEY: account.masterKey, ANYFARE_PAYMENT_KEY: key.key, ...baseEnv() });
+    expect(result.code).toBe(0);
+    const credits = result.out.indexOf('▸ Credits, with the master key');
+    const wallets = result.out.indexOf('\n\n▸ Wallets\n');
+    const paymentKey = result.out.indexOf('\n\n▸ The payment key "demo"\n');
+    expect(credits).toBe(0);
+    expect(wallets).toBeGreaterThan(credits);
+    expect(paymentKey).toBeGreaterThan(wallets);
   });
 
   it('only of the ways whose settings are present', async () => {
