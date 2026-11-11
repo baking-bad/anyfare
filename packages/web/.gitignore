@@ -1,0 +1,6 @@
+.next/
+.next-*/
+next-env.d.ts
+# Written by the dev server for coding tools
+AGENTS.md
+CLAUDE.md

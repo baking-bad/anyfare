@@ -1,0 +1,28 @@
+{
+  "name": "@anyfare/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "App: the public website, a Next.js app",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "vitest run --root ../.. --project web"
+  },
+  "dependencies": {
+    "@fontsource-variable/figtree": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "next": "16.3.8",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0"
+  }
+}

@@ -1,0 +1,358 @@
+/*
+ * Anyfare design tokens, light and dark.
+ *
+ * What this is: the colors, type, radii, shadows and motion of Anyfare's website.
+ * The palette and sizes follow near.com's design language, as it was on 2026-11-09.
+ *
+ * How to switch themes: <html class="light"> or <html class="dark">.
+ * A small script sets the class before the first paint.
+ * Without the class, the page is light.
+ *
+ * Values marked "ours" are not from near.com. Everything else is near.com's value.
+ */
+
+:root {
+  /* ---------- Palette: near.com's Tailwind theme, hex ---------- */
+
+  --white: #ffffff;
+  --black: #000000;
+
+  --gray-10: #fefefe;
+  --gray-25: #fcfcfc;
+  --gray-50: #fafafa;
+  --gray-100: #f5f5f5;
+  --gray-150: #ededed;
+  --gray-200: #e5e5e5;
+  --gray-300: #d4d4d4;
+  --gray-400: #a1a1a1;
+  --gray-500: #737373;
+  --gray-600: #525252;
+  --gray-700: #404040;
+  --gray-800: #262626;
+  --gray-850: #1f1f1f;
+  --gray-875: #1b1b1b;
+  --gray-900: #171717;
+  --gray-950: #0a0a0a;
+
+  --green-50: #f0fff9;
+  --green-100: #d5fff0;
+  --green-300: #70ffcd;
+  --green-400: #2bfdb1;
+  --green-500: #00ec97; /* the brand green */
+  --green-600: #00c076;
+  --green-700: #009660;
+  --green-800: #06754e;
+  --green-900: #076042;
+  --green-950: #003724;
+
+  --red-50: #fff1f2;
+  --red-100: #ffe4e6;
+  --red-200: #ffccd3;
+  --red-300: #ffa2ae;
+  --red-400: #ff667f;
+  --red-500: #ff2357;
+  --red-600: #e70044;
+  --red-700: #c20039;
+  --red-800: #a30037;
+
+  /* near.com's amber and yellow are the same scale. */
+  --yellow-50: #fffbeb;
+  --yellow-100: #fef3c6;
+  --yellow-200: #fee685;
+  --yellow-300: #ffd236;
+  --yellow-400: #fcbb00;
+  --yellow-500: #f99c00;
+  --yellow-600: #dd7400;
+  --yellow-700: #b75000;
+  --yellow-800: #953d00;
+  --yellow-900: #7b3306;
+
+  --blue-50: #eff6ff;
+  --blue-100: #dbeafe;
+  --blue-200: #bedbff;
+  --blue-300: #90c5ff;
+  --blue-400: #54a2ff;
+  --blue-500: #3080ff;
+  --blue-600: #155dfc;
+  --blue-700: #1447e6;
+  --blue-800: #193cb8;
+  --blue-900: #1c398e;
+
+  --orange-500: #fe6e00;
+  --orange-700: #c53c00;
+  --indigo-600: #4f39f6;
+  --violet-500: #8d54ff;
+  --violet-600: #7f22fe;
+  --fuchsia-300: #f2a9ff;
+  --fuchsia-500: #e12afb;
+  --fuchsia-600: #c600db;
+  --fuchsia-700: #a600b5;
+  --pink-500: #f6339a;
+  --pink-700: #c4005c;
+
+  /* ---------- Fonts ---------- */
+
+  /* Figtree, variable, weights 300 to 900. Google Fonts, SIL Open Font License. */
+  --font-sans: "Figtree", "Figtree Fallback", ui-sans-serif, system-ui, sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  /* Ours: JetBrains Mono for keys, addresses and code. near.com uses the system mono stack. */
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, "Liberation Mono", "Courier New", monospace;
+
+  /* ---------- Type scale: size / line height ---------- */
+
+  --text-xs: 12px;   --leading-xs: 16px;
+  --text-sm: 14px;   --leading-sm: 20px;
+  --text-base: 16px; --leading-base: 24px;
+  --text-lg: 18px;   --leading-lg: 28px;
+  --text-xl: 20px;   --leading-xl: 28px;
+  --text-2xl: 24px;  --leading-2xl: 28px;
+  --text-3xl: 30px;  --leading-3xl: 36px;
+  --text-4xl: 36px;  --leading-4xl: 40px;
+  --text-5xl: 40px;  --leading-5xl: 40px;
+  --text-6xl: 60px;  --leading-6xl: 60px;
+
+  --weight-normal: 400;
+  --weight-medium: 500; /* the default for text */
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --tracking-tight: -0.025em;   /* headings, buttons, titles */
+  --tracking-balance: -0.04em;  /* big money amounts */
+  --tracking-tighter: -0.05em;  /* stat numbers */
+
+  /* ---------- Radii ---------- */
+
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;         /* pills, small badges, xs buttons */
+  --radius-lg: 8px;         /* sm and md buttons, badges */
+  --radius-button-lg: 10px; /* lg buttons */
+  --radius-xl: 12px;        /* xl buttons, nav items, menus, small panels */
+  --radius-2xl: 16px;       /* cards, tables, popovers, toasts */
+  --radius-3xl: 24px;       /* dialogs */
+  --radius-full: 9999px;
+
+  /* ---------- Motion ---------- */
+
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --duration-press: 100ms;
+  --duration: 150ms;
+  --duration-dialog: 300ms;
+  --duration-drawer: 450ms;
+
+  /* ---------- Layout ---------- */
+
+  --container: 1280px;
+  --gutter: 24px;           /* 32px from 640px wide, see layout.md */
+  --header-height: 73px;
+  --sidebar-width: 272px;
+
+  /* ---------- Brand: the same in both themes ---------- */
+
+  --brand: var(--green-500);
+  --brand-ink: var(--black); /* text and icons on the brand green */
+  --brand-gradient: linear-gradient(180deg, #65fbaa 0%, #31f49c 50%, #00ec97 100%);
+  --selection-bg: var(--green-500);
+  --selection-text: var(--black);
+
+  /* ---------- Inverse: always dark (sidebar, dark bands, footer, toasts) ---------- */
+
+  --inverse-text: var(--white);
+  --inverse-text-secondary: var(--gray-400);
+  --inverse-text-nav: var(--gray-300);
+  --inverse-text-label: rgb(255 255 255 / 0.5);
+
+  /* ---------- Light theme: semantic tokens ---------- */
+
+  color-scheme: light;
+
+  --surface-page: var(--white);
+  --surface-canvas: var(--gray-25);
+  --surface-card: var(--white);
+  --surface-card-raised: var(--white);
+  --surface-field: var(--white);
+  --surface-overlay: var(--white);
+  --surface-dialog: var(--white);
+  --surface-well: rgb(23 23 23 / 0.04);
+  --surface-wash: rgb(23 23 23 / 0.05);
+  --surface-wash-strong: rgb(23 23 23 / 0.1);
+  --surface-row-hover: var(--gray-50);
+  --surface-skeleton: var(--gray-150);
+  --surface-backdrop: rgb(23 23 23 / 0.8);
+
+  --inverse-bg: var(--gray-800);
+  --inverse-bg-toast: var(--gray-800);
+  --inverse-wash: rgb(255 255 255 / 0.06);
+  --inverse-border: rgb(255 255 255 / 0.06);
+
+  --border: var(--gray-200);
+  --border-strong: var(--gray-300);
+  --border-hover: var(--gray-400);
+  --divider: var(--gray-200);
+  --line-table: var(--gray-200);
+  --border-overlay: rgb(23 23 23 / 0.1);
+  --grid-line: rgb(0 0 0 / 0.11);
+
+  --text: var(--gray-900);
+  --text-body: var(--gray-600);
+  --text-secondary: var(--gray-500);
+  --text-tertiary: var(--gray-400); /* icons and chevrons only: 2.6:1 on white */
+  --text-placeholder: var(--gray-500);
+  --text-amount-placeholder: var(--gray-300);
+
+  --primary-bg: var(--gray-900);
+  --primary-bg-hover: var(--gray-700);
+  --primary-text: var(--white);
+  --focus: var(--gray-900);
+  --focus-field: rgb(23 23 23 / 0.5);
+
+  /* Ours: green-800, not near.com's green-700, so small green text passes WCAG AA. */
+  --brand-text: var(--green-800);
+  --brand-soft: rgb(0 192 118 / 0.15);
+  --brand-tile-bg: var(--gray-900);
+  --brand-tile-icon: var(--green-500);
+  --brand-panel: var(--green-500);
+  --brand-wash: linear-gradient(180deg, rgb(255 255 255 / 0) 10%, #ccffe1 28%, #99ffc4 46%,
+    #65fbaa 63%, #31f49c 81%, #00ec97 100%);
+
+  --success-text: var(--green-800);
+  --success-icon: var(--green-700);
+  --success-soft: rgb(0 192 118 / 0.15);
+
+  --danger-text: var(--red-600);
+  --danger-text-strong: var(--red-800);
+  --danger-soft: var(--red-100);
+  --danger-soft-border: transparent;
+  --danger-solid: var(--red-500);
+  --danger-solid-hover: var(--red-600);
+  --danger-field: var(--red-500);
+
+  --warning-text: var(--yellow-800);
+  --warning-icon: var(--yellow-600);
+  --warning-soft: var(--yellow-100);
+  --warning-soft-border: transparent;
+
+  --info-text: var(--blue-800);
+  --info-icon: var(--blue-500);
+  --info-soft: var(--blue-100);
+  --info-soft-border: transparent;
+
+  --neutral-text: var(--gray-700);
+  --neutral-soft: var(--gray-150);
+
+  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-menu: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --shadow-dialog: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+  --shadow-toast: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+}
+
+/* ---------- Dark theme: semantic tokens ---------- */
+
+:root.dark {
+  color-scheme: dark;
+
+  --surface-page: var(--gray-850);
+  --surface-canvas: var(--gray-850);
+  --surface-card: var(--gray-850);
+  --surface-card-raised: var(--gray-800);
+  --surface-field: rgb(255 255 255 / 0.03);
+  --surface-overlay: var(--gray-900);
+  --surface-dialog: var(--gray-850);
+  --surface-well: rgb(255 255 255 / 0.04);
+  --surface-wash: rgb(255 255 255 / 0.06);
+  --surface-wash-strong: rgb(255 255 255 / 0.1);
+  --surface-row-hover: rgb(255 255 255 / 0.03);
+  --surface-skeleton: rgb(255 255 255 / 0.1);
+  --surface-backdrop: rgb(10 10 10 / 0.8);
+
+  --inverse-bg: var(--gray-900);
+  --inverse-bg-toast: var(--gray-950);
+  --inverse-wash: rgb(255 255 255 / 0.03);
+  --inverse-border: rgb(255 255 255 / 0.05);
+
+  --border: rgb(255 255 255 / 0.05);
+  --border-strong: rgb(255 255 255 / 0.08);
+  --border-hover: var(--gray-400);
+  --divider: rgb(255 255 255 / 0.1);
+  --line-table: rgb(255 255 255 / 0.08);
+  --border-overlay: rgb(255 255 255 / 0.1);
+  --grid-line: rgb(255 255 255 / 0.08); /* ours: near.com's landing has no dark theme */
+
+  --text: var(--white);
+  --text-body: var(--gray-300);
+  --text-secondary: var(--gray-400);
+  --text-tertiary: var(--gray-500); /* icons and chevrons only: 3.5:1 on gray-850 */
+  --text-placeholder: var(--gray-400);
+  --text-amount-placeholder: var(--gray-500);
+
+  --primary-bg: var(--white);
+  --primary-bg-hover: var(--gray-200);
+  --primary-text: var(--gray-900);
+  --focus: var(--white);
+  --focus-field: rgb(255 255 255 / 0.5);
+
+  --brand-text: var(--green-500);
+  --brand-soft: rgb(0 192 118 / 0.15);
+  --brand-tile-bg: rgb(0 236 151 / 0.1);
+  --brand-tile-icon: var(--green-500);
+  --brand-panel: var(--green-950);
+  --brand-wash: linear-gradient(0deg, rgb(0 236 151 / 0.15) 0%, rgb(0 236 151 / 0) 50%);
+
+  --success-text: var(--green-500);
+  --success-icon: var(--green-500);
+  --success-soft: rgb(0 192 118 / 0.15);
+
+  --danger-text: var(--red-400);
+  --danger-text-strong: var(--red-300);
+  --danger-soft: rgb(255 35 87 / 0.1);
+  --danger-soft-border: rgb(255 35 87 / 0.1);
+  --danger-solid: var(--red-700);
+  --danger-solid-hover: var(--red-600);
+  --danger-field: rgb(255 35 87 / 0.5);
+
+  --warning-text: var(--yellow-200);
+  --warning-icon: var(--yellow-300);
+  --warning-soft: rgb(249 156 0 / 0.1);
+  --warning-soft-border: rgb(249 156 0 / 0.1);
+
+  --info-text: var(--blue-300);
+  --info-icon: var(--blue-400);
+  --info-soft: rgb(48 128 255 / 0.1);
+  --info-soft-border: rgb(48 128 255 / 0.1);
+
+  --neutral-text: var(--gray-300);
+  --neutral-soft: rgb(255 255 255 / 0.1);
+
+  /* Shadows don't show on dark. Outlines do the work. */
+  --shadow-xs: none;
+  --shadow-menu: none;
+  --shadow-toast: none;
+}
+
+/* ---------- Base ---------- */
+
+html {
+  background: var(--surface-page);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: var(--selection-bg);
+  color: var(--selection-text);
+}
+
+/* Metric-matched fallback, so the page doesn't jump when Figtree loads. near.com's values. */
+@font-face {
+  font-family: "Figtree Fallback";
+  src: local("Arial");
+  ascent-override: 94.32%;
+  descent-override: 24.82%;
+  line-gap-override: 0%;
+  size-adjust: 100.72%;
+}

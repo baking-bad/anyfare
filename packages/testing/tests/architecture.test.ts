@@ -15,6 +15,8 @@ const allowedImports: Readonly<Record<string, readonly string[]>> = {
   db: ['core', 'common'],
   payments: ['core', 'common'],
   topups: ['core', 'common'],
+  // The website reads only the public API
+  web: [],
 };
 
 // Where a package's source lives
@@ -229,7 +231,7 @@ describe('architecture rules', () => {
   it('reads every package', () => {
     const packages = new Set(sources.map(file => file.path.split('/')[0]));
 
-    expect([...packages].sort()).toEqual(['api', 'common', 'core', 'db', 'facilitator', 'payments', 'proxy', 'signer', 'testing', 'topups', 'workers']);
+    expect([...packages].sort()).toEqual(['api', 'common', 'core', 'db', 'facilitator', 'payments', 'proxy', 'signer', 'testing', 'topups', 'web', 'workers']);
   });
 
   it('keeps every import within the dependency rules, and testing out of src', () => {
