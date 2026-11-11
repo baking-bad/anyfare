@@ -46,6 +46,17 @@ describe('the Content-Security-Policy', () => {
     expect(policy['connect-src']).toBe('\'self\' http://localhost:8081 https://pay.example.test ws:');
   });
 
+  it('lets the console\'s pages run scripts by nonce only, take no inline style, and talk only to the site and the API', () => {
+    const policy = directives(contentSecurityPolicy({ ...options, console: true }));
+
+    expect(policy['script-src']).toBe('\'self\' \'nonce-abc123==\' \'strict-dynamic\'');
+    expect(policy['style-src']).toBe('\'self\'');
+    expect(policy['connect-src']).toBe('\'self\' https://api.example.test');
+    expect(policy['form-action']).toBe('\'self\'');
+    expect(policy['frame-ancestors']).toBe('\'none\'');
+    expect(Object.values(policy).join(' ')).not.toMatch(/unsafe-inline|unsafe-eval|unsafe-hashes|\*/);
+  });
+
   it('makes a fresh 128-bit nonce for every response', () => {
     const nonces = new Set(Array.from({ length: 100 }, createNonce));
 

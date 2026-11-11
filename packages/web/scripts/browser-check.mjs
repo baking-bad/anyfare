@@ -2,12 +2,16 @@
 // non-zero on any finding. By hand, never in `npm test` or CI: it drives the `agent-browser` command line, which
 // is not installed there.
 //
-//   npm run check:browser -w @anyfare/web -- <site url> [--console <console url>] [--edge] [--session <name>]
+//   npm run check:browser -w @anyfare/web -- <site url> [--console <console url> [--api <fake api url>] [--console-only]] [--edge] [--session <name>]
 //
-// The site should run against the test suite's fake API (`node tests/support/fakeApi.ts full 4710`), because
-// the pages below name the fake's hosts and calls. `--edge` adds the pages that only the fake's `edge` mode has
+// The site should run against the test suite's fake API (`node tests/support/fakeApi.ts full 4710 0 <console url>`),
+// because the pages below name the fake's hosts and calls. `--edge` adds the pages that only the fake's `edge` mode has
 // (a host with a port, a very long host). For each page, width and theme it runs three scripts in the page
 // (`tests/support/overflow.js`, `tapTargets.js`, `tableFit.js`) and reads the page's errors.
+//
+// With `--console`, the console's pages are looked at signed out; with `--api` too, signed in as well: the script asks
+// the fake for a new account and signs in by pasting its sample key, once for each width and theme. On the console's
+// pages it also reads the browser's console (a refused style or script is an error there) and every failed request.
 //
 // Exit code: 0 nothing found, 1 findings, 2 wrong use or the site did not answer, 3 `agent-browser` is not installed.
 
@@ -26,7 +30,8 @@ export const widths = [360, 390, 768, 1024, 1440];
 export const themes = ['light', 'dark'];
 
 // The pages, in one place. `path` is on the site, or on the console host when `host` is `console`. `only: 'edge'`
-// pages need the fake API's edge mode.
+// pages need the fake API's edge mode. `session` is how a console page is looked at: signed out or signed in, and
+// `ready` is what shows once the browser filled it.
 export const pages = [
   { name: 'Home', path: '/' },
   { name: 'Calls', path: '/calls' },
@@ -44,9 +49,15 @@ export const pages = [
   { name: 'Receipt, free Credits call', path: '/calls/pay_freecredits' },
   { name: '404', path: '/nothing-here' },
   { name: 'Receipt not found', path: '/calls/pay_nosuchcall' },
-  { name: 'Console', path: '/', host: 'console' },
   { name: 'Service, host with a port', path: '/services/fake-api.test%3A8186', only: 'edge' },
   { name: 'Receipt, long path', path: '/calls/pay_longpath', only: 'edge' },
+  { name: 'Console, sign in', path: '/', host: 'console', session: 'out', ready: '.auth-col' },
+  { name: 'Console, sign in, top-up link', path: '/topup?amount=5', host: 'console', session: 'out', ready: '.auth-col' },
+  { name: 'Console, Overview', path: '/', host: 'console', session: 'in', ready: '.overview-balance' },
+  { name: 'Console, Keys', path: '/keys', host: 'console', session: 'in', ready: '.content-inner' },
+  { name: 'Console, Top up', path: '/topup?amount=5', host: 'console', session: 'in', ready: '.content-inner' },
+  { name: 'Console, Payments', path: '/payments', host: 'console', session: 'in', ready: '.content-inner' },
+  { name: 'Console, Settings', path: '/settings', host: 'console', session: 'in', ready: '.settings-kv' },
 ];
 
 // What each script is run for: overflow at every width, tap areas where a finger is used, tables where they must fit
@@ -57,11 +68,15 @@ const scripts = [
 ];
 
 const parseArguments = argv => {
-  const options = { site: undefined, console: undefined, edge: false, session: `browser-check-${process.pid}` };
+  const options = { site: undefined, console: undefined, api: undefined, consoleOnly: false, edge: false, session: `browser-check-${process.pid}` };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--console')
       options.console = argv[++index];
+    else if (argument === '--console-only')
+      options.consoleOnly = true;
+    else if (argument === '--api')
+      options.api = argv[++index];
     else if (argument === '--session')
       options.session = argv[++index];
     else if (argument === '--edge')
@@ -101,10 +116,17 @@ const findingsOf = (id, value) => {
   return value.offenders.map(offender => `${offender.table}: ${offender.why}`);
 };
 
-const main = () => {
+// A sample master key from the fake API: a new account's
+const sampleKey = async api => {
+  const answer = await fetch(`${api}/v1/accounts`, { method: 'POST' }).then(response => response.json(), () => undefined);
+
+  return typeof answer?.masterKey === 'string' && /^afm_test_[0-9a-f]{32}$/.test(answer.masterKey) ? answer.masterKey : undefined;
+};
+
+const main = async () => {
   const options = parseArguments(process.argv.slice(2));
   if (options === undefined) {
-    process.stderr.write('Usage: browser-check.mjs <site url> [--console <console url>] [--edge] [--session <name>]\n');
+    process.stderr.write('Usage: browser-check.mjs <site url> [--console <console url> [--api <fake api url>] [--console-only]] [--edge] [--session <name>]\n');
 
     return exits.usage;
   }
@@ -115,7 +137,14 @@ const main = () => {
   }
   const site = options.site.replace(/\/$/, '');
   const consoleUrl = options.console?.replace(/\/$/, '');
-  const list = pages.filter(page => (page.only !== 'edge' || options.edge) && (page.host !== 'console' || consoleUrl !== undefined));
+  const key = consoleUrl === undefined || options.api === undefined ? undefined : await sampleKey(options.api.replace(/\/$/, ''));
+  if (options.api !== undefined && key === undefined) {
+    process.stderr.write(`The fake API gave no sample key at ${options.api}\n`);
+
+    return exits.usage;
+  }
+  const list = pages.filter(page => (page.only !== 'edge' || options.edge) && (page.host !== 'console' || consoleUrl !== undefined) && (page.session !== 'in' || key !== undefined)
+    && (!options.consoleOnly || page.host === 'console'));
   const sources = Object.fromEntries(scripts.map(script => [script.id, readFileSync(`${support}${script.file}`, 'utf8')]));
   const session = options.session;
   // name -> width -> theme -> findings
@@ -128,6 +157,22 @@ const main = () => {
 
     return exits.usage;
   }
+  // The console's session in this tab: signed in by pasting the sample key, signed out by forgetting it
+  let signedIn = false;
+  const signIn = () => {
+    run(session, ['open', `${consoleUrl}/signin`]);
+    run(session, ['wait', '--text', 'Sign in or create an account']);
+    run(session, ['find', 'role', 'textbox', 'fill', key, '--name', 'Master key']);
+    run(session, ['press', 'Enter']);
+    signedIn = run(session, ['wait', '--text', 'Available']).status === 0;
+
+    return signedIn;
+  };
+  const signOut = () => {
+    run(session, ['open', `${consoleUrl}/signin`]);
+    run(session, ['eval', 'sessionStorage.clear(); "cleared"']);
+    signedIn = false;
+  };
   for (const theme of themes) {
     run(session, ['set', 'media', theme]);
     for (const width of widths) {
@@ -135,18 +180,37 @@ const main = () => {
       for (const page of list) {
         const cell = found.get(page.name).get(width).get(theme);
         const url = `${page.host === 'console' ? consoleUrl : site}${page.path}`;
+        if (page.session === 'out' && signedIn)
+          signOut();
+        if (page.session === 'in' && !signedIn && !signIn()) {
+          cell.push('could not sign in with the sample key');
+          continue;
+        }
         run(session, ['errors', '--clear']);
+        if (page.host === 'console') {
+          run(session, ['console', '--clear']);
+          run(session, ['network', 'requests', '--clear']);
+        }
         const opened = run(session, ['open', url]);
         if (opened.status !== 0) {
           cell.push(`could not open ${url}`);
           continue;
         }
         run(session, ['wait', '--load', 'load']);
+        if (page.ready !== undefined && run(session, ['wait', page.ready]).status !== 0)
+          cell.push(`${page.ready} did not show`);
         run(session, ['wait', '600']);
         for (const script of scripts.filter(entry => entry.at(width)))
           cell.push(...findingsOf(script.id, valueOf(run(session, ['eval', '--stdin'], sources[script.id]).stdout)).map(finding => `${script.id}: ${finding}`));
         const errors = JSON.parse(run(session, ['errors', '--json']).stdout || '{}').data?.errors ?? [];
         cell.push(...errors.map(error => `page error: ${String(error.text).split('\n')[0]}`));
+        if (page.host === 'console') {
+          // A style or a script the policy refused is an error in the browser's console
+          const messages = valueOf(run(session, ['console', '--json']).stdout)?.data?.messages ?? [];
+          cell.push(...messages.filter(message => message.type === 'error').map(message => `console error: ${String(message.text).split('\n')[0]}`));
+          const requests = valueOf(run(session, ['network', 'requests', '--json']).stdout)?.data?.requests ?? [];
+          cell.push(...requests.filter(request => request.status >= 400).map(request => `failed request: ${request.method} ${request.url.split('?')[0]} ${request.status}`));
+        }
       }
     }
   }
@@ -181,4 +245,4 @@ const main = () => {
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url))
-  process.exit(main());
+  process.exit(await main());

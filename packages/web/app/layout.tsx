@@ -39,10 +39,10 @@ export const viewport: Viewport = {
 const RootLayout = async ({ children }: { readonly children: ReactNode }) => {
   const nonce = await requestNonce();
   const settings = readSettings();
-  const { siteUrl, consoleUrl, apiUrl, payUrl } = settings;
-  // On the console host the header and the footer lead to the public site's pages, and the page has no links to the site's files
+  const { consoleUrl, apiUrl, payUrl } = settings;
+  // The console host's pages (and a console page when the two hosts are one) have the console's own frame: no header
+  // or footer of the public site, and no links to the site's files
   const onConsole = await requestSurface() === 'console';
-  const consoleHref = consoleLink(settings);
 
   return (
     <html lang="en" suppressHydrationWarning>
@@ -54,9 +54,13 @@ const RootLayout = async ({ children }: { readonly children: ReactNode }) => {
         <SettingsProvider value={{ apiUrl, payUrl, consoleUrl }}>
           <Suspense fallback={null}><NavigationProgress /></Suspense>
           <a className="skip-link" href="#main">Skip to the content</a>
-          <SiteHeader consoleHref={consoleHref} {...onConsole ? { siteUrl } : {}} />
-          <main id="main">{children}</main>
-          <SiteFooter consoleHref={consoleHref} {...onConsole ? { base: siteUrl } : {}} />
+          {onConsole ? children : (
+            <>
+              <SiteHeader consoleHref={consoleLink(settings)} />
+              <main id="main">{children}</main>
+              <SiteFooter consoleHref={consoleLink(settings)} />
+            </>
+          )}
         </SettingsProvider>
       </body>
     </html>

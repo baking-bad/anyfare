@@ -3,9 +3,9 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { logApiFailure } from './src/api/failures';
 import { createReader } from './src/api/reader';
 import { visitorAddress } from './src/api/server';
-import { topupAmount } from './src/console/amount';
+import { amountParam, amountUnusedParam, linkAmount } from './src/console/amount';
 import { readSettings, type SiteSettings } from './src/config';
-import { consolePageRoute, hiddenRoute, passHeader, passSecret, surfaceFromHeader, surfaceHeader, surfaceOf, verdictFor, type Surface } from './src/hosts';
+import { consoleRouteOf, consoleRoutes, hiddenRoute, passHeader, passSecret, surfaceFromHeader, surfaceHeader, surfaceOf, verdictFor, type Surface } from './src/hosts';
 import { hasMarkdown, markdownRoute, pageForMarkdownUrl, prefersMarkdown } from './src/markdown/negotiate';
 import { fromCheckName, fromCheckValue } from './src/services/content';
 import { asksMissingMarkdown, missingMarkdown } from './src/missing/routes';
@@ -50,8 +50,9 @@ const missingResponse = async (request: NextRequest, requestHeaders: Headers, se
 };
 
 /**
- * Where a request that isn't a public page goes: the 404 page for what the host doesn't serve, or the Console page. The
- * address is the request's own with only the path (and, for a top-up link, the amount) changed.
+ * Where a request that isn't a public page goes: the 404 page for what the host doesn't serve, or the console page's
+ * internal route. The address is the request's own with only the path (and, for a top-up link, the amount) changed:
+ * no other part of the visitor's query goes on.
  */
 const rewriteTarget = (request: NextRequest, verdict: 'console' | 'hidden'): URL => {
   const { pathname, searchParams } = request.nextUrl;
@@ -62,19 +63,22 @@ const rewriteTarget = (request: NextRequest, verdict: 'console' | 'hidden'): URL
 
     return target;
   }
-  target.pathname = consolePageRoute;
-  // A top-up link's amount is read here from the path the visitor asked for, and travels as a number
-  const amount = pathname === '/topup' ? topupAmount(searchParams.getAll('amount')) : undefined;
-  if (amount !== undefined)
-    target.searchParams.set('amount', String(amount));
+  target.pathname = consoleRouteOf(pathname);
+  // A top-up link's amount is read here from the path the visitor asked for, and travels as a number, or as
+  // the flag that the link's amount was not used
+  const link = pathname === '/topup' ? linkAmount(searchParams.getAll(amountParam)) : { kind: 'none' as const };
+  if (link.kind === 'used')
+    target.searchParams.set(amountParam, String(link.amount));
+  else if (link.kind === 'unused')
+    target.searchParams.set(amountUnusedParam, '1');
 
   return target;
 };
 
 /**
  * Every request but static files. First, which host it is for (see src/hosts.ts): the console host serves the
- * Console page and a few files and answers 404 to everything else, and the public host never serves the
- * Console page. Then, for a public request: the Markdown twin of a page, for `<page>.md` or `Accept: text/markdown`,
+ * console's pages and a few files and answers 404 to everything else, and the public host never serves a
+ * console page. Then, for a public request: the Markdown twin of a page, for `<page>.md` or `Accept: text/markdown`,
  * is rewritten to its renderer. Every other request gets the Content-Security-Policy with a fresh nonce,
  * which Next.js adds to its own scripts when it finds it in the request's policy. A page that has a twin
  * answers a `Link` header that points to it, and `Vary: Accept`.
@@ -87,9 +91,11 @@ export const proxy = async (request: NextRequest): Promise<NextResponse> => {
   const settings = readSettings();
   const { siteUrl, apiUrl, payUrl } = settings;
   // The second pass of one of this proxy's own rewrites keeps the first pass's surface; any other request is decided by its Host
-  const second = (pathname === consolePageRoute || pathname === hiddenRoute) && request.headers.get(passHeader) === passSecret;
-  const surface: Surface = second ? surfaceFromHeader(request.headers.get(surfaceHeader)) : surfaceOf(request.headers.get('host'), settings);
-  const verdict = second ? 'public' : verdictFor(surface, pathname);
+  const second = (consoleRoutes.includes(pathname) || pathname === hiddenRoute) && request.headers.get(passHeader) === passSecret;
+  const hostSurface: Surface = second ? surfaceFromHeader(request.headers.get(surfaceHeader)) : surfaceOf(request.headers.get('host'), settings);
+  const verdict = second ? 'public' : verdictFor(hostSurface, pathname);
+  // A console page is served as the console host's, with its policy and its layout, even when the two hosts are one
+  const surface: Surface = verdict === 'console' ? 'console' : hostSurface;
   const onConsole = surface === 'console';
   const page = onConsole ? undefined : pageForMarkdownUrl(pathname) ?? (hasMarkdown(pathname) && prefersMarkdown(request.headers.get('accept')) ? pathname : undefined);
   if (page !== undefined) {

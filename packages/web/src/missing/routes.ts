@@ -1,4 +1,4 @@
-import { consolePageRoute, hiddenRoute } from '../hosts';
+import { consoleRoutes, hiddenRoute } from '../hosts';
 import { llmsFullPath, llmsPath } from '../agents/links';
 import { listingPath, missingPath } from './pages';
 import { markdownRoot } from '../markdown/negotiate';
@@ -10,7 +10,7 @@ import { markdownRoot } from '../markdown/negotiate';
 const exact: ReadonlySet<string> = new Set([
   '/', '/agents', '/calls', '/services', '/check',
   llmsPath, llmsFullPath, '/robots.txt', '/sitemap.xml', '/icon', '/apple-icon', '/opengraph-image', '/logo.svg', '/favicon.ico',
-  '/_/health', '/dev/components', consolePageRoute, hiddenRoute, listingPath,
+  '/_/health', '/dev/components', ...consoleRoutes, hiddenRoute, listingPath,
 ]);
 
 const patterns: readonly RegExp[] = [

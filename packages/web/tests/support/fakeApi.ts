@@ -1,3 +1,4 @@
+import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -32,8 +33,19 @@ import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, P
 //
 // A page that reads a new endpoint adds its answer to `answer` below, built from `sample`.
 //
-// By hand: `node tests/support/fakeApi.ts full 4010`. Calls made while it runs are pushed to the
-// streams: `POST /_test/call` with a call as JSON, or with no body for a sample call.
+// The console's keyed routes (see `keyedAnswer`): `POST /v1/accounts`, `GET /v1/account`, `POST /v1/account/master-key/rotate`
+// and `GET /v1/balance`. Accounts live in memory, and the keys are sample keys the fake makes: `afm_test_` and 32 hex
+// digits. A key that was rotated away answers `401 invalid_key`, a payment key (`af_test_…`, `af_live_…`) `401 wrong_key_type`,
+// and no key `401 unauthorized`. Their answers carry the console's CORS headers for a request from a console origin the
+// fake was given, errors too, and nothing for any other origin. In down mode they answer 500, with the same headers.
+// `GET /_test/requests` lists every request the fake got (method, path, query and headers), so a check in a browser can
+// see where a key went; `POST /_test/limited?on=1` makes the keyed routes answer `429 rate_limited` until `on=0`;
+// `POST /_test/held?amount=0.02` sets what every account holds for calls in flight; and `POST /_test/rotate?answer=<how>`
+// changes only the rotation's answer, while the rotation itself still happens: `garble` answers a 200 no one can read,
+// `drop` closes the connection with no answer, `late&ms=<n>` answers after n milliseconds, and `normal` puts it back.
+//
+// By hand: `node tests/support/fakeApi.ts full 4010 0 http://127.0.0.1:3000` (the last is the console's origin). Calls
+// made while it runs are pushed to the streams: `POST /_test/call` with a call as JSON, or with no body for a sample call.
 
 export type FakeApiMode = 'full' | 'empty' | 'down' | 'capped' | 'edge' | 'checked';
 
@@ -861,28 +873,127 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
   return undefined;
 };
 
+/** One request the fake got. */
+export interface FakeRequest {
+  readonly method: string;
+  // The path with its query
+  readonly path: string;
+  // The query alone, without its `?`
+  readonly query: string;
+  readonly headers: IncomingMessage['headers'];
+}
+
+/** An account of the keyed routes. */
+export interface FakeAccount {
+  readonly id: string;
+  readonly createdAt: string;
+  masterKey: string;
+  available: string;
+  held: string;
+}
+
 export interface FakeApi {
   // The origin the fake listens on, such as http://127.0.0.1:41234
   readonly url: string;
-  // Every request it got, in order: the path with its query, and the headers
-  readonly requests: { readonly path: string; readonly headers: IncomingMessage['headers'] }[];
+  // Every request it got, in order, but its own `/_test/` ones
+  readonly requests: FakeRequest[];
   // Pushes a call to every open stream whose filters it passes
   readonly emitCall: (call: Call) => void;
   // Lists a host as a checked service, as a payable check does: its service page answers 200 from now on. The services list holds it first.
   readonly listChecked: (host: string) => void;
   readonly openStreams: () => number;
+  // The accounts made through `POST /v1/accounts`, in order
+  readonly accounts: () => readonly FakeAccount[];
+  // Lets an origin call the keyed routes from a browser
+  readonly allowConsoleOrigin: (origin: string) => void;
+  // Makes the keyed routes answer `429 rate_limited`, or not
+  readonly limit: (on: boolean) => void;
+  // How the rotation answers once it has rotated: see `RotateAnswer`
+  readonly rotateAnswer: (answer: RotateAnswer, ms?: number) => void;
   readonly close: () => Promise<void>;
 }
 
 const cors = { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET, OPTIONS', 'access-control-allow-headers': '*' };
 
-const json = (response: ServerResponse, status: number, body: unknown): void => {
-  response.writeHead(status, { ...cors, 'content-type': 'application/json' }).end(JSON.stringify(body));
+const json = (response: ServerResponse, status: number, body: unknown, headers: Readonly<Record<string, string>> = cors): void => {
+  response.writeHead(status, { ...headers, 'content-type': 'application/json' }).end(JSON.stringify(body));
 };
 
-/** Starts a fake API. `port` 0 picks a free one. */
-export const startFakeApi = async (mode: FakeApiMode, port = 0, slowMs = 0): Promise<FakeApi> => {
-  const requests: FakeApi['requests'][number][] = [];
+// The routes that take the master key, and sign-up. The console calls them from its own origin.
+const keyedRoots: readonly string[] = ['/v1/accounts', '/v1/account', '/v1/balance', '/v1/keys', '/v1/payments', '/v1/topups'];
+
+/** Whether a path is one of the console's keyed routes, or sign-up. */
+export const isKeyedPath = (pathname: string): boolean => keyedRoots.some(root => pathname === root || pathname.startsWith(`${root}/`));
+
+/**
+ * The CORS headers of a keyed route's answer, as the API sends them: the console's origin, matched exactly, and never
+ * credentials. Any other origin, or none, gets no CORS header. Every answer says `Vary: Origin`.
+ */
+export const consoleCors = (origin: string | undefined, allowed: ReadonlySet<string>): Readonly<Record<string, string>> =>
+  origin !== undefined && allowed.has(origin)
+    ? { vary: 'Origin', 'access-control-allow-origin': origin, 'access-control-expose-headers': 'Retry-After, X-Request-Id' }
+    : { vary: 'Origin' };
+
+/** How the rotation answers once it has rotated: as the API does, a 200 no one can read, no answer at all, or late. */
+export type RotateAnswer = 'normal' | 'garble' | 'drop' | 'late';
+
+const rotateAnswers: readonly RotateAnswer[] = ['normal', 'garble', 'drop', 'late'];
+
+const consolePreflight = { 'access-control-allow-methods': 'GET, POST, PATCH, DELETE, OPTIONS', 'access-control-allow-headers': 'Authorization, Content-Type', 'access-control-max-age': '600' };
+
+const sampleMasterKey = (): string => `afm_test_${randomBytes(16).toString('hex')}`;
+
+const fail = (status: number, code: string, message: string) => ({ status, body: { error: { code, message } } });
+
+/**
+ * The answer of a keyed route, from the accounts in `byKey`: sign-up, the account, the rotation and the balance. A
+ * rotation drops the key that sent it, so that key answers `401 invalid_key` from then on.
+ */
+export const keyedAnswer = (method: string, pathname: string, authorization: string | undefined, byKey: Map<string, FakeAccount>, made: FakeAccount[]): { readonly status: number; readonly body: unknown } => {
+  if (pathname === '/v1/accounts') {
+    if (method !== 'POST')
+      return fail(405, 'method_not_allowed', 'Use POST');
+    const account: FakeAccount = { id: `acc_${randomUUID()}`, createdAt: new Date().toISOString(), masterKey: sampleMasterKey(), available: '0.1', held: '0' };
+    byKey.set(account.masterKey, account);
+    made.push(account);
+
+    return {
+      status: 201,
+      body: { id: account.id, createdAt: account.createdAt, masterKey: account.masterKey, freeCredits: '0.1', notice: 'Keep the master key: it is shown once and can\'t be recovered.' },
+    };
+  }
+  const key = /^Bearer (\S+)$/.exec(authorization ?? '')?.[1];
+  if (key === undefined)
+    return fail(401, 'unauthorized', 'Send the master key as Authorization: Bearer <key>');
+  if (/^af_(?:live|test)_/.test(key))
+    return fail(401, 'wrong_key_type', 'This is a payment key. This route takes the master key.');
+  const account = byKey.get(key);
+  if (account === undefined)
+    return fail(401, 'invalid_key', 'This key is not valid');
+  if (pathname === '/v1/account' && method === 'GET')
+    return { status: 200, body: { id: account.id, createdAt: account.createdAt } };
+  if (pathname === '/v1/account/master-key/rotate' && method === 'POST') {
+    byKey.delete(key);
+    account.masterKey = sampleMasterKey();
+    byKey.set(account.masterKey, account);
+
+    return { status: 200, body: { masterKey: account.masterKey } };
+  }
+  if (pathname === '/v1/balance' && method === 'GET')
+    return { status: 200, body: { available: account.available, held: account.held } };
+
+  return fail(404, 'not_found', 'Not found');
+};
+
+/** Starts a fake API. `port` 0 picks a free one. `consoleOrigins` may call the keyed routes from a browser. */
+export const startFakeApi = async (mode: FakeApiMode, port = 0, slowMs = 0, consoleOrigins: readonly string[] = []): Promise<FakeApi> => {
+  const requests: FakeRequest[] = [];
+  const allowed = new Set(consoleOrigins);
+  const byKey = new Map<string, FakeAccount>();
+  const made: FakeAccount[] = [];
+  let limited = false;
+  let requestCounter = 0;
+  let rotation: { answer: RotateAnswer; ms: number } = { answer: 'normal', ms: 0 };
   // Each open stream with the filters it was opened with
   const streams = new Map<ServerResponse, URLSearchParams>();
   // The hosts listed while the fake runs
@@ -897,8 +1008,84 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0, slowMs = 0): Pro
   };
   const server: Server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://fake.example.com');
-    requests.push({ path: `${url.pathname}${url.search}`, headers: request.headers });
-    if (request.method === 'OPTIONS') {
+    const method = request.method ?? 'GET';
+    if (url.pathname === '/_test/requests' && method === 'GET') {
+      json(response, 200, { requests });
+
+      return;
+    }
+    if (url.pathname === '/_test/limited' && method === 'POST') {
+      limited = url.searchParams.get('on') === '1';
+      json(response, 200, { limited });
+
+      return;
+    }
+    if (url.pathname === '/_test/rotate' && method === 'POST') {
+      const answer = url.searchParams.get('answer') ?? 'normal';
+      if (!rotateAnswers.includes(answer as RotateAnswer)) {
+        json(response, 400, { error: { code: 'invalid_request', message: `The answer is ${rotateAnswers.join(', ')}` } });
+
+        return;
+      }
+      rotation = { answer: answer as RotateAnswer, ms: Number(url.searchParams.get('ms') ?? '0') || 0 };
+      json(response, 200, rotation);
+
+      return;
+    }
+    if (url.pathname === '/_test/held' && method === 'POST') {
+      for (const account of made)
+        account.held = url.searchParams.get('amount') ?? '0';
+      json(response, 200, { accounts: made.length });
+
+      return;
+    }
+    requests.push({ method, path: `${url.pathname}${url.search}`, query: url.search.slice(1), headers: request.headers });
+    if (isKeyedPath(url.pathname)) {
+      requestCounter += 1;
+      const origin = typeof request.headers.origin === 'string' ? request.headers.origin : undefined;
+      const headers: Record<string, string> = { ...consoleCors(origin, allowed), 'x-request-id': `req_${requestCounter}` };
+      if (method === 'OPTIONS') {
+        // The console's preflight; any other is answered as a path with no route, as the API does
+        if (headers['access-control-allow-origin'] !== undefined)
+          response.writeHead(204, { ...headers, ...consolePreflight }).end();
+        else
+          json(response, 404, { error: { code: 'not_found', message: 'Not found' } }, headers);
+
+        return;
+      }
+      if (mode === 'down') {
+        json(response, 500, { error: { code: 'internal_error', message: 'Internal server error' } }, headers);
+
+        return;
+      }
+      if (limited) {
+        json(response, 429, { error: { code: 'rate_limited', message: 'Too many requests' } }, { ...headers, 'retry-after': '30' });
+
+        return;
+      }
+      const found = keyedAnswer(method, url.pathname, request.headers.authorization, byKey, made);
+      const rotated = url.pathname === '/v1/account/master-key/rotate' && found.status === 200;
+      // The rotation happened above; only its answer is changed
+      if (rotated && rotation.answer === 'drop') {
+        response.destroy();
+
+        return;
+      }
+      const send = (): void => {
+        if (rotated && rotation.answer === 'garble')
+          response.writeHead(200, { ...headers, 'content-type': 'text/html' }).end('<html><body>Bad gateway</body></html>');
+        else
+          json(response, found.status, found.body, headers);
+      };
+      const delay = rotated && rotation.answer === 'late' ? rotation.ms : slowMs;
+      if (delay > 0)
+        setTimeout(send, delay);
+      else
+        send();
+
+      return;
+    }
+    if (method === 'OPTIONS') {
       response.writeHead(204, cors).end();
 
       return;
@@ -957,6 +1144,14 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0, slowMs = 0): Pro
     emitCall: push,
     listChecked: host => void listed.add(host.toLowerCase()),
     openStreams: () => streams.size,
+    accounts: () => made,
+    allowConsoleOrigin: origin => void allowed.add(origin),
+    limit: on => {
+      limited = on;
+    },
+    rotateAnswer: (answer, ms = 0) => {
+      rotation = { answer, ms };
+    },
     close: async () => {
       for (const stream of streams.keys())
         stream.end();
@@ -976,12 +1171,12 @@ export const refusedUrl = async (): Promise<string> => {
   return `http://127.0.0.1:${port}`;
 };
 
-// Run by hand: node tests/support/fakeApi.ts [full|empty|down|capped|edge|checked] [port] [milliseconds every read waits]
+// Run by hand: node tests/support/fakeApi.ts [full|empty|down|capped|edge|checked] [port] [milliseconds every read waits] [console origin...]
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const [mode = 'full', port = '4010', slow = '0'] = process.argv.slice(2);
+  const [mode = 'full', port = '4010', slow = '0', ...origins] = process.argv.slice(2);
   if (mode !== 'full' && mode !== 'empty' && mode !== 'down' && mode !== 'capped' && mode !== 'edge' && mode !== 'checked')
     throw new Error('The mode is full, empty, down, capped, edge or checked');
-  const api = await startFakeApi(mode, Number(port), Number(slow));
+  const api = await startFakeApi(mode, Number(port), Number(slow), origins);
   process.stdout.write(`The fake API answers in ${mode} mode at ${api.url}\n`);
   process.on('SIGTERM', () => void api.close().then(() => process.exit(0)));
   process.on('SIGINT', () => void api.close().then(() => process.exit(0)));

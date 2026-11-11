@@ -1950,7 +1950,8 @@ describe('every link of the public pages and files', () => {
 describe('the two hosts of one app', () => {
   const consolePaths = ['/', '/topup', '/keys', '/payments', '/settings', '/signin'];
   const publicFiles = ['/llms.txt', '/llms-full.txt', '/skills/anyfare-buyer/SKILL.md', '/index.md', '/agents.md', '/services.md', '/calls.md', '/sitemap.xml', '/opengraph-image'];
-  const marker = 'The console is being built';
+  // The server's shell of a console page: the browser fills it (tests/functional/console.test.ts has the rest)
+  const marker = 'class="console-opening"';
 
   it.each([...publicPages.slice(1), ...publicFiles])('serves %s on the public host and answers 404 on the console host', async path => {
     const onSite = await getAs(full, publicHost, path);
@@ -1963,7 +1964,7 @@ describe('the two hosts of one app', () => {
     expect(onConsole.headers['x-robots-tag']).toBe('noindex, nofollow');
   });
 
-  it.each(consolePaths)('serves the Console page at %s on the console host, and never on the public host', async path => {
+  it.each(consolePaths)('serves a console page at %s on the console host, and never on the public host', async path => {
     const onConsole = await getAs(full, consoleHost, path);
     const onSite = await getAs(full, publicHost, path);
 
@@ -1975,7 +1976,7 @@ describe('the two hosts of one app', () => {
       expect(onSite.status).toBe(404);
   });
 
-  it('serves the Console page for any query on a console path, and no console page under any other path', async () => {
+  it('serves a console page for any query on a console path, and no console page under any other path', async () => {
     expect((await getAs(full, consoleHost, '/keys?x=1&y=2')).status).toBe(200);
     expect((await getAs(full, consoleHost, '/signin?next=/topup')).body).toContain(marker);
     for (const path of ['/console', '/_/console', '/_/console?amount=5', '/topup/x', '/keys/1', '/Topup', '/index.md', '/services/']) {
@@ -1987,7 +1988,7 @@ describe('the two hosts of one app', () => {
     expect((await getAs(full, publicHost, '/_/console')).status).toBe(404);
   });
 
-  it('serves the home page, not the Console page, on the public host at /, and a Markdown request there is not a console request', async () => {
+  it('serves the home page, not a console page, on the public host at /, and a Markdown request there is not a console request', async () => {
     const home = await getAs(full, publicHost, '/');
     const markdown = await getAs(full, consoleHost, '/', { accept: 'text/markdown' });
 
@@ -2020,8 +2021,8 @@ describe('the two hosts of one app', () => {
     expect(forged.body).not.toContain(marker);
     expect(reverse.status).toBe(404);
     expect(pageHeaders.body).toContain(marker);
-    // The header and the footer lead to the public site, as the console host's page does
-    expect(pageHeaders.body).toContain(`href="${site}/services"`);
+    // The console's own frame, as on the console host: not the public site's header
+    expect(pageHeaders.body).not.toContain('class="site-header');
   });
 
   it.each([['/_/health'], ['/icon'], ['/apple-icon'], ['/logo.svg'], ['/robots.txt']])('serves %s on both hosts', async path => {
@@ -2077,13 +2078,12 @@ describe('the two hosts of one app', () => {
     expect(onSite.body).toContain(`Sitemap: ${site}/sitemap.xml`);
   });
 
-  it('has noindex, a canonical URL on the console host, no Link header and no link to a twin on the Console page', async () => {
-    for (const path of ['/', '/topup?amount=5']) {
+  it('has noindex, its own title, no Link header and no link to a twin on a console page', async () => {
+    for (const [path, title] of [['/', 'Overview'], ['/topup?amount=5', 'Top up'], ['/keys', 'Keys']] as const) {
       const { headers, body } = await getAs(full, consoleHost, path);
 
       expect(body).toMatch(/<meta name="robots" content="noindex, nofollow"\/>/);
-      expect(body).toContain(`<link rel="canonical" href="${consoleUrl}"/>`);
-      expect(body).toContain('<title>The console is being built | Anyfare</title>');
+      expect(body).toContain(`<title>${title} | Anyfare console</title>`);
       expect(body).not.toContain('text/markdown');
       expect(body).not.toContain('llms.txt: a guide for agents');
       expect(body).not.toContain('og:image');
@@ -2094,35 +2094,22 @@ describe('the two hosts of one app', () => {
     expect((await getAs(full, publicHost, '/')).body).not.toContain('noindex');
   });
 
-  it('shows the five plans, the three cards with real commands and copy buttons, and the two links', async () => {
+  it('serves a shell with no account data, no form and no key field: the browser fills it', async () => {
     const { body } = await getAs(full, consoleHost, '/');
-    const text = textOfHtml(body);
 
-    for (const line of ['See the balance', 'Make and limit payment keys', 'Top up with any token', 'See every payment', 'Rotate the master key'])
-      expect(text).toContain(line);
-    expect(text).toContain('What works today');
-    expect(text).toContain('curl -X POST https://api.example.com/v1/accounts');
-    expect(text).toContain('curl -X POST https://api.example.com/v1/keys');
-    expect(text).toContain('-d \'{"label":"research","dailyBudget":"5","maxPrice":"0.05"}\'');
-    expect(text).toContain('curl -X POST https://api.example.com/v1/topups');
-    expect([...body.matchAll(/>Copy</g)]).toHaveLength(3);
-    expect(body).toContain(`href="${site}/agents"`);
-    expect(body).toContain(`href="${site}/llms.txt"`);
+    expect(body).toContain(marker);
     expect(body).not.toMatch(/<form|<input|<textarea|type="password"/);
-    expect(body).not.toMatch(/afm_live_|af_live_/);
+    expect(body).not.toMatch(/afm_live_|afm_test_|af_live_/);
   });
 
-  it('has a header and a footer that lead to the public site, and a Console button that is the current page', async () => {
+  it('has no header or footer of the public site, and no relative link but the framework\'s files', async () => {
     const { body } = await getAs(full, consoleHost, '/');
     const hrefs = [...body.matchAll(/\shref="([^"]*)"/g)].map(match => match[1]!);
 
-    for (const path of ['/services', '/calls', '/agents', '/agents#api', '/llms.txt', '/skills/anyfare-buyer/SKILL.md'])
-      expect(hrefs).toContain(`${site}${path}`);
-    expect(hrefs).toContain(`${site}/`);
-    expect(body).toMatch(new RegExp(`<a class="btn primary sm" href="${consoleUrl}" aria-current="page">Console</a>`));
+    expect(body).not.toContain('class="site-header');
+    expect(body).not.toContain('class="site-footer');
     expect(body).not.toContain('aria-pressed');
-    // No link of the page leads to a page of the console host that is not the Console page, and none is relative but the files
-    expect(hrefs.filter(href => href.startsWith('/') && !href.startsWith('/_next/') && !/^\/(icon|apple-icon)\?/.test(href))).toEqual([]);
+    expect(hrefs.filter(href => href.startsWith('/') && !href.startsWith('/_next/') && !/^\/(icon|apple-icon)\?/.test(href) && href !== '#main')).toEqual([]);
   });
 
   it('shows the public header with a Console button that is not the current page on the public host', async () => {
@@ -2132,37 +2119,43 @@ describe('the two hosts of one app', () => {
     expect(body).toContain('aria-pressed');
   });
 
-  it('says the same on the 404 page of the console host, with its header on the public site', async () => {
+  it('answers 404 with noindex for a public page on the console host, without the public site\'s header', async () => {
     const reply = await getAs(full, consoleHost, '/services');
 
     expect(reply.status).toBe(404);
     expect(reply.body).toMatch(/<meta name="robots" content="noindex/);
-    expect(reply.body).toContain(`href="${site}/services"`);
+    expect(reply.body).not.toContain('class="site-header');
   });
 
   describe('the amount of a top-up link', () => {
-    const amountOf = async (query: string): Promise<string | undefined> => {
-      const { status, body } = await getAs(full, consoleHost, `/topup${query}`);
+    // What the Top up page gets from the server: the amount as a number, and the flag that a link's amount was not used
+    const propsOf = async (path: string): Promise<{ readonly amount: string; readonly unused: string } | undefined> => {
+      const { status, body } = await getAs(full, consoleHost, path);
       expect(status).toBe(200);
+      const found = /\{\\"page\\":\\"[a-z]+\\",\\"amount\\":([^,]*),\\"amountUnused\\":(true|false)\}/.exec(body);
 
-      return /"amount":"([^"]*)"/.exec(textOfHtml(body))?.[1];
+      return found === null ? undefined : { amount: found[1]!, unused: found[2]! };
     };
 
     it.each([
-      ['?amount=5', '5'], ['?amount=5.50', '5.5'], ['?amount=1', '1'], ['?amount=10000', '10000'], ['?amount=5&amount=9', '5'],
+      ['?amount=5', '5'], ['?amount=5.50', '5.5'], ['?amount=1', '1'], ['?amount=1000', '1000'], ['?amount=5&amount=9', '5'],
     ])('uses the amount in %s: %s', async (query, expected) => {
-      expect(await amountOf(query)).toBe(expected);
+      expect(await propsOf(`/topup${query}`)).toEqual({ amount: expected, unused: 'false' });
     });
 
-    it.each(['?amount=0', '?amount=-1', '?amount=1e9', '?amount=%3Cscript%3E', '?amount=5abc', '?amount=10000.01', '?amount=', '?amount=5.555', '?amount=%205', '?other=5', ''])('ignores %s and shows the example\'s own amount', async query => {
-      expect(await amountOf(query)).toBe('20');
+    it.each(['?amount=0', '?amount=-1', '?amount=1e9', '?amount=%3Cscript%3E', '?amount=5abc', '?amount=1000.01', '?amount=10000', '?amount=', '?amount=5.555', '?amount=%205'])('ignores %s and says the link\'s amount was not used', async query => {
+      expect(await propsOf(`/topup${query}`)).toEqual({ amount: '\\"$undefined\\"', unused: 'true' });
+    });
+
+    it.each(['?other=5', ''])('has no amount and no flag for %j', async query => {
+      expect(await propsOf(`/topup${query}`)).toEqual({ amount: '\\"$undefined\\"', unused: 'false' });
     });
 
     it('uses an amount on /topup only', async () => {
       for (const path of ['/', '/keys', '/payments', '/settings', '/signin']) {
         const { body } = await getAs(full, consoleHost, `${path}?amount=5`);
 
-        expect(/"amount":"([^"]*)"/.exec(textOfHtml(body))?.[1], path).toBe('20');
+        expect(body, path).not.toMatch(/\\"amount\\":5/);
       }
     });
 
@@ -2181,22 +2174,13 @@ describe('the two hosts of one app', () => {
       expect((await getAs(full, consoleHost, `/services/${mark}`)).body).not.toContain(mark);
     });
   });
-
-  it('shows the example with the amount and keeps the others, whatever the query', async () => {
-    const { body } = await getAs(full, consoleHost, '/topup?amount=7.25');
-    const text = textOfHtml(body);
-
-    expect(text).toContain('"amount":"7.25"');
-    expect(text).toContain('"dailyBudget":"5"');
-    expect(text).not.toContain('"amount":"20"');
-  });
 });
 
 describe('one host for the site and the console', () => {
   const sharedHost = new URL(site).host;
-  const marker = 'The console is being built';
+  const marker = 'class="console-opening"';
 
-  it('serves every public page, and the Console page at /console and at the console paths', async () => {
+  it('serves every public page, and a console page at /console and at the console paths', async () => {
     for (const path of ['/', '/services', '/agents', '/llms.txt', '/sitemap.xml', '/robots.txt'])
       expect((await getAs(shared, sharedHost, path)).status, path).toBe(200);
     expect((await getAs(shared, sharedHost, '/')).body).not.toContain(marker);
@@ -2220,14 +2204,17 @@ describe('one host for the site and the console', () => {
     expect(home.body).not.toMatch(new RegExp(`<a [^>]*href="${site}"[^>]*>(Console|Open the console)`));
   });
 
-  it('keeps the public pages\' header and footer, and the page\'s canonical URL at /console', async () => {
+  it('gives a console page the console\'s frame and policy, not the public pages\' header, and its Overview at /console', async () => {
     const reply = await getAs(shared, sharedHost, '/topup?amount=5');
 
-    expect(reply.body).toContain(`<link rel="canonical" href="${site}/console"/>`);
-    expect(reply.body).toContain('href="/services"');
-    expect(textOfHtml(reply.body)).toContain('"amount":"5"');
-    expect(reply.headers['x-robots-tag']).toBeUndefined();
+    expect(reply.body).not.toContain('class="site-header');
+    expect(reply.body).toContain('\\"amount\\":5,');
+    expect(reply.body).toContain('\\"overviewPath\\":\\"/console\\"');
+    expect(String(reply.headers['content-security-policy'])).toContain('connect-src \'self\' https://api.example.com;');
+    expect(reply.headers['x-robots-tag']).toBe('noindex, nofollow');
     expect(reply.body).toMatch(/<meta name="robots" content="noindex, nofollow"\/>/);
+    // The public pages keep theirs
+    expect((await getAs(shared, sharedHost, '/services')).body).toContain('class="site-header');
   });
 });
 
@@ -2890,11 +2877,11 @@ describe('the copy buttons', () => {
       expect(body).toContain(`aria-label="Copy the command of step ${number}"`);
   });
 
-  it('are on the Console page\'s cards', async () => {
+  it('are not in the console\'s server HTML, a shell the browser fills: its blocks come with their button there', async () => {
     const { body } = await getAs(full, 'console.example.com', '/').then(reply => ({ body: reply.body }));
 
-    expect(preCount(body)).toBeGreaterThan(0);
-    expect(preCount(body)).toBe(blockCount(body));
+    expect(preCount(body)).toBe(0);
+    expect(blockCount(body)).toBe(0);
   });
 
   it('are on every block of the check page, and the JSON tab has its own Copy JSON', async () => {

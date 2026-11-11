@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { topupAmount } from '../src/console/amount';
-import { todayCards } from '../src/console/content';
-import { consoleLink, consolePageRoute, hostKey, surfaceFromHeader, surfaceOf, verdictFor } from '../src/hosts';
+import { linkAmount, maxTopupAmount, topupAmount } from '../src/console/amount';
+import { consoleLink, consoleOverviewPath, consolePageRoute, consoleRouteOf, consoleRoutes, hostKey, isConsoleRoute, surfaceFromHeader, surfaceOf, verdictFor } from '../src/hosts';
 import { consoleRobotsRules } from '../src/seo/robots';
 import { contentSecurityPolicy } from '../src/security/csp';
 
@@ -80,7 +79,10 @@ describe('which host a request is for', () => {
 });
 
 describe('what each host serves', () => {
-  it.each(['/', '/topup', '/keys', '/payments', '/settings', '/signin'])('serves the Console page at %s on the console host', path => {
+  const consolePages = ['/', '/topup', '/keys', '/payments', '/settings', '/signin'];
+  const internal = [...consoleRoutes, `${consolePageRoute}/`, `${consolePageRoute}/x`, `${consolePageRoute}/keys/1`];
+
+  it.each(consolePages)('serves a console page at %s on the console host', path => {
     expect(verdictFor('console', path)).toBe('console');
   });
 
@@ -88,22 +90,46 @@ describe('what each host serves', () => {
     expect(verdictFor('console', path)).toBe('public');
   });
 
-  it.each(['/services', '/services/api.example.com', '/calls', '/calls/pay_x', '/agents', '/check', '/index.md', '/agents.md', '/llms.txt', '/llms-full.txt', '/skills/anyfare-buyer/SKILL.md', '/sitemap.xml', '/opengraph-image', '/md/agents', '/dev/components', '/console', '/topup/x', '/keys/', '/Topup', consolePageRoute, '/nothing'])('serves nothing at %s on the console host', path => {
+  it.each(['/services', '/services/api.example.com', '/calls', '/calls/pay_x', '/agents', '/check', '/index.md', '/agents.md', '/llms.txt', '/llms-full.txt', '/skills/anyfare-buyer/SKILL.md', '/sitemap.xml', '/opengraph-image', '/md/agents', '/dev/components', '/console', '/topup/x', '/keys/', '/Topup', '/signin/', '/settings.md', '/nothing', ...internal])('serves nothing at %s on the console host', path => {
     expect(verdictFor('console', path)).toBe('hidden');
   });
 
-  it('never serves the Console page on the public host, under any path', () => {
-    for (const path of ['/', '/topup', '/keys', '/payments', '/settings', '/signin', '/console'])
-      expect(verdictFor('site', path)).toBe('public');
-    expect(verdictFor('site', consolePageRoute)).toBe('hidden');
+  it('never serves a console page on the public host, under any path', () => {
+    for (const path of [...consolePages, '/console'])
+      expect(verdictFor('site', path), path).toBe('public');
+    for (const path of internal)
+      expect(verdictFor('site', path), path).toBe('hidden');
   });
 
-  it('serves the Console page at /console and at the console paths when the hosts are one, and the home page at /', () => {
+  it('serves the Overview at /console and the console paths when the hosts are one, and the home page at /', () => {
     expect(verdictFor('shared', '/console')).toBe('console');
-    expect(verdictFor('shared', '/topup')).toBe('console');
+    for (const path of consolePages.slice(1))
+      expect(verdictFor('shared', path), path).toBe('console');
     expect(verdictFor('shared', '/')).toBe('public');
     expect(verdictFor('shared', '/services')).toBe('public');
-    expect(verdictFor('shared', consolePageRoute)).toBe('hidden');
+    expect(verdictFor('shared', '/console/keys')).toBe('public');
+    for (const path of internal)
+      expect(verdictFor('shared', path), path).toBe('hidden');
+  });
+
+  it('never serves a console route asked for directly, on any host', () => {
+    for (const surface of ['site', 'console', 'shared'] as const) {
+      for (const path of internal)
+        expect(verdictFor(surface, path), `${surface} ${path}`).toBe('hidden');
+    }
+    expect(isConsoleRoute('/_/consoles')).toBe(false);
+    expect(isConsoleRoute('/_/console')).toBe(true);
+  });
+
+  it('leads each console path to its own internal route, and the Overview to the console route itself', () => {
+    expect(consoleRouteOf('/')).toBe('/_/console');
+    expect(consoleRouteOf('/console')).toBe('/_/console');
+    expect(consoleRouteOf('/keys')).toBe('/_/console/keys');
+    expect(consoleRouteOf('/topup')).toBe('/_/console/topup');
+    expect(consoleRouteOf('/payments')).toBe('/_/console/payments');
+    expect(consoleRouteOf('/settings')).toBe('/_/console/settings');
+    expect(consoleRouteOf('/signin')).toBe('/_/console/signin');
+    expect(consoleRoutes).toEqual(['/_/console', '/_/console/topup', '/_/console/keys', '/_/console/payments', '/_/console/settings', '/_/console/signin']);
   });
 });
 
@@ -113,6 +139,12 @@ describe('the links into the console', () => {
     expect(consoleLink(hosts, '/topup')).toBe('https://console.example.com/topup');
     expect(consoleLink({ siteUrl: 'http://localhost:3000', consoleUrl: 'http://localhost:3000' })).toBe('http://localhost:3000/console');
     expect(consoleLink({ siteUrl: 'http://localhost:3000', consoleUrl: 'http://localhost:3000' }, '/keys')).toBe('http://localhost:3000/keys');
+  });
+
+  it('put the Overview at / on the console host, and at /console when the hosts are one', () => {
+    expect(consoleOverviewPath(hosts)).toBe('/');
+    expect(consoleOverviewPath(local)).toBe('/');
+    expect(consoleOverviewPath({ siteUrl: 'http://localhost:3000', consoleUrl: 'http://localhost:3000' })).toBe('/console');
   });
 });
 
@@ -134,14 +166,18 @@ describe('the console host\'s policy and robots.txt', () => {
 });
 
 describe('the amount of a top-up link', () => {
+  it('is at most 1,000', () => {
+    expect(maxTopupAmount).toBe(1000);
+  });
+
   it.each([
-    ['5', 5], ['5.50', 5.5], ['5.5', 5.5], ['1', 1], ['1.00', 1], ['10000', 10000], ['10000.00', 10000], ['0123', 123], ['99.99', 99.99],
+    ['5', 5], ['5.50', 5.5], ['5.5', 5.5], ['1', 1], ['1.00', 1], ['1000', 1000], ['1000.00', 1000], ['0123', 123], ['99.99', 99.99], ['999.99', 999.99],
   ])('reads %j as %d', (value, amount) => {
     expect(topupAmount(value)).toBe(amount);
   });
 
   it.each([
-    '0', '0.99', '-1', '1e9', '1E2', '<script>', '5abc', '', ' 5', '5 ', '+5', '5.', '.5', '5.555', '10000.01', '10001', '1,5', '0x10', 'NaN', 'Infinity', '٥', '5\n', '1'.repeat(30),
+    '0', '0.99', '-1', '1e9', '1E2', '<script>', '5abc', '', ' 5', '5 ', '+5', '5.', '.5', '5.555', '1000.01', '1001', '10000', '1,5', '0x10', 'NaN', 'Infinity', '٥', '5\n', '1'.repeat(30),
   ])('ignores %j', value => {
     expect(topupAmount(value)).toBeUndefined();
   });
@@ -154,13 +190,11 @@ describe('the amount of a top-up link', () => {
     expect(topupAmount(['x', '9'])).toBeUndefined();
   });
 
-  it('goes into the top-up example as a number, and the other examples never change', () => {
-    const [account, key, topup] = todayCards({ ...hosts, apiUrl: 'https://api.example.com', payUrl: 'https://pay.example.com' }, 5.5);
-    const plain = todayCards({ ...hosts, apiUrl: 'https://api.example.com', payUrl: 'https://pay.example.com' });
-
-    expect(topup!.command).toContain('"amount":"5.5"');
-    expect(plain[2]!.command).toContain('"amount":"20"');
-    expect(account).toEqual(plain[0]);
-    expect(key).toEqual(plain[1]);
+  it('tells a link with no amount from one whose amount was not used', () => {
+    expect(linkAmount([])).toEqual({ kind: 'none' });
+    expect(linkAmount(['5'])).toEqual({ kind: 'used', amount: 5 });
+    expect(linkAmount(['7.25', 'x'])).toEqual({ kind: 'used', amount: 7.25 });
+    for (const values of [[''], ['abc'], ['%3Cscript%3E'], ['1001'], ['0'], ['x', '5']])
+      expect(linkAmount(values), values.join()).toEqual({ kind: 'unused' });
   });
 });
