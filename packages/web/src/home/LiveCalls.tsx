@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 import { paths } from '../api/endpoints';
 import type { Call } from '../api/types';
@@ -13,6 +13,7 @@ import { LiveDot } from '../components/LiveDot';
 import { useSettings } from '../components/Settings';
 import { count, usd } from '../format';
 import { useCallStream } from '../live/useCallStream';
+import { useNow } from '../live/useNow';
 import { changeOf, formatChange } from './change';
 import { lastCallsSize } from './data';
 
@@ -29,19 +30,6 @@ export interface LiveCallsProps {
   // The server's clock when it rendered: the "when" of each row counts from it until the browser takes over
   readonly now: number;
 }
-
-// The browser's time, ticking each second. It starts at the server's time, so the first render matches.
-const useNow = (serverNow: number): number => {
-  const [now, setNow] = useState(serverNow);
-  useEffect(() => {
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1_000);
-
-    return () => clearInterval(timer);
-  }, []);
-
-  return now;
-};
 
 const rememberedCalls = 500;
 

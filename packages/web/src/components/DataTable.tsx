@@ -5,10 +5,12 @@ import type { ReactNode } from 'react';
  * never widens the page. Put `<thead>` and `<tbody>` inside; mark number columns `className="r"`. `label`
  * names the scrolling box for screen readers.
  */
-export const DataTable = ({ label, title, aside, footer, children }: {
+export const DataTable = ({ label, title, aside, top, footer, children }: {
   readonly label: string;
   readonly title?: ReactNode;
   readonly aside?: ReactNode;
+  // Above the scrolling box, under the title: a filter bar, or a notice
+  readonly top?: ReactNode;
   readonly footer?: ReactNode;
   readonly children: ReactNode;
 }) => (
@@ -19,6 +21,7 @@ export const DataTable = ({ label, title, aside, footer, children }: {
         {aside === undefined ? null : <span className="xs muted">{aside}</span>}
       </div>
     )}
+    {top}
     <div className="inner table-scroll" role="region" aria-label={label} tabIndex={0}>
       <table className="t">{children}</table>
     </div>

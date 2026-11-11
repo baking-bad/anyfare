@@ -1,0 +1,42 @@
+/* The Calls page. Classes only: the content security policy allows no inline style. */
+
+.calls-intro { max-width: 720px; }
+
+/* Today's numbers and calls per minute */
+.ops-top { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 1024px) { .ops-top { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); } }
+.ops-counts { display: grid; gap: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 640px) { .ops-counts { grid-template-columns: 1fr 1fr; } }
+.counter .v { font-size: 28px; line-height: 32px; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
+.counter-item { gap: 2px; }
+
+/* The grid */
+.f-rail { width: 160px; }
+.f-svc { width: 220px; }
+.f-status { width: 130px; }
+.grid-bar .filter-label { white-space: nowrap; }
+.call-link { display: flex; flex-direction: column; gap: 2px; text-decoration: none; color: inherit; max-width: 260px; }
+.call-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.call-service, .call-endpoint { display: block; }
+.buyer { font-size: 12px; }
+.state-cell { padding: 24px 16px; white-space: normal; }
+.state-inner { position: sticky; left: 0; width: min(100%, calc(100vw - 104px)); }
+.state-cell .empty { padding: 16px 0; }
+table.t tr.fresh td { animation: enter 900ms var(--ease-out); }
+@media (max-width: 640px) {
+  .grid-bar select.input, .grid-bar .search .input, .grid-bar .btn { height: 44px; }
+  .f-svc { width: 200px; }
+  .new-calls { min-height: 44px; }
+  .pager .btn { min-height: 44px; min-width: 44px; }
+}
+
+/* Top 5 */
+.top-grid { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 860px) { .top-grid { grid-template-columns: minmax(0, 1fr); } }
+.top-list { display: flex; flex-direction: column; }
+.top-list .item { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--divider); font-size: var(--text-sm); text-decoration: none; color: inherit; }
+.top-list .item:hover .ellipsis { text-decoration: underline; text-underline-offset: 2px; }
+.top-list .item:first-child { border-top: 0; }
+.top-list .rank { color: var(--text-secondary); font-variant-numeric: tabular-nums; font-size: var(--text-xs); font-weight: 600; }
+.top-path { font-size: 12px; }
+@media (pointer: coarse) { .top-list .item { min-height: 44px; } }

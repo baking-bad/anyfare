@@ -33,10 +33,12 @@ const PageButton = ({ page, current = false, disabled = false, label, icon = fal
  * The pager under a grid: "1–20 of 240", back, page numbers with gaps, next. Give `onPage` from a client
  * component, or `hrefFor` to make the buttons links.
  */
-export const Pager = ({ page, size, total, onPage, hrefFor }: {
+export const Pager = ({ page, size, total, capped = false, onPage, hrefFor }: {
   readonly page: number;
   readonly size: number;
   readonly total: number;
+  // The total is a count that stopped at its cap: it reads "10,000+"
+  readonly capped?: boolean;
   readonly onPage?: (page: number) => void;
   readonly hrefFor?: (page: number) => string;
 }) => {
@@ -48,7 +50,7 @@ export const Pager = ({ page, size, total, onPage, hrefFor }: {
 
   return (
     <nav className="pager" aria-label="Pages">
-      <span className="small muted num">{count(from)}–{count(to)} of {count(total)}</span>
+      <span className="small muted num">{count(from)}–{count(to)} of {count(total)}{capped ? '+' : ''}</span>
       <div className="row pager-pages">
         <PageButton page={current - 1} disabled={current <= 1} label="Back" icon back onPage={onPage} hrefFor={hrefFor} />
         {numbers.map((n, i) => (

@@ -1,6 +1,9 @@
 import type { Reader } from '../api/reader';
 import type { SiteSettings } from '../config';
+import { loadCalls } from '../calls/data';
+import { parseFilters } from '../calls/filters';
 import { loadHome } from '../home/data';
+import { callsMarkdown } from './calls';
 import { homeMarkdown } from './home';
 
 // Every public page has a Markdown twin: its URL with `.md`, or its own URL asked for with
@@ -26,6 +29,14 @@ export interface MarkdownPage {
 
 export const markdownPages: readonly MarkdownPage[] = [
   { pattern: /^\/$/, render: async ({ settings, read }) => homeMarkdown(settings, await loadHome(read)) },
+  {
+    pattern: /^\/calls$/,
+    render: async ({ settings, read, search }) => {
+      const filters = parseFilters(search);
+
+      return callsMarkdown(settings, await loadCalls(read, filters), filters);
+    },
+  },
 ];
 
 /** The entry for an HTML page, when it has a Markdown twin. */

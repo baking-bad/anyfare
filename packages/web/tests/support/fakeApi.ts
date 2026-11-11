@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
-import type { Call, CallsPage, DailyPoint, LiveStats, PaidWith, Period, ServiceRow, ServicesPage, Stats } from '../../src/api/types';
+import type { Call, CallsPage, DailyPoint, LiveStats, PaidWith, Period, ServiceRow, ServicesPage, Stats, TopStats } from '../../src/api/types';
 
 // A small HTTP server that answers the public read API's endpoints with sample data, for the website's
 // tests and for looking at the site by hand. The data is sample data: hosts are example.com, the payer
@@ -41,7 +41,7 @@ export const sampleCall = (index: number, now: number, secondsAgo = index * 7 + 
     method: 'GET',
     paidWith,
     apiPaidWith: paidWith === 'credits' ? 'base' : index % 2 === 0 ? 'base' : 'near',
-    payer: paidWith === 'credits' ? null : 'sample.near',
+    payer: paidWith === 'credits' ? null : paidWith === 'base' ? `0x${'ab12'.repeat(10)}` : 'sample.near',
     amount: money(0.001 * (1 + index % 10)),
     status: free ? 'free' : 'paid',
     apiStatus: free ? 502 : 200,
@@ -101,12 +101,44 @@ const serviceRows = (empty: boolean): readonly ServiceRow[] => empty ? [] : host
   trend: Array.from({ length: 30 }, (_, step) => (step * 3 + index * 5) % 17),
 }));
 
-const callsOf = (now: number, empty: boolean): readonly Call[] => empty ? [] : Array.from({ length: 40 }, (_, index) => sampleCall(index, now));
+const callsOf = (now: number, empty: boolean): readonly Call[] => empty ? [] : Array.from({ length: 60 }, (_, index) => sampleCall(index, now));
 
 const intParam = (value: string | null, fallback: number, max: number): number => {
   const parsed = Number(value);
 
   return Number.isInteger(parsed) && parsed >= 1 ? Math.min(parsed, max) : fallback;
+};
+
+/** Whether a call passes the filters of a list or a stream: `paidWith`, `service` (a part of the host), `endpoint` and `status`. */
+export const matchesCall = (call: Call, params: URLSearchParams): boolean => {
+  const paidWith = params.get('paidWith');
+  const service = params.get('service');
+  const endpoint = params.get('endpoint');
+  const status = params.get('status');
+
+  return (paidWith === null || paidWith === call.paidWith)
+    && (service === null || call.service.toLowerCase().includes(service.toLowerCase()))
+    && (endpoint === null || endpoint === call.path)
+    && (status === null || status === call.status);
+};
+
+const topScale: Readonly<Record<Period, number>> = { today: 0.11, '7d': 0.72, '30d': 1, all: 1.1 };
+
+const sampleTop = (period: Period, now: number, empty: boolean): TopStats => {
+  const scale = topScale[period];
+
+  return {
+    period,
+    updatedAt: empty ? null : new Date(now - 60_000).toISOString(),
+    services: empty ? [] : hosts.map((host, index) => ({ host, calls: Math.round((612 - index * 97) * scale) })),
+    endpoints: empty ? [] : hosts.map((host, index) => ({ host, path: `/v1/sample/${index % 2 === 0 ? 'quotes/latest' : 'lookup'}`, calls: Math.round((402 - index * 61) * scale) })),
+    paidWith: empty ? [] : rails.map((paidWith, index) => ({ paidWith, calls: Math.round((662 - index * 120) * scale) })),
+    topupTokens: empty ? [] : [
+      { network: 'base', token: 'USDC', count: Math.max(1, Math.round(7 * scale)) },
+      { network: 'solana', token: 'SOL', count: Math.max(1, Math.round(3 * scale)) },
+      { network: 'near', token: 'USDC', count: 1 },
+    ],
+  };
 };
 
 /** The answer to a read: its status and body. Undefined for a path the fake doesn't know. */
@@ -117,10 +149,17 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
     return { status: 200, body: sampleStats(now, empty) };
   if (pathname === '/v1/stats/live')
     return { status: 200, body: sampleLive(now, empty) };
+  if (pathname === '/v1/stats/top') {
+    const period = searchParams.get('period') ?? '30d';
+    if (!periods.includes(period as Period))
+      return { status: 400, body: { error: { code: 'invalid_request', message: 'Unknown period' } } };
+
+    return { status: 200, body: sampleTop(period as Period, now, empty) };
+  }
   if (pathname === '/v1/calls') {
     const size = intParam(searchParams.get('size'), 20, 100);
     const page = intParam(searchParams.get('page'), 1, 1000);
-    const all = callsOf(now, empty).filter(call => (searchParams.get('status') ?? call.status) === call.status && (searchParams.get('paidWith') ?? call.paidWith) === call.paidWith);
+    const all = callsOf(now, empty).filter(call => matchesCall(call, searchParams));
     const body: CallsPage = { calls: all.slice((page - 1) * size, page * size), page, size, total: all.length, totalCapped: false };
 
     return { status: 200, body };
@@ -156,7 +195,7 @@ export interface FakeApi {
   readonly url: string;
   // Every request it got, in order: the path with its query, and the headers
   readonly requests: { readonly path: string; readonly headers: IncomingMessage['headers'] }[];
-  // Pushes a call to every open stream
+  // Pushes a call to every open stream whose filters it passes
   readonly emitCall: (call: Call) => void;
   readonly openStreams: () => number;
   readonly close: () => Promise<void>;
@@ -171,8 +210,16 @@ const json = (response: ServerResponse, status: number, body: unknown): void => 
 /** Starts a fake API. `port` 0 picks a free one. */
 export const startFakeApi = async (mode: FakeApiMode, port = 0): Promise<FakeApi> => {
   const requests: FakeApi['requests'][number][] = [];
-  const streams = new Set<ServerResponse>();
+  // Each open stream with the filters it was opened with
+  const streams = new Map<ServerResponse, URLSearchParams>();
   let counter = 1000;
+  // Writes a call to every stream whose filters it passes
+  const push = (call: Call): void => {
+    for (const [stream, filters] of streams) {
+      if (matchesCall(call, filters))
+        stream.write(`event: call\ndata: ${JSON.stringify(call)}\n\n`);
+    }
+  };
   const server: Server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://fake.example.com');
     requests.push({ path: `${url.pathname}${url.search}`, headers: request.headers });
@@ -189,7 +236,7 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0): Promise<FakeApi
     if (url.pathname === '/v1/calls/stream') {
       response.writeHead(200, { ...cors, 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no' });
       response.write('retry: 3000\n\n: ping\n\n');
-      streams.add(response);
+      streams.set(response, url.searchParams);
       request.on('close', () => streams.delete(response));
 
       return;
@@ -201,8 +248,7 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0): Promise<FakeApi
         const text = Buffer.concat(chunks).toString('utf8');
         counter += 1;
         const call = text === '' ? sampleCall(counter, Date.now(), 0) : JSON.parse(text) as Call;
-        for (const stream of streams)
-          stream.write(`event: call\ndata: ${JSON.stringify(call)}\n\n`);
+        push(call);
         json(response, 200, call);
       });
 
@@ -219,13 +265,10 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0): Promise<FakeApi
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     requests,
-    emitCall: call => {
-      for (const stream of streams)
-        stream.write(`event: call\ndata: ${JSON.stringify(call)}\n\n`);
-    },
+    emitCall: push,
     openStreams: () => streams.size,
     close: async () => {
-      for (const stream of streams)
+      for (const stream of streams.keys())
         stream.end();
       server.closeAllConnections();
       await new Promise<void>(resolve => server.close(() => resolve()));

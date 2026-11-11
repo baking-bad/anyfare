@@ -287,6 +287,142 @@ describe.each([['the API answers 500', () => down], ['the connection is refused'
   });
 });
 
+describe('the Calls page with a full database', () => {
+  it('answers 200 with today\'s numbers, the grid, the filters and the top 5, from the API', async () => {
+    const { response, body } = await get(full, '/calls');
+
+    expect(response.status).toBe(200);
+    for (const text of ['Every call paid through Anyfare, as it happens.', 'Today, UTC', 'Paid calls', 'Paid from NEAR', 'Calls per minute', 'Last 30 min', 'Service and endpoint', 'API paid with', 'Name or host', 'Failed, free', 'Top 5', 'How buyers paid', 'Top-up tokens', 'Through NEAR Intents'])
+      expect(body).toContain(text);
+    expect(body).toContain('id="top"');
+    expect(body).toContain('213');
+    expect(body).toContain('$2.31');
+    expect(body).toContain('35<!-- -->%');
+    expect(body).toContain('href="/calls/pay_sample0000"');
+    expect(body).toContain('1<!-- -->–<!-- -->20<!-- --> of <!-- -->60');
+    expect(body).toContain('0xab12ab12ab…2ab12');
+    expect(body).toContain('USDC on Base');
+    expect(body).toContain('href="/services/api.example.com"');
+    expect(body).toContain('href="/check?url=api.example.com/v1/sample/quotes/latest"');
+    expect(body).toContain('SOL on Solana');
+    expect(body).toMatch(/<a [^>]*aria-current="page"[^>]*>Calls<\/a>/);
+    expect(body).not.toMatch(/ style="/);
+    noBrokenValues(body);
+  });
+
+  it('has its own title, description, Open Graph tags and a link to its Markdown twin', async () => {
+    const { response, body } = await get(full, '/calls');
+
+    expect(body).toContain('<title>Calls | Anyfare</title>');
+    expect(body).toMatch(/<meta name="description" content="Every call paid through Anyfare, as it happens/);
+    expect(body).toContain('<meta property="og:title" content="Calls | Anyfare"/>');
+    expect(body).toContain(`<meta property="og:url" content="${site}/calls"/>`);
+    expect(body).toContain(`<link rel="alternate" type="text/markdown" href="${site}/calls.md"/>`);
+    expect(response.headers.get('link')).toContain(`<${site}/calls.md>; rel="alternate"; type="text/markdown"`);
+  });
+
+  it('renders the page and the filter the URL names, the same for the same URL', async () => {
+    const first = await get(full, '/calls?paidWith=near&page=2');
+    const second = await get(full, '/calls?paidWith=near&page=2');
+
+    expect(first.response.status).toBe(200);
+    expect(first.body).toMatch(/<option value="near" selected="">USDC on NEAR<\/option>/);
+    // 12 calls were paid with NEAR: one page of 12, and the second page is past the end
+    expect(first.body).toContain('No calls match these filters yet.');
+    expect(full.api!.requests.some(request => request.path === '/v1/calls?paidWith=near&page=2&size=20')).toBe(true);
+    expect(second.body.match(/class="small muted num">[^<]*</g)).toEqual(first.body.match(/class="small muted num">[^<]*</g));
+    noBrokenValues(first.body);
+  });
+
+  it('renders page 3 of a list that has one, and a filter from the URL', async () => {
+    const { body } = await get(full, '/calls?page=3');
+
+    expect(body).toContain('41<!-- -->–<!-- -->60<!-- --> of <!-- -->60');
+    expect(body).toContain('href="/calls/pay_sample0040"');
+    expect(body).not.toContain('href="/calls/pay_sample0000"');
+    const filtered = await get(full, '/calls?status=free&service=QUOTES&endpoint=/v1/sample/lookup');
+    expect(full.api!.requests.some(request => request.path === '/v1/calls?service=QUOTES&endpoint=%2Fv1%2Fsample%2Flookup&status=free&page=1&size=20')).toBe(true);
+    noBrokenValues(filtered.body);
+  });
+
+  it('answers the filters it doesn\'t know with the first page', async () => {
+    const { response, body } = await get(full, '/calls?paidWith=bitcoin&page=-4&status=x');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('href="/calls/pay_sample0000"');
+  });
+});
+
+describe('the Markdown twin of the Calls page', () => {
+  it.each([
+    ['at /calls.md', '/calls.md?status=paid&page=2', undefined],
+    ['by Accept: text/markdown', '/calls?status=paid&page=2', { headers: { accept: 'text/markdown' } }],
+  ])('answers %s with the same facts as the page, and the filters from the query', async (_name, path, init) => {
+    const { response, body } = await get(full, path, init);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(body).toMatch(/^# Calls\n/);
+    expect(body).toContain('- Paid calls: 213');
+    expect(body).toContain('- The service host and path. Never the query string');
+    expect(body).toContain('Filters:\n\n- Status: Paid');
+    expect(body).toContain('Page 2, calls 21–40 of 48. Next page: https://anyfare.example.com/calls.md?status=paid&page=3');
+    expect(body).toContain('/check?url=api.example.com/v1/sample/quotes/latest');
+    expect(body).not.toMatch(/undefined|NaN|\bnull\b/);
+  });
+});
+
+describe('the Calls page with an empty database', () => {
+  it('answers 200 with zeros and a first-run empty state, and nothing broken', async () => {
+    const { response, body } = await get(empty, '/calls');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('No calls yet');
+    expect(body).toContain('No paid calls yet');
+    expect(body).toContain('No top-ups yet');
+    expect(body).not.toContain('role="alert"');
+    expect(body).not.toContain('No calls match these filters yet.');
+    noBrokenValues(body);
+  });
+
+  it('says no call matches the filters, when there are filters', async () => {
+    const { body } = await get(empty, '/calls?paidWith=base');
+
+    expect(body).toContain('No calls match these filters yet.');
+    noBrokenValues(body);
+  });
+
+  it('gives the Markdown twin with zeros', async () => {
+    const { response, body } = await get(empty, '/calls.md');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('- Paid calls: 0');
+    expect(body).toContain('No calls yet.');
+    expect(body).not.toMatch(/undefined|NaN|\bnull\b/);
+  });
+});
+
+describe.each([['the API answers 500', () => down], ['the connection is refused', () => refused]])('the Calls page when %s', (_name, running) => {
+  it('answers 200: each part that needs the API shows an error state, and the rest renders', async () => {
+    const { response, body } = await get(running(), '/calls');
+
+    expect(response.status).toBe(200);
+    for (const text of ['The numbers didn&#x27;t load', 'The chart didn&#x27;t load', 'The calls didn&#x27;t load', 'The top lists didn&#x27;t load'])
+      expect(body).toContain(text);
+    for (const text of ['Every call paid through Anyfare, as it happens.', 'Service and endpoint', 'Name or host', 'Top 5'])
+      expect(body).toContain(text);
+    noBrokenValues(body);
+  });
+
+  it('answers the Markdown twin with its parts marked unavailable', async () => {
+    const { response, body } = await get(running(), '/calls.md');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('Not available right now.');
+    expect(body).toContain('## What a call shows');
+  });
+});
+
 describe('the pages that are not built yet', () => {
   it('answers 404 for a page with no route, and 200 for /_/health', async () => {
     expect((await get(full, '/no-such-page')).response.status).toBe(404);
