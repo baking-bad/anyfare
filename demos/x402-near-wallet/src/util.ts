@@ -18,9 +18,13 @@ export class Stop extends Error {
 
 /** The API cannot be paid by this app. Nothing was paid. Exit code 3. */
 export class NotSupported extends Stop {
-  constructor(message: string) {
+  /** Lines printed on stdout after the failure line, such as the same request through Anyfare. */
+  readonly hint: readonly string[];
+
+  constructor(message: string, hint: readonly string[] = []) {
     super(message);
     this.name = 'NotSupported';
+    this.hint = hint;
   }
 }
 

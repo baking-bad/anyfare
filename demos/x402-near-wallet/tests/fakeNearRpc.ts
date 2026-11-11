@@ -1,5 +1,5 @@
-// A made-up NEAR JSON-RPC on 127.0.0.1, with the answers the x402 NEAR signer needs: the final block's
-// height and hash, and an access key's nonce; and the reads of a balance: `ft_balance_of` of the USDC
+// A made-up NEAR JSON-RPC on 127.0.0.1, with the answers the x402 NEAR signer needs: the chain it
+// serves, the final block's height and hash, and an access key's nonce; and the reads of a balance: `ft_balance_of` of the USDC
 // contract, a view call, and `view_account`. Everything in it is made up: the chain, its height, the
 // accounts, their keys and their balances.
 
@@ -45,6 +45,8 @@ export interface FakeNearRpc extends NearChain {
   height: bigint;
   /** The heights the next `block` calls answer, first one first, before `height` again. */
   readonly nextHeights: bigint[];
+  /** The chain `status` names: `mainnet` unless a test says otherwise. */
+  chainId: string;
   /** Answer every call with this status and an empty body; with `only`, just the calls of that method. */
   failing: { readonly status: number; readonly only?: 'block' | 'query' } | undefined;
   readonly calls: RpcCall[];
@@ -54,6 +56,8 @@ export interface FakeNearRpc extends NearChain {
    * yoctoNEAR. The USDC contract answers 0 for an account it doesn't know, as the real one does.
    */
   setBalance(accountId: string, usdc: bigint, near?: bigint): void;
+  /** The made-up balances of an account, or `undefined` when it does not exist. */
+  balanceOf(accountId: string): { readonly usdc: bigint; readonly near: bigint } | undefined;
   /** The calls that read a balance: `ft_balance_of` and `view_account`. */
   balanceReads(): RpcCall[];
   close(): Promise<void>;
@@ -65,7 +69,7 @@ export async function startFakeNearRpc(): Promise<FakeNearRpc> {
   const calls: RpcCall[] = [];
   const nextHeights: bigint[] = [];
   // A made-up height, of the size mainnet's has
-  const state = { height: 180_000_000n, failing: undefined as FakeNearRpc['failing'] };
+  const state = { height: 180_000_000n, chainId: 'mainnet', failing: undefined as FakeNearRpc['failing'] };
   const hash = (): string => base58(randomBytes(32));
 
   const server: Server = createServer((request, response) => {
@@ -88,6 +92,10 @@ export async function startFakeNearRpc(): Promise<FakeNearRpc> {
       if (failing !== undefined && (failing.only === undefined || failing.only === method)) {
         response.writeHead(failing.status, { 'content-type': 'text/plain' });
         response.end('');
+        return;
+      }
+      if (method === 'status') {
+        send({ result: { chain_id: state.chainId, sync_info: { latest_block_height: Number(state.height) } } });
         return;
       }
       if (method === 'block') {
@@ -174,6 +182,12 @@ export async function startFakeNearRpc(): Promise<FakeNearRpc> {
       state.height = value;
     },
     nextHeights,
+    get chainId() {
+      return state.chainId;
+    },
+    set chainId(value: string) {
+      state.chainId = value;
+    },
     get failing() {
       return state.failing;
     },
@@ -188,6 +202,7 @@ export async function startFakeNearRpc(): Promise<FakeNearRpc> {
     setBalance: (accountId, usdc, near = 0n) => {
       balances.set(accountId, { usdc, near });
     },
+    balanceOf: (accountId) => balances.get(accountId),
     balanceReads: () =>
       calls.filter((call) => {
         const type = typeof call.params === 'object' && call.params !== null ? (call.params as Record<string, unknown>)['request_type'] : undefined;

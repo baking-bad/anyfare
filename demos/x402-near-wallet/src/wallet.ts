@@ -122,6 +122,19 @@ export function readNearWallet(env: Env): NearWallet {
   };
 }
 
+/**
+ * A text with `NEAR_PRIVATE_KEY` taken out, its body too, wherever it is. A last guard on every line
+ * printed: no line of the app holds the key, but an answer could echo what a request carried. The
+ * key is only looked for here, never checked: a run that needs no key works with any value.
+ */
+export function withoutKey(text: string, env: Env): string {
+  const key = env[NEAR_PRIVATE_KEY]?.trim() ?? '';
+  const body = key.startsWith('ed25519:') ? key.slice('ed25519:'.length) : key;
+  // Too short to be a key: such a text is no secret, and it would match ordinary words
+  if (body.length < 12) return text;
+  return text.split(key).join('…').split(body).join('…');
+}
+
 export interface Explorer {
   readonly address: (address: string) => string;
   readonly transaction: (hash: string) => string;

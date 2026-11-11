@@ -81,6 +81,11 @@ describe('the failures', () => {
     expect(new NotSupported('No.')).toBeInstanceOf(Stop);
     expect(new NotSupported('No.')).not.toBeInstanceOf(UsageError);
   });
+
+  it('give NotSupported a hint, none by default', () => {
+    expect(new NotSupported('No.').hint).toEqual([]);
+    expect(new NotSupported('No.', ['  a', '  b']).hint).toEqual(['  a', '  b']);
+  });
 });
 
 describe('isRecord', () => {

@@ -47,6 +47,21 @@ export function findAsset(network: string | undefined, address: string | undefin
   return KNOWN_ASSETS.find((asset) => asset.network === network && sameAddress(network, asset.address, address));
 }
 
+/** The one network this app pays on. */
+export const NEAR_NETWORK = 'near:mainnet';
+
+/** Whether an asset is the USDC this app knows on that network, with 6 decimals: its atomic unit is a micro-USD. */
+export function isKnownUsdc(network: string | undefined, asset: string | undefined): boolean {
+  const known = findAsset(network, asset);
+  return (
+    known?.symbol === 'USDC' &&
+    known.decimals === 6 &&
+    network !== undefined &&
+    asset !== undefined &&
+    sameAddress(network, known.address, asset)
+  );
+}
+
 function shortAddress(address: string): string {
   return address.length <= 12 ? address : `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
