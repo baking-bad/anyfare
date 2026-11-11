@@ -105,6 +105,11 @@ export interface StatsCounter {
    * `from`: the hosts' calls by the host index, each path's quote by the routed endpoints' key.
    */
   priceFrom(input: { readonly hostHashes: readonly string[]; readonly from: Date; readonly to: Date; readonly timeoutMs: number }): Promise<Map<string, MicroUsd>>;
+  /**
+   * When each host's first routed endpoint was listed: its first paid one by routed_endpoints_listed_idx, or the
+   * first of its at most 20 checked ones. A host with none is left out.
+   */
+  listedAt(input: { readonly hosts: readonly string[]; readonly timeoutMs: number }): Promise<Map<string, Date>>;
   /** Whether a capped scope holds more calls than its cap. */
   isCapped(input: { readonly scope: CallScope; readonly timeoutMs: number }): Promise<boolean>;
   /** Whether the host has a paid call, ever: the first one the host index finds. */
@@ -555,6 +560,20 @@ export const createStatsCounter = ({ db, ways }: StatsCounterOptions): StatsCoun
         todayBuyers: row?.today_buyers ?? 0,
         perMinute: (row?.per_minute ?? []).map(([minute, count]) => ({ minute: new Date(Number(minute)), calls: count })),
       };
+    },
+
+    listedAt: async ({ hosts, timeoutMs }) => {
+      if (hosts.length === 0)
+        return new Map();
+      const firstPaid = sql`(select min(${routedEndpoints.createdAt}) from ${routedEndpoints}
+        where ${routedEndpoints.host} = given.host and ${routedEndpoints.status} = 'paid')`;
+      // Fenced, so the at most 20 come by their index: as a bare minimum the planner may walk the catalog's index of every endpoint
+      const firstChecked = sql`(select min(listed.created_at) from (select ${routedEndpoints.createdAt} as created_at from ${routedEndpoints}
+        where ${routedEndpoints.host} = given.host and ${routedEndpoints.status} = 'checked' offset 0) as listed)`;
+      const rows = await run<{ host: string; listed_at: string | null }>(db, timeoutMs, sql`select given.host, least(${firstPaid}, ${firstChecked})::text as listed_at
+        from jsonb_array_elements_text(${json(hosts)}) as given(host)`);
+
+      return new Map(rows.flatMap(row => (row.listed_at === null ? [] : [[row.host, new Date(row.listed_at)] as const])));
     },
 
     isCapped: async ({ scope, timeoutMs }) => {

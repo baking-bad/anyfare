@@ -147,7 +147,9 @@ describe('routed endpoints', () => {
     expect(await routing.registerEndpoint({ host, path: '/v1/pools', lastPrice: 1_100n })).toBe('created');
     clock.advance(1_000);
     expect(await routing.registerEndpoint({ host, path: '/v1/pools' })).toBe('exists');
-    expect(await endpointOf(host, '/v1/pools')).toEqual({ host, path: '/v1/pools', feeBps: null, lastPrice: 1_100n, createdAt: new Date(noon) });
+    expect(await endpointOf(host, '/v1/pools')).toEqual({
+      host, path: '/v1/pools', feeBps: null, lastPrice: 1_100n, createdAt: new Date(noon), status: 'paid', checkedAt: null, checkMethod: null,
+    });
 
     expect(await routing.registerEndpoint({ host, path: '/v1/pools', lastPrice: 2_200n })).toBe('exists');
     expect(await endpointOf(host, '/v1/pools')).toMatchObject({ lastPrice: 2_200n, createdAt: new Date(noon) });

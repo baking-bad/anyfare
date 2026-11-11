@@ -23,15 +23,22 @@ export { createPaymentRepository } from './paymentRepository.js';
 export type { PaymentRepository, PaymentRepositoryOptions, SettlingPayment, StatusChange } from './paymentRepository.js';
 export { createLedger, ledgerAccountIds } from './ledgerRepository.js';
 export type { CreditResult, Ledger, LedgerOptions } from './ledgerRepository.js';
-export { createRoutingRepository, maxRoutedEndpointsPerHost } from './routingRepository.js';
+export {
+  checkedRegistrationTimeoutMs, createRoutingRepository, evictCheckedHost, maxCheckedEndpoints, maxCheckedEndpointsPerHost, maxCheckedHosts,
+  maxCheckedHostsPerParent, maxCheckedPathLength, maxEvictionsPerRegistration, maxRoutedEndpointsPerHost,
+} from './routingRepository.js';
 export type {
-  EndpointRegistration, NewSignature, NewTargetPayment, RoutingRepository, RoutingRepositoryOptions, TargetPaymentRecord, UnbookedRoutingLoss,
+  EndpointInput, EndpointListing, EndpointRegistration, NewSignature, NewTargetPayment, RoutingRepository, RoutingRepositoryOptions, TargetPaymentRecord,
+  UnbookedRoutingLoss,
 } from './routingRepository.js';
 export { callDetailsTimeoutMs, createCallRepository } from './callRepository.js';
 export type { CallFilter, CallLeg, CallPage, CallRecord, CallRepository, CallRepositoryOptions, NewCallDetails } from './callRepository.js';
 export { finalCallStatuses, finishedCallStatuses, freeCallStatuses, paidCallStatuses } from './schema/callStatuses.js';
 export { createStatsRepository } from './statsRepository.js';
-export type { CountKind, CountMarks, ServicesSort, StatsCycle, StatsRepository, StatsRepositoryOptions, StoredAnswer, StoredEndpointRow } from './statsRepository.js';
+export type {
+  CheckedEndpointRow, CountKind, CountMarks, HostListing, ListedServiceRow, ListedTotals, ServicesSort, StatsCycle, StatsRepository, StatsRepositoryOptions, StoredAnswer,
+  StoredEndpointRow,
+} from './statsRepository.js';
 export { createStatsCounter } from './statsCounts.js';
 export type { CallScope, CountedPeriod, StatsCounter, StatsCounterOptions } from './statsCounts.js';
 export { createCatalogRepository } from './catalogRepository.js';

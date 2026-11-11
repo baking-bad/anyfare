@@ -216,6 +216,8 @@ export interface ServiceRow {
   readonly p50Ms: number | null;
   // Paid calls per UTC day, the last 30, oldest first
   readonly trend: readonly number[];
+  // When its first routed endpoint was listed. Undefined: none is.
+  readonly listedAt?: Date | undefined;
 }
 
 export interface ServiceStats {
@@ -264,6 +266,50 @@ export interface EndpointListEntry {
   readonly p50Ms: number | null;
   readonly link: string;
 }
+
+/** A host's name without its port. */
+const hostnameOf = (host: string): string => host.split(':', 1)[0]!;
+
+/**
+ * The names a blocklist entry for a host may have, for the public lists and for a check's listing: the host's
+ * name and each parent of it with two labels or more, `a.evil.example` and `evil.example`. Routing itself
+ * refuses only the exact name.
+ */
+export const hostSuffixes = (host: string): string[] => {
+  const labels = hostnameOf(host).split('.');
+
+  return labels.slice(0, -1).map((_, index) => labels.slice(index).join('.'));
+};
+
+/** The domain a host shares its checked-hosts cap with: its last two labels, `evil.example` for `a.evil.example:8443`. */
+export const parentDomainOf = (host: string): string => hostnameOf(host).split('.').slice(-2).join('.');
+
+/**
+ * A listed service or endpoint: `paid` when a paid call through Anyfare reached it, or one of the service's
+ * endpoints; `checked` when only a payable check listed it.
+ */
+export type ListedStatus = 'paid' | 'checked';
+export const listedStatuses = ['paid', 'checked'] as const satisfies readonly ListedStatus[];
+
+/** An endpoint of a service's list, with how it was listed and when a check last confirmed it. */
+export interface ListedEndpointEntry extends EndpointListEntry {
+  readonly status: ListedStatus;
+  readonly checkedAt: string | null;
+}
+
+/** An endpoint listed only by a check: its price and method as the check found them, and no numbers. */
+export const checkedEndpointEntry = (input: {
+  readonly host: string;
+  readonly path: string;
+  readonly method: string | null;
+  readonly price: MicroUsd | undefined;
+  readonly checkedAt: Date | undefined;
+  readonly payUrl: string;
+}): ListedEndpointEntry => ({
+  ...endpointListEntry({ host: input.host, path: input.path, method: input.method, price: input.price, numbers: endpointNumbersOf(undefined), payUrl: input.payUrl }),
+  status: 'checked',
+  checkedAt: input.checkedAt?.toISOString() ?? null,
+});
 
 /** `GET /v1/services/{host}`, without its time. */
 export interface ServiceAnswer extends ServicePage {
@@ -493,6 +539,7 @@ export const buildServiceRow = (input: {
   readonly priceFrom: MicroUsd | undefined;
   readonly daily: readonly DayCounts[];
   readonly now: Date;
+  readonly listedAt?: Date | undefined;
 }): ServiceRow => {
   const month = input.month ?? { ...noCalls, paidEndpoints: 0 };
   const days = new Map(input.daily.map(day => [day.day, day.calls]));
@@ -508,6 +555,7 @@ export const buildServiceRow = (input: {
     successRate: successRate(month),
     p50Ms: orNull(month.p50Ms),
     trend: lastUtcDays(input.now, statsDailyDays).map(day => days.get(day) ?? 0),
+    listedAt: input.listedAt,
   };
 };
 

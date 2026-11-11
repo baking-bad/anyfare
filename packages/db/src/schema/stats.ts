@@ -46,6 +46,8 @@ export const statsServices = pgTable('stats_services', {
   // Paid calls per UTC day, the last 30, oldest first
   trend: jsonb('trend').$type<number[]>().notNull(),
   countedAt: time('counted_at').notNull(),
+  // When its first routed endpoint was listed. Null: none is.
+  listedAt: time('listed_at'),
 }, table => [
   check('stats_services_host_check', sql`length(${table.host}) <= 259`),
 ]);

@@ -71,6 +71,13 @@
       "when": 1794367892362,
       "tag": "0009_public_stats",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794385556600,
+      "tag": "0010_checked_endpoints",
+      "breakpoints": true
     }
   ]
 }
