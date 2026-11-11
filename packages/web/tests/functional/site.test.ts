@@ -209,7 +209,8 @@ describe('the home page with a full database', () => {
 
     expect(body).toContain('&lt;deposit address&gt;');
     expect(body).not.toContain('7Hq');
-    expect(body).not.toContain('11:05');
+    // The page prints real times, so only the sample's own wording is looked for
+    expect(body).not.toContain('by 11:05');
   });
 
   it('has its own title, description, Open Graph tags and a link to its Markdown twin', async () => {
