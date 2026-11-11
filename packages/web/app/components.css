@@ -144,13 +144,17 @@ table.t th.r, table.t td.r { text-align: right; font-variant-numeric: tabular-nu
 .coin.pair.s16 { --c: 18px; --f: 10px; }
 .coin.s24 { --c: 24px; --n: 12px; --o: 2px; --f: 11px; --nf: 7px; }
 .coin.s32 { --c: 32px; --n: 14px; --o: 2px; --f: 13px; --nf: 8px; --p: 2px; }
-.coin > i { width: var(--c); height: var(--c); border-radius: 50%; display: grid; place-items: center; font-style: normal; font-size: var(--f); font-weight: 700; line-height: 1;
+.coin > * { width: var(--c); height: var(--c); border-radius: 50%; }
+.coin > i { display: grid; place-items: center; font-style: normal; font-size: var(--f); font-weight: 700; line-height: 1;
   background: var(--surface-card); color: var(--text); outline: 1px solid var(--border); outline-offset: -1px; }
-.coin.pair > i:first-child { --at: calc(var(--c) + var(--o) - var(--n) / 2); padding: 0 var(--p) var(--p) 0;
+/* A logo brings its own background; a faint ring keeps a white one (Tempo's) from melting into a white card */
+.coin > img { display: block; outline: 1px solid var(--border-overlay); outline-offset: -1px; }
+.coin.pair > :first-child { --at: calc(var(--c) + var(--o) - var(--n) / 2);
   -webkit-mask: radial-gradient(circle at var(--at) var(--at), transparent calc(var(--n) / 2 + 1.5px), #000 calc(var(--n) / 2 + 2px));
   mask: radial-gradient(circle at var(--at) var(--at), transparent calc(var(--n) / 2 + 1.5px), #000 calc(var(--n) / 2 + 2px)); }
-.coin > i.net { position: absolute; right: calc(-1 * var(--o)); bottom: calc(-1 * var(--o)); width: var(--n); height: var(--n); font-size: var(--nf);
-  background: var(--text-secondary); color: var(--surface-card); outline: 0; }
+.coin.pair > i:first-child { padding: 0 var(--p) var(--p) 0; }
+.coin > .net { position: absolute; right: calc(-1 * var(--o)); bottom: calc(-1 * var(--o)); width: var(--n); height: var(--n); }
+.coin > i.net { font-size: var(--nf); background: var(--text-secondary); color: var(--surface-card); outline: 0; }
 .coin.near:not(.pair) > i, .coin.near > i.net { background: var(--green-500); color: var(--black); outline: 0; }
 .route { display: inline-flex; align-items: center; gap: 6px; }
 .route .arrow { width: 14px; height: 14px; color: var(--text-tertiary); flex: none; }

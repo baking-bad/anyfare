@@ -17,6 +17,7 @@ const patterns: readonly RegExp[] = [
   /^\/calls\/[^/]+$/,
   /^\/services\/[^/]+$/,
   /^\/skills\/[^/]+\/SKILL\.md$/,
+  /^\/logos\/[^/]+\/[^/]+$/,
   new RegExp(`^${markdownRoot}(/|$)`),
   new RegExp(`^${missingPath}/`),
   /^\/_next\//,

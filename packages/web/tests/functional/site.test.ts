@@ -1434,7 +1434,8 @@ describe('the Check page', () => {
 
       expect(response.status).toBe(200);
       expect(body).not.toMatch(/<script>alert/);
-      expect(body).not.toContain('<img');
+      // The only images are the site's own logos of the ways to pay
+      expect(body.replaceAll(/<img( class="net")? src="\/logos\/(networks|tokens)\/[a-z]+\.svg" alt="" decoding="async"\/>/g, '')).not.toContain('<img');
       expect(body).not.toMatch(/<[a-z][^>]*\sonerror=/i);
       expect(body).not.toMatch(/ style="/);
       expect(body).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
