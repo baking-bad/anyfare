@@ -12,16 +12,19 @@ const object = <TProperties extends Record<string, unknown>>(properties: TProper
 /** The error envelope, for the statuses a public read answers with. */
 export const errorSchema = object({ error: object({ code: string, message: string }) });
 
+// Text without a NUL, which Postgres can't take
+const noNul = '^[^\\u0000]*$';
+
 // The filters the list and the stream share
 const filters = {
   paidWith: { type: 'string', enum: [...paidWithValues] },
   // A part of the host, without case, searched in the newest calls. Empty: no filter.
-  service: { type: 'string', maxLength: 100 },
+  service: { type: 'string', maxLength: 100, pattern: noNul },
   // The exact host, with its port when it has one: a name of at most 253 characters and a port of 5 digits.
   // Empty: no filter.
-  host: { type: 'string', maxLength: 259 },
+  host: { type: 'string', maxLength: 259, pattern: noNul },
   // The exact path. Empty: no filter.
-  endpoint: { type: 'string', maxLength: 2_048 },
+  endpoint: { type: 'string', maxLength: 2_048, pattern: noNul },
   status: { type: 'string', enum: ['paid', 'free'] },
 } as const;
 

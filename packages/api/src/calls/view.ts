@@ -1,10 +1,8 @@
 import { formatUsd } from '@anyfare/common';
-import type { Chain, PlatformConfig, RailName } from '@anyfare/core';
+import { createPaidWith, type PaidWith, type PlatformConfig } from '@anyfare/core';
 import { finalCallStatuses, paidCallStatuses, type CallFilter, type CallLeg, type CallRecord } from '@anyfare/db';
 
-// How a buyer paid, or how we paid the API. A network that is none of these is given as its network ID.
-export const paidWithValues = ['near', 'base', 'solana', 'tempo', 'credits'] as const;
-export type PaidWith = typeof paidWithValues[number];
+export { paidWithValues, type PaidWith } from '@anyfare/core';
 
 export type CallStatus = 'paid' | 'free';
 
@@ -72,9 +70,6 @@ export interface ReceiptView {
   readonly steps: readonly ReceiptStep[];
 }
 
-// x402 is paid on these chains, MPP on Tempo
-const x402Chains: ReadonlySet<Chain> = new Set(['near', 'base', 'solana']);
-
 const evmHash = /^0x[0-9a-fA-F]{64}$/;
 // NEAR's transaction hash and Solana's signature are base58: 32 and 64 bytes
 const nearHash = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/;
@@ -113,25 +108,7 @@ const iso = (time: Date): string => time.toISOString();
 
 /** The public views of calls, with how each was paid from the platform config's networks. */
 export const createCallViews = (config: PlatformConfig) => {
-  // Every network the platform config names, with its chain
-  const chains = new Map<string, Chain>([
-    ...config.assets.map(asset => [asset.network.id, asset.network.chain] as const),
-    [config.mpp.network.id, config.mpp.network.chain],
-  ]);
-
-  const paidWithOf = (rail: RailName, network: string | undefined): string => {
-    if (rail === 'credits')
-      return 'credits';
-    if (network === undefined)
-      return rail;
-    const chain = chains.get(network);
-    if (rail === 'mpp' && chain === 'tempo')
-      return 'tempo';
-    if (rail === 'x402' && chain !== undefined && x402Chains.has(chain))
-      return chain;
-
-    return network;
-  };
+  const { chains, paidWithOf } = createPaidWith(config);
 
   /**
    * The list's filter for a way to pay, or undefined when the platform config has no network for it,

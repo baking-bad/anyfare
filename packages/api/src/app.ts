@@ -26,6 +26,7 @@ import { registerInternalRoutes } from './internal/routes.js';
 import { registerKeyRoutes } from './keys/routes.js';
 import { createPaymentKeyService } from './keys/service.js';
 import { registerLedgerRoutes } from './ledger/routes.js';
+import { registerStatsRoutes } from './stats/routes.js';
 import { registerTopupRoutes } from './topups/routes.js';
 import { createTopupsCounter, createTopupService } from './topups/service.js';
 
@@ -59,6 +60,8 @@ export interface ApiDependencies {
   readonly tokenCatalog?: TokenCatalog;
   // How often the stream of calls reads finished calls, and pings its clients. Defaults: 1 s and 15 s.
   readonly callStreamTimings?: { readonly pollMs?: number; readonly pingMs?: number };
+  // The calls a public number read when asked for counts at most. Default: 10,000.
+  readonly statsReadCap?: number;
 }
 
 export interface ApiListenOptions extends ListenOptions {
@@ -111,6 +114,7 @@ export const createApp = ({
     onStale: ({ error, ageMs }) => logger.warn({ error, ageMs }, 'The 1Click token list could not be refreshed, so top-ups use the older list'),
   }),
   callStreamTimings,
+  statsReadCap,
 }: ApiDependencies): ApiServer => {
   const server = createServer({
     logger,
@@ -173,6 +177,7 @@ export const createApp = ({
   registerCallRoutes(app, {
     db: postgres.db, config, limit: publicReadsLimit, clock, logger, ...callStreamTimings === undefined ? {} : { timings: callStreamTimings },
   });
+  registerStatsRoutes(app, { db: postgres.db, config, limit: publicReadsLimit, clock, ...statsReadCap === undefined ? {} : { readCap: statsReadCap } });
 
   // The internal API on a listener of its own, with the same request IDs, logs, and error envelope
   const internal = createServer({ logger, errorStatuses, requestIds });

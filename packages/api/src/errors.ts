@@ -26,6 +26,8 @@ export const errorStatuses = {
   amount_too_small: 400,
   // The server is shutting down, so a new stream of calls goes to another one
   shutting_down: 503,
+  // A public number couldn't be read in its bounds just now: try again shortly
+  stats_unavailable: 503,
 } as const satisfies ErrorStatusTable;
 
 /** A request the route can't take: the message says what's wrong, never quoting a value it carried. */
@@ -36,4 +38,9 @@ export class InvalidRequestError extends AnyfareError {
 /** No such resource for the caller, such as another account's payment key. */
 export class NotFoundError extends AnyfareError {
   readonly code = 'not_found';
+}
+
+/** A public number couldn't be read within its bounds just now, such as its timeout, or too many reads at once. */
+export class StatsUnavailableError extends AnyfareError {
+  readonly code = 'stats_unavailable';
 }
