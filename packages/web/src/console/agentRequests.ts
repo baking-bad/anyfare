@@ -37,11 +37,29 @@ export const consoleAgentPages: Readonly<Record<ConsolePageName, AgentPage>> = {
     title: 'Console: overview',
     requests: [
       { method: 'GET', path: '/v1/balance', note: 'The balance: available, and held for calls in flight', keyed: true },
+      { method: 'GET', path: '/v1/keys', note: 'Every key of the account, with what each spent today. The sum of spent.today is the day\'s spend', keyed: true },
+      { method: 'GET', path: '/v1/payments?limit=5', note: 'The last 5 calls, newest first', keyed: true },
+      { method: 'GET', path: '/v1/topups?limit=5', note: 'The last 5 top-ups, newest first. 503 topups_unavailable when top-ups are off', keyed: true },
     ],
   },
-  keys: { title: 'Console: keys', requests: [] },
+  keys: {
+    title: 'Console: keys',
+    lead: 'An agent makes its own payment key with the master key, once. The answer holds the key, shown once: the agent keeps it, and the master key stays with its person.',
+    requests: [
+      { method: 'GET', path: '/v1/keys', note: 'Every key of the account, revoked ones too, with its limits and what it spent', keyed: true },
+      { method: 'POST', path: '/v1/keys', note: 'Makes a key. Every field is optional. The answer holds the payment key, once', body: '{"label":"my agent","dailyBudget":"5.00","maxPrice":"0.05","allowance":"20.00","expiresAt":"2026-12-31T23:59:59Z"}', keyed: true },
+      { method: 'PATCH', path: '/v1/keys/<key id>', note: 'Changes limits. Send only what changes; null clears label, maxPrice, allowance or expiresAt', body: '{"dailyBudget":"10.00","maxPrice":null}', keyed: true },
+      { method: 'DELETE', path: '/v1/keys/<key id>', note: 'Revokes a key. It stops at once, and calls in flight finish', keyed: true },
+    ],
+  },
   topup: { title: 'Console: top up', requests: [] },
-  payments: { title: 'Console: payments', requests: [] },
+  payments: {
+    title: 'Console: payments',
+    requests: [
+      { method: 'GET', path: '/v1/payments?limit=20', note: 'The account\'s calls, newest first. Add after=<next> for the next page, state=paid|free|pending, keyId=<key id>, service=<host>', keyed: true },
+      { method: 'GET', path: '/v1/keys', note: 'The keys, for the names of the key filter', keyed: true },
+    ],
+  },
   settings: {
     title: 'Console: settings',
     requests: [
@@ -55,7 +73,7 @@ export const consoleAgentPages: Readonly<Record<ConsolePageName, AgentPage>> = {
 export const consoleAgentNote = 'The console has no Markdown twin: it is behind the master key. An agent does each step of this page with one request to the Anyfare API, with the master key in Authorization.';
 
 // A URL with a character the shell reads is quoted
-const shellUrl = (url: string): string => /[?&$]/.test(url) ? `"${url}"` : url;
+const shellUrl = (url: string): string => /[?&$<> ]/.test(url) ? `"${url}"` : url;
 
 /** One request as a `curl` command, one option to a line. */
 export const curlOfRequest = (apiUrl: string, { method, path, body, keyed }: ConsoleRequest): string => {

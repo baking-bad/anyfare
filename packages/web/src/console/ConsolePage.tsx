@@ -9,8 +9,10 @@ import { useView } from '../components/view';
 import { AgentPanel } from './AgentPanel';
 import { PageTitle } from './components/PageTitle';
 import { useConsolePlaces } from './context';
+import { KeysPage } from './KeysPage';
 import { Overview } from './Overview';
 import { pageOf, type ConsolePageName } from './pages';
+import { PaymentsPage } from './PaymentsPage';
 import { useSession } from './session';
 import { SettingsPage } from './SettingsPage';
 import { SignIn } from './SignIn';
@@ -65,9 +67,13 @@ export const ConsolePage = ({ page, amount, amountUnused = false }: {
   switch (page) {
     case 'overview':
       return <Overview />;
+    case 'keys':
+      return <KeysPage />;
+    case 'payments':
+      return <PaymentsPage />;
     case 'settings':
       return <SettingsPage />;
-    // Keys, Top up and Payments are built by later tasks; Top up from `amount` and `amountUnused`
+    // Top up is built by a later task, from `amount` and `amountUnused`
     default:
       return <PagePending name={page} />;
   }

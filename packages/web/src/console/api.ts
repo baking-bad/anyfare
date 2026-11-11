@@ -244,3 +244,222 @@ export const checkStoredKey = async (apiUrl: string, key: string): Promise<'work
     throw error;
   }
 };
+
+// ---------- Payment keys, payments and top-ups ----------
+
+export interface PaymentKey {
+  readonly id: string;
+  readonly label: string | null;
+  // USD decimals. `null` is no cap
+  readonly allowance: string | null;
+  readonly dailyBudget: string;
+  readonly maxPrice: string | null;
+  readonly expiresAt: string | null;
+  readonly createdAt: string;
+  readonly revokedAt: string | null;
+  readonly spent: { readonly today: string; readonly total: string };
+  readonly remaining: { readonly allowance: string | null; readonly dailyBudget: string };
+}
+
+/** The fields of a key a person sets. `null` clears a field that may be empty. */
+export interface KeyFields {
+  readonly label?: string | null;
+  readonly dailyBudget?: string;
+  readonly maxPrice?: string | null;
+  readonly allowance?: string | null;
+  readonly expiresAt?: string | null;
+}
+
+export type PaymentState = 'paid' | 'free' | 'pending';
+
+export interface Payment {
+  readonly id: string;
+  readonly requestId: string | null;
+  readonly rail: string;
+  readonly targetHost: string;
+  readonly targetPath: string;
+  readonly amount: string;
+  readonly status: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly keyId: string | null;
+  readonly upstreamStatus: number | null;
+  readonly state: PaymentState;
+}
+
+export interface PaymentsQuery {
+  readonly limit: number;
+  readonly after?: string | undefined;
+  readonly state?: PaymentState | undefined;
+  readonly keyId?: string | undefined;
+  readonly service?: string | undefined;
+}
+
+export interface Topup {
+  readonly id: string;
+  readonly status: string;
+  readonly message: string | null;
+  readonly network: string;
+  readonly token: string;
+  readonly amount: string;
+  readonly credited: string | null;
+  readonly estimatedCredits: string | null;
+  readonly createdAt: string;
+}
+
+/** Whether the API answered `503 topups_unavailable`: top-ups are off. */
+export const isTopupsOff = (error: unknown): boolean => error instanceof ConsoleApiError && error.status === 503 && error.code === 'topups_unavailable';
+
+const amountPattern = /^-?\d{1,18}(?:\.\d{1,18})?$/;
+const isAmount = (value: unknown): value is string => typeof value === 'string' && amountPattern.test(value);
+const orNull = <TValue,>(value: unknown, test: (item: unknown) => item is TValue): TValue | null | undefined => value === null || value === undefined ? null : test(value) ? value : undefined;
+const isTime = (value: unknown): value is string => isText(value, 64) && !Number.isNaN(Date.parse(value));
+const isTargetPath = (value: unknown): value is string => typeof value === 'string' && value.length <= 4096;
+
+const objectOf = (value: unknown): Record<string, unknown> => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    throw unexpected();
+
+  return value as Record<string, unknown>;
+};
+
+const keyOf = (value: unknown): PaymentKey => {
+  const item = objectOf(value);
+  const label = orNull(item['label'], (text): text is string => typeof text === 'string' && text.length <= 200);
+  const allowance = orNull(item['allowance'], isAmount);
+  const maxPrice = orNull(item['maxPrice'], isAmount);
+  const expiresAt = orNull(item['expiresAt'], isTime);
+  const revokedAt = orNull(item['revokedAt'], isTime);
+  const spent = objectOf(item['spent']);
+  const remaining = objectOf(item['remaining']);
+  const remainingAllowance = orNull(remaining['allowance'], isAmount);
+  if (!isText(item['id']) || !isAmount(item['dailyBudget']) || !isTime(item['createdAt']) || label === undefined || allowance === undefined || maxPrice === undefined
+    || expiresAt === undefined || revokedAt === undefined || !isAmount(spent['today']) || !isAmount(spent['total']) || !isAmount(remaining['dailyBudget']) || remainingAllowance === undefined)
+    throw unexpected();
+
+  return {
+    id: item['id'],
+    label,
+    allowance,
+    dailyBudget: item['dailyBudget'],
+    maxPrice,
+    expiresAt,
+    createdAt: item['createdAt'],
+    revokedAt,
+    spent: { today: spent['today'], total: spent['total'] },
+    remaining: { allowance: remainingAllowance, dailyBudget: remaining['dailyBudget'] },
+  };
+};
+
+const listOf = (value: unknown, name: string): readonly unknown[] => {
+  const list = objectOf(value)[name];
+  if (!Array.isArray(list))
+    throw unexpected();
+
+  return list;
+};
+
+const nextOf = (value: unknown): string | null => {
+  const next = objectOf(value)['next'];
+  if (next === null || next === undefined)
+    return null;
+  if (!isText(next, 2048))
+    throw unexpected();
+
+  return next;
+};
+
+/** `GET /v1/keys`: every key of the account, revoked ones too. */
+export const listKeys = async (apiUrl: string): Promise<readonly PaymentKey[]> =>
+  listOf(await keyedRequest(apiUrl, { method: 'GET', path: '/v1/keys' }), 'keys').map(keyOf);
+
+/** `POST /v1/keys`: a new key and the payment key itself, shown once. The caller holds `paymentKey` in the state of its dialog, and nowhere else. */
+export const createKey = async (apiUrl: string, fields: KeyFields): Promise<{ readonly key: PaymentKey; readonly paymentKey: string }> => {
+  const answer = await keyedRequest(apiUrl, { method: 'POST', path: '/v1/keys', body: fields });
+  const { key: paymentKey } = objectOf(answer);
+  if (!isKey(paymentKey))
+    throw unexpected();
+
+  return { key: keyOf(answer), paymentKey };
+};
+
+/** `PATCH /v1/keys/:id`: the key with its new limits. */
+export const changeKey = async (apiUrl: string, id: string, fields: KeyFields): Promise<PaymentKey> =>
+  keyOf(await keyedRequest(apiUrl, { method: 'PATCH', path: apiPath`/v1/keys/${id}`, body: fields }));
+
+/** `DELETE /v1/keys/:id`: the key stops at once. */
+export const revokeKey = async (apiUrl: string, id: string): Promise<{ readonly id: string; readonly revokedAt: string }> => {
+  const { id: revoked, revokedAt } = objectOf(await keyedRequest(apiUrl, { method: 'DELETE', path: apiPath`/v1/keys/${id}` }));
+  if (!isText(revoked) || !isTime(revokedAt))
+    throw unexpected();
+
+  return { id: revoked, revokedAt };
+};
+
+const paymentStates: readonly unknown[] = ['paid', 'free', 'pending'];
+
+const paymentOf = (value: unknown): Payment => {
+  const item = objectOf(value);
+  const requestId = orNull(item['requestId'], isText);
+  const keyId = orNull(item['keyId'], isText);
+  const upstreamStatus = item['upstreamStatus'] === null || item['upstreamStatus'] === undefined ? null : item['upstreamStatus'];
+  const state = item['state'];
+  if (!isText(item['id']) || requestId === undefined || !isText(item['rail'], 64) || !isText(item['targetHost']) || !isTargetPath(item['targetPath']) || !isAmount(item['amount'])
+    || !isText(item['status'], 64) || !isTime(item['createdAt']) || !isTime(item['updatedAt']) || keyId === undefined
+    || (upstreamStatus !== null && !(typeof upstreamStatus === 'number' && Number.isInteger(upstreamStatus) && upstreamStatus >= 0 && upstreamStatus < 1000))
+    || !paymentStates.includes(state))
+    throw unexpected();
+
+  return {
+    id: item['id'],
+    requestId,
+    rail: item['rail'],
+    targetHost: item['targetHost'],
+    targetPath: item['targetPath'],
+    amount: item['amount'],
+    status: item['status'],
+    createdAt: item['createdAt'],
+    updatedAt: item['updatedAt'],
+    keyId,
+    upstreamStatus,
+    state: state as PaymentState,
+  };
+};
+
+/** `GET /v1/payments`: a page of the account's calls, newest first, and the cursor of the page after it. Only the parameters the API knows are sent. */
+export const listPayments = async (apiUrl: string, { limit, after, state, keyId, service }: PaymentsQuery): Promise<{ readonly payments: readonly Payment[]; readonly next: string | null }> => {
+  const query: Record<string, string> = { limit: String(limit) };
+  if (after !== undefined)
+    query['after'] = after;
+  if (state !== undefined)
+    query['state'] = state;
+  if (keyId !== undefined)
+    query['keyId'] = keyId;
+  if (service !== undefined)
+    query['service'] = service;
+  const answer = await keyedRequest(apiUrl, { method: 'GET', path: '/v1/payments', query });
+
+  return { payments: listOf(answer, 'payments').map(paymentOf), next: nextOf(answer) };
+};
+
+const topupOf = (value: unknown): Topup => {
+  const item = objectOf(value);
+  const message = orNull(item['message'], isText);
+  const credited = orNull(item['credited'], isAmount);
+  const estimatedCredits = orNull(item['estimatedCredits'], isAmount);
+  if (!isText(item['id']) || !isText(item['status'], 64) || message === undefined || !isText(item['network'], 64) || !isText(item['token'], 64) || !isAmount(item['amount'])
+    || credited === undefined || estimatedCredits === undefined || !isTime(item['createdAt']))
+    throw unexpected();
+
+  return { id: item['id'], status: item['status'], message, network: item['network'], token: item['token'], amount: item['amount'], credited, estimatedCredits, createdAt: item['createdAt'] };
+};
+
+/** `GET /v1/topups`: a page of the account's top-ups, newest first. `503 topups_unavailable` when top-ups are off. */
+export const listTopups = async (apiUrl: string, limit: number, after?: string): Promise<{ readonly topups: readonly Topup[]; readonly next: string | null }> => {
+  const query: Record<string, string> = { limit: String(limit) };
+  if (after !== undefined)
+    query['after'] = after;
+  const answer = await keyedRequest(apiUrl, { method: 'GET', path: '/v1/topups', query });
+
+  return { topups: listOf(answer, 'topups').map(topupOf), next: nextOf(answer) };
+};

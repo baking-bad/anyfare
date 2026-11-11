@@ -180,3 +180,112 @@ button.card.choice:disabled { cursor: progress; }
   box-shadow: var(--shadow-toast), 0 0 0 1px var(--gray-700); animation: console-rise var(--duration-dialog) var(--ease-out); display: flex; gap: 8px; align-items: center; max-width: min(360px, calc(100vw - 32px)); }
 .dark .toast { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.05); }
 .toast svg { width: 16px; height: 16px; flex: none; color: var(--green-500); }
+
+/* ---------- Keys ---------- */
+
+.keys-table .t-wrap { min-width: 0; }
+.keys-table.menu-open .table-scroll { min-height: 232px; }
+.key-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; max-width: 240px; }
+.key-name .row-sub { font-size: 12px; }
+.key-budget { flex-wrap: nowrap; gap: 10px; }
+.budget { flex: none; width: 72px; height: 6px; border-radius: 3px; background: var(--surface-wash); overflow: hidden; }
+.budget i { display: block; height: 100%; border-radius: 3px; background: var(--text); }
+.budget i.hot { background: var(--yellow-500); }
+.bar-0 { width: 0%; } .bar-5 { width: 5%; } .bar-10 { width: 10%; } .bar-15 { width: 15%; } .bar-20 { width: 20%; } .bar-25 { width: 25%; } .bar-30 { width: 30%; } .bar-35 { width: 35%; } .bar-40 { width: 40%; } .bar-45 { width: 45%; } .bar-50 { width: 50%; } .bar-55 { width: 55%; } .bar-60 { width: 60%; } .bar-65 { width: 65%; } .bar-70 { width: 70%; } .bar-75 { width: 75%; } .bar-80 { width: 80%; } .bar-85 { width: 85%; } .bar-90 { width: 90%; } .bar-95 { width: 95%; } .bar-100 { width: 100%; } 
+table.t tr.quiet td { color: var(--text-secondary); }
+table.t tr.quiet .row-title { color: var(--text-secondary); }
+table.t tr.quiet .budget i { background: var(--text-tertiary); }
+.keys-actions { position: sticky; right: 0; background: var(--surface-card); width: 1%; }
+table.t tr:hover .keys-actions { background: var(--surface-row-hover); }
+.key-menu { position: relative; display: inline-flex; }
+.key-menu .menu { right: 0; top: calc(100% + 4px); min-width: 190px; }
+.menu button.danger-item { color: var(--danger-text); }
+.key-form .field .hint { font-size: var(--text-xs); }
+.key-form input[type="date"] { min-height: 40px; }
+@media (pointer: coarse), (max-width: 760px) { .key-form .input { height: 44px; } }
+
+/* ---------- Payments ---------- */
+
+.pay-what { display: flex; flex-direction: column; gap: 2px; min-width: 0; max-width: 300px; }
+.pay-link { display: block; min-width: 0; color: inherit; text-decoration: none; }
+.pay-key { display: block; max-width: 160px; }
+table.t td .plus { color: var(--success-text); }
+.pay-filter { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.f-key { width: 180px; }
+.f-service { width: 220px; }
+.f-state { width: 160px; }
+.grid-bar .filter-label { white-space: nowrap; }
+@media (min-width: 761px) and (max-width: 1100px) { .pay-what { max-width: 220px; } .pay-key { max-width: 110px; } .key-name { max-width: 180px; } .f-service { width: 170px; } .f-key, .f-state { width: 140px; } }
+@media (max-width: 640px) {
+  .grid-bar select.input, .grid-bar .search .input, .grid-bar .btn { height: 44px; }
+  .grid-bar .filters { width: 100%; flex-direction: column; align-items: stretch; gap: 12px; }
+  .pay-filter { flex-direction: column; align-items: stretch; gap: 4px; width: 100%; }
+  .f-key, .f-service, .f-state { width: 100%; }
+  .grid-bar > .btn { width: 100%; }
+}
+
+/* The Overview's two cards stay side by side on a phone */
+.stat-cards.pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.stat-cards.pair .card .v { overflow-wrap: anywhere; white-space: normal; }
+
+/* A row that is a link: the link's box covers the whole row, so a tap anywhere opens it */
+table.t tr.click { position: relative; }
+table.t tr.click .row-link::after { content: ""; position: absolute; inset: 0; }
+table.t tr.click:focus-within { background: var(--surface-row-hover); }
+/* A link on a table's title line is a tap area of its own, 44 px tall, so the table under it never covers it */
+@media (pointer: coarse), (max-width: 760px) {
+  .well-title a.link { display: inline-flex; align-items: center; min-height: 44px; }
+  .well-title { padding-top: 0; padding-bottom: 0; }
+  .well-title > span:first-child { padding: 12px 0; }
+}
+/* The cell of an open menu paints above the cells of the rows under it */
+.keys-actions:has(.menu), .keys-actions:focus-within { z-index: 6; }
+/* The export line leaves room for its Copy button */
+.dialog .code-block .code { padding-right: 80px; }
+/* The host is a block, so its ellipsis cuts it inside the link, whatever its length */
+.pay-host { display: block; }
+
+/* ---------- Phones: a row of a list is a stack, so everything shows without a sideways scroll ---------- */
+
+@media (max-width: 640px) {
+  .stack-head { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  table.t:has(.stack-row) { display: block; }
+  table.t:has(.stack-row) tbody { display: block; }
+  table.t tr.stack-row { display: grid; align-items: center; gap: 4px 8px; padding: 12px 16px; min-height: 44px; border-top: 1px solid var(--line-table); }
+  table.t tbody tr.stack-row:first-child { border-top: 0; }
+  table.t tr.stack-row > td { display: block; padding: 0; border: 0; min-width: 0; white-space: normal; }
+  table.t tr.stack-row .c-amount { text-align: right; }
+  table.t tr.stack-row .c-chev { display: none; }
+
+  /* Payments: host and amount; path; date, key and status */
+  table.t tr.pay-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "host host amount" "path path path" "date key status"; }
+  table.t tr.pay-row > .c-what, table.t tr.pay-row .pay-what { display: contents; }
+  table.t tr.pay-row .pay-what > :first-child { grid-area: host; min-width: 0; font-weight: 600; }
+  table.t tr.pay-row .pay-what > :last-child { grid-area: path; }
+  table.t tr.pay-row .c-date { grid-area: date; }
+  table.t tr.pay-row .c-key { grid-area: key; color: var(--text-secondary); overflow: hidden; }
+  table.t tr.pay-row .c-status { grid-area: status; justify-self: end; }
+  table.t tr.pay-row .c-amount { grid-area: amount; }
+  .pay-key { max-width: none; }
+
+  /* Top-ups: what was sent and the Credits; date and badge */
+  table.t tr.topup-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "sent amount" "date status"; }
+  table.t tr.topup-row .c-sent { grid-area: sent; }
+  table.t tr.topup-row .c-amount { grid-area: amount; }
+  table.t tr.topup-row .c-date { grid-area: date; }
+  table.t tr.topup-row .c-status { grid-area: status; justify-self: end; }
+
+  /* Keys: label and menu; the day's budget; the other limits as label and value */
+  table.t tr.keys-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name actions" "today today" "pair1 pair1" "pair2 pair2" "pair3 pair3"; row-gap: 8px; }
+  table.t tr.keys-row .c-name { grid-area: name; }
+  table.t tr.keys-row .keys-actions { grid-area: actions; position: static; background: transparent; width: auto; justify-self: end; }
+  table.t tr.keys-row .c-today { grid-area: today; }
+  table.t tr.keys-row .c-pair { display: flex; justify-content: space-between; align-items: center; gap: 12px; text-align: right; }
+  table.t tr.keys-row .c-pair::before { content: attr(data-label); color: var(--text-secondary); }
+  table.t tr.keys-row .c-pair:nth-of-type(3) { grid-area: pair1; }
+  table.t tr.keys-row .c-pair:nth-of-type(4) { grid-area: pair2; }
+  table.t tr.keys-row .c-pair:nth-of-type(5) { grid-area: pair3; }
+  .key-name { max-width: none; }
+  .budget { width: 96px; }
+  .pay-what { max-width: none; }
+}

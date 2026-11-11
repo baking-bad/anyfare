@@ -11,7 +11,8 @@
 // runs, so the new key must show once and be stored nowhere; rotate with an unreadable answer, and
 // with none, so the console must find the old key refused and say so; sign up in a tab that blocks storage, and close the
 // dialog; and open the console in a new browser, which must not know the key. The fake's `/_test/rotate` switch shapes
-// the rotation's answers.
+// the rotation's answers. The last steps make payment keys on the Keys page: the key is on the page only while its
+// dialog shows it, in no storage, cookie or address, and gone from the page's HTML after "I saved it" and on `pagehide`.
 //
 // Exit code: 0 nothing found, 1 findings, 2 wrong use or the site did not answer, 3 `agent-browser` is not installed.
 
@@ -176,6 +177,42 @@ export const checkKey = async ({ console: consoleUrl, api, session }, log = line
       throw new Error('The dialog shows no sample key of the fake API: is the site running against it?');
 
     return key;
+  };
+
+  // A payment key is shown once: only the dialog that shows it may hold it, and the page's HTML holds it only then
+  const paymentKeyPlaces = key => inPage(`(() => {
+    const key = ${JSON.stringify(key)};
+    const entries = store => { try { return JSON.stringify(Object.entries(store)); } catch { return ''; } };
+    return JSON.stringify({
+      session: entries(sessionStorage).includes(key), local: entries(localStorage).includes(key), cookie: document.cookie.includes(key), address: location.href.includes(key),
+      history: JSON.stringify(history.state ?? null).includes(key), html: document.documentElement.outerHTML.includes(key),
+      windowProperty: Object.keys(window).some(name => { try { return typeof window[name] === 'string' && window[name].includes(key); } catch { return false; } }),
+    });
+  })()`);
+  const paymentKeyHeld = key => {
+    const places = paymentKeyPlaces(key);
+    if (places === undefined)
+      return ['the page could not be read'];
+
+    return ['session', 'local', 'cookie', 'address', 'history', 'windowProperty'].filter(place => places[place]).map(place => place === 'session' ? 'sessionStorage' : place === 'local' ? 'localStorage' : place === 'windowProperty' ? 'a window property' : `the ${place}`);
+  };
+  const paymentKeyInHtml = key => paymentKeyPlaces(key)?.html === true;
+  const dialogsOpen = () => inPage('JSON.stringify(document.querySelectorAll(\'.dialog\').length)');
+  const paymentKeyInDialog = () => {
+    const key = run(['get', 'text', '.key-once-value']).stdout.trim().split('\n').at(-1) ?? '';
+    if (!/^af_test_[0-9a-f]{32}$/.test(key))
+      throw new Error('The dialog shows no sample payment key of the fake API: is the site running against it?');
+
+    return key;
+  };
+  const makeKey = name => {
+    must(['find', 'role', 'button', 'click', '--name', 'New key'], 'Pressing New key');
+    must(['wait', '--text', 'New payment key'], 'Waiting for the form');
+    must(['fill', '#key-label', name], 'Naming the key');
+    must(['find', 'role', 'button', 'click', '--name', 'Make key'], 'Pressing Make key');
+    must(['wait', '--text', 'Copy the key now'], 'Waiting for the new payment key');
+
+    return paymentKeyInDialog();
   };
 
   log(`Checking ${consoleOrigin} against the fake API at ${apiOrigin}`);
@@ -356,6 +393,53 @@ export const checkKey = async ({ console: consoleUrl, api, session }, log = line
     finally {
       fresh(['close']);
     }
+
+    log('11. Make a payment key: it is on the page only while its dialog shows it, in no storage, cookie or address');
+    must(['open', `${consoleUrl}/`], 'Opening the console');
+    must(['wait', '--text', 'Sign in or create an account'], 'Waiting for the sign-in view');
+    must(['find', 'role', 'button', 'click', '--name', 'Create an account'], 'Pressing Create an account');
+    must(['wait', '--text', 'Your account is ready'], 'Waiting for the new key');
+    const master = keyInDialog();
+    must(['find', 'role', 'checkbox', 'check', '--name', 'I saved it somewhere safe'], 'Ticking the box');
+    must(['find', 'role', 'button', 'click', '--name', 'Continue'], 'Pressing Continue');
+    must(['wait', '--text', 'Available'], 'Waiting for the Overview');
+    must(['find', 'role', 'link', 'click', '--name', 'Keys'], 'Opening Keys');
+    must(['wait', '--text', 'An agent checks its own key'], 'Waiting for Keys');
+    must(['network', 'requests', '--clear'], 'Clearing the request list');
+    const payment = makeKey('check agent');
+    for (const place of paymentKeyHeld(payment))
+      fail(`a payment key is in ${place} while its dialog shows it`);
+    if (!paymentKeyInHtml(payment))
+      fail('the dialog doesn\'t show the payment key');
+    if (inPage('JSON.stringify(document.body.textContent.includes("export ANYFARE_PAYMENT_KEY=" + ' + JSON.stringify(payment) + '))') !== true)
+      fail('the dialog shows no export line with the key');
+    must(['press', 'Escape'], 'Pressing Escape');
+    if (dialogsOpen() !== 1)
+      fail('Escape closed the dialog that shows the payment key');
+    must(['find', 'role', 'button', 'click', '--name', 'I saved it'], 'Pressing I saved it');
+    if (dialogsOpen() !== 0)
+      fail('the dialog is still open after I saved it');
+    if (paymentKeyInHtml(payment))
+      fail('the payment key is still in the page\'s HTML after I saved it');
+    for (const place of paymentKeyHeld(payment))
+      fail(`a payment key is in ${place} after I saved it`);
+    must(['wait', '--text', 'check agent'], 'Waiting for the list to read again');
+    if (paymentKeyInHtml(payment))
+      fail('the payment key is in the page\'s HTML after the list was read again');
+    await travelled([master, payment], 'after a payment key was made');
+
+    log('12. A page that is left while the key is shown: the key is gone from the page at once');
+    const another = makeKey('second agent');
+    if (!paymentKeyInHtml(another))
+      fail('the dialog doesn\'t show the second payment key');
+    must(['eval', 'window.dispatchEvent(new Event("pagehide")); "left"'], 'Leaving the page');
+    if (paymentKeyInHtml(another))
+      fail('the payment key is still in the page\'s HTML after pagehide');
+    if (dialogsOpen() !== 0)
+      fail('the dialog is still open after pagehide');
+    for (const place of paymentKeyHeld(another))
+      fail(`a payment key is in ${place} after pagehide`);
+    await travelled([master, payment, another], 'after the payment keys');
   }
   catch (error) {
     const cause = error instanceof Error && error.cause instanceof Error ? ` (${error.cause.message})` : '';

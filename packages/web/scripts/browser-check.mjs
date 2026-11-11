@@ -54,9 +54,10 @@ export const pages = [
   { name: 'Console, sign in', path: '/', host: 'console', session: 'out', ready: '.auth-col' },
   { name: 'Console, sign in, top-up link', path: '/topup?amount=5', host: 'console', session: 'out', ready: '.auth-col' },
   { name: 'Console, Overview', path: '/', host: 'console', session: 'in', ready: '.overview-balance' },
-  { name: 'Console, Keys', path: '/keys', host: 'console', session: 'in', ready: '.content-inner' },
+  { name: 'Console, Keys', path: '/keys', host: 'console', session: 'in', ready: '.page-title' },
   { name: 'Console, Top up', path: '/topup?amount=5', host: 'console', session: 'in', ready: '.content-inner' },
-  { name: 'Console, Payments', path: '/payments', host: 'console', session: 'in', ready: '.content-inner' },
+  { name: 'Console, Payments', path: '/payments', host: 'console', session: 'in', ready: '.page-title' },
+  { name: 'Console, Payments, filtered', path: '/payments?state=free&service=api.example.com&key=nothing&x=1', host: 'console', session: 'in', ready: '.page-title' },
   { name: 'Console, Settings', path: '/settings', host: 'console', session: 'in', ready: '.settings-kv' },
 ];
 

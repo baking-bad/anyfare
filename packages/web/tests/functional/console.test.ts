@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { startFakeApi, type FakeApi } from '../support/fakeApi';
+import { longHost, longPath, startFakeApi, type FakeApi } from '../support/fakeApi';
 
 // The console, from a production build (`next build`, then `next start`), as the image runs it: its pages on the
 // console host, what the server's HTML holds, the policy, the server's log, and the fake API's keyed routes. The site
@@ -214,6 +214,10 @@ describe('what the server\'s HTML of a console page holds', () => {
     ['/topup?amount=5&note=hello-from-link', ['hello-from-link', 'note=']],
     ['/signin?key=afm_test_xyz', ['afm_test_xyz', 'key=afm']],
     ['/?next=%2F%2Fevil.test&amount=5', ['evil.test', 'next=']],
+    ['/payments?key=%3Cscript%3E', ['%3Cscript%3E', '&lt;script&gt;', 'key=&lt;']],
+    ['/payments?service=%3Cimg%20onerror%3D1%3E', ['onerror', '&lt;img', '%3Cimg']],
+    ['/payments?key=key_0123456789ab&service=api.example.com&state=free&after=cur_x', ['key_0123456789ab', 'api.example.com', 'cur_x', 'state=free']],
+    ['/keys?new=1&key=key_0123456789ab&label=hello-from-link', ['key_0123456789ab', 'hello-from-link', 'new=1']],
   ])('holds no text of the query of %s', async (path, absent) => {
     const reply = await getAs(site, consoleHost, path);
 
@@ -254,7 +258,7 @@ describe('what the server\'s HTML of a console page holds', () => {
         expect(reply.status, path).toBe(200);
         expect(reply.body, path).not.toContain(made.masterKey);
         expect(reply.body, path).not.toContain(made.id);
-        expect(reply.body, path).not.toMatch(/afm_(live|test)_|"available"|"held"/);
+        expect(reply.body, path).not.toMatch(/afm_(live|test)_|af_(live|test)_|"available"|"held"|research agent|pay_sample|key_[0-9a-f]{12}/);
         expect(JSON.stringify(reply.headers), path).not.toContain(made.masterKey);
       }
     }
@@ -424,6 +428,112 @@ describe('the fake API\'s keyed routes', () => {
     expect(limited.status).toBe(429);
     expect(limited.headers.get('retry-after')).toBe('30');
     expect(limited.headers.get('access-control-allow-origin')).toBe(origin());
+  });
+});
+
+describe('the fake API\'s keys, payments and top-ups', () => {
+  const asAccount = async (api: FakeApi): Promise<(path: string, init?: RequestInit) => Promise<{ readonly status: number; readonly body: Record<string, unknown> }>> => {
+    const { masterKey } = await (await fetch(`${api.url}/v1/accounts`, { method: 'POST' })).json() as { readonly masterKey: string };
+
+    return async (path, init = {}) => {
+      const reply = await fetch(`${api.url}${path}`, { ...init, headers: { authorization: `Bearer ${masterKey}`, ...init.body === undefined ? {} : { 'content-type': 'application/json' } } });
+
+      return { status: reply.status, body: await reply.json() as Record<string, unknown> };
+    };
+  };
+  const body = (value: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(value) });
+
+  it('start a new account with four keys, 45 calls and eight top-ups in full mode', async () => {
+    const call = await asAccount(fake);
+    const keys = (await call('/v1/keys')).body['keys'] as { readonly id: string; readonly label: string | null; readonly revokedAt: string | null; readonly spent: { readonly today: string } }[];
+
+    expect(keys.map(key => key.label)).toEqual(['research agent', null, 'trial agent', 'retired agent']);
+    expect(keys.filter(key => key.revokedAt !== null)).toHaveLength(1);
+    expect(keys[0]!.spent.today).toBe('4.2');
+    expect(((await call('/v1/topups?limit=100')).body['topups'] as unknown[])).toHaveLength(8);
+    expect(((await call('/v1/payments?limit=100')).body['payments'] as unknown[])).toHaveLength(45);
+  });
+
+  it('make a key with an af_test_ secret shown once, change it with null clearing a field, and revoke it', async () => {
+    const call = await asAccount(fake);
+    const made = await call('/v1/keys', body({ label: 'my agent', dailyBudget: '5.00', maxPrice: '0.05' }));
+
+    expect(made.status).toBe(201);
+    expect(made.body['key']).toMatch(/^af_test_[0-9a-f]{32}$/);
+    expect(made.body).toMatchObject({ label: 'my agent', dailyBudget: '5.00', maxPrice: '0.05', allowance: null, revokedAt: null, spent: { today: '0', total: '0' }, remaining: { allowance: null, dailyBudget: '5' } });
+    const id = String(made.body['id']);
+    const listed = JSON.stringify((await call('/v1/keys')).body);
+    expect(listed).not.toContain(String(made.body['key']));
+    expect(fake.accounts().at(-1)!.paymentKeys).toEqual([made.body['key']]);
+
+    const changed = await call(`/v1/keys/${id}`, { method: 'PATCH', body: JSON.stringify({ label: null, maxPrice: null, dailyBudget: '7' }) });
+    expect(changed.body).toMatchObject({ label: null, maxPrice: null, dailyBudget: '7' });
+    const revoked = await call(`/v1/keys/${id}`, { method: 'DELETE' });
+    expect(revoked.body).toMatchObject({ id });
+    expect((await call(`/v1/keys/${id}`, { method: 'PATCH', body: '{}' })).status).toBe(409);
+    expect((await call('/v1/keys/key_nope', { method: 'PATCH', body: '{}' })).body).toMatchObject({ error: { code: 'not_found' } });
+  });
+
+  it('refuse a field that is wrong with a message that names it', async () => {
+    const call = await asAccount(fake);
+    const message = async (value: unknown): Promise<string> => ((await call('/v1/keys', body(value))).body['error'] as { readonly message: string }).message;
+
+    expect(await message({ label: 'n'.repeat(61) })).toContain('label');
+    expect(await message({ dailyBudget: '1.1234567' })).toContain('dailyBudget');
+    expect(await message({ maxPrice: 'abc' })).toContain('maxPrice');
+    expect(await message({ allowance: '-1' })).toContain('allowance');
+    expect(await message({ expiresAt: '2026-11-01T00:00:00.000Z' })).toContain('expiresAt');
+    expect(await message({ colour: 'red' })).toContain('colour');
+  });
+
+  it('page the payments by cursor, newest first, and filter them by state, key and service', async () => {
+    const call = await asAccount(fake);
+    const first = (await call('/v1/payments?limit=20')).body as { readonly payments: { readonly id: string; readonly createdAt: string; readonly state: string; readonly keyId: string | null; readonly targetHost: string }[]; readonly next: string | null };
+    const second = (await call(`/v1/payments?limit=20&after=${first.next!}`)).body as typeof first;
+    const third = (await call(`/v1/payments?limit=20&after=${second.next!}`)).body as typeof first;
+
+    expect([first.payments.length, second.payments.length, third.payments.length]).toEqual([20, 20, 5]);
+    expect(third.next).toBeNull();
+    const times = [...first.payments, ...second.payments, ...third.payments].map(payment => Date.parse(payment.createdAt));
+    expect(times).toEqual([...times].sort((a, b) => b - a));
+    expect(new Set([...first.payments, ...second.payments].map(payment => payment.id)).size).toBe(40);
+    const all = [...first.payments, ...second.payments, ...third.payments];
+    const free = (await call('/v1/payments?limit=100&state=free')).body['payments'] as typeof all;
+    expect(free.length).toBeGreaterThan(0);
+    expect(free.every(payment => payment.state === 'free')).toBe(true);
+    expect(((await call('/v1/payments?limit=100&state=pending')).body['payments'] as unknown[])).toHaveLength(1);
+    const keyId = all.find(payment => payment.keyId !== null)!.keyId!;
+    expect(((await call(`/v1/payments?limit=100&keyId=${keyId}`)).body['payments'] as typeof all).every(payment => payment.keyId === keyId)).toBe(true);
+    const host = all[0]!.targetHost;
+    expect(((await call(`/v1/payments?limit=100&service=${host}`)).body['payments'] as typeof all).every(payment => payment.targetHost === host)).toBe(true);
+    expect(((await call('/v1/payments?service=nothing.example.com')).body)).toEqual({ payments: [], next: null });
+  });
+
+  it('answer 400 to a query parameter they do not know, and to a bad limit, state or cursor', async () => {
+    const call = await asAccount(fake);
+
+    for (const path of ['/v1/payments?page=2', '/v1/payments?limit=101', '/v1/payments?limit=0', '/v1/payments?state=refunded', '/v1/payments?after=nope', '/v1/topups?state=paid', '/v1/topups?limit=x'])
+      expect((await call(path)).body, path).toMatchObject({ error: { code: 'invalid_request' } });
+    expect((await call('/v1/topups?limit=5')).body['next']).not.toBeNull();
+  });
+
+  it('have no keys, payments or top-ups in empty mode, and the long label, host and path in edge mode', async () => {
+    const [empty, edge] = await Promise.all([startFakeApi('empty'), startFakeApi('edge')]);
+    try {
+      const none = await asAccount(empty);
+      expect((await none('/v1/keys')).body).toEqual({ keys: [] });
+      expect((await none('/v1/payments')).body).toEqual({ payments: [], next: null });
+      expect((await none('/v1/topups')).body).toEqual({ topups: [], next: null });
+
+      const edgy = await asAccount(edge);
+      const keys = (await edgy('/v1/keys')).body['keys'] as { readonly label: string | null }[];
+      const payments = (await edgy('/v1/payments?limit=1')).body['payments'] as { readonly targetHost: string; readonly targetPath: string }[];
+      expect(keys.some(key => key.label?.length === 60)).toBe(true);
+      expect(payments[0]).toMatchObject({ targetHost: longHost, targetPath: longPath });
+    }
+    finally {
+      await Promise.all([empty.close(), edge.close()]);
+    }
   });
 });
 

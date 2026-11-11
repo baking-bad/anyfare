@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
+import type { Payment, PaymentKey, PaymentState, Topup } from '../../src/console/api';
 import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, Period, Receipt, ServiceDetail, ServiceRow, ServicesPage, Stats, TopStats } from '../../src/api/types';
 
 // A small HTTP server that answers the public read API's endpoints with sample data, for the website's
@@ -43,6 +44,13 @@ import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, P
 // `POST /_test/held?amount=0.02` sets what every account holds for calls in flight; and `POST /_test/rotate?answer=<how>`
 // changes only the rotation's answer, while the rotation itself still happens: `garble` answers a 200 no one can read,
 // `drop` closes the connection with no answer, `late&ms=<n>` answers after n milliseconds, and `normal` puts it back.
+//
+// The keyed routes also hold payment keys, payments and top-ups for each account: `GET`, `POST`, `PATCH` and `DELETE /v1/keys`,
+// `GET /v1/payments?limit=&after=&state=&keyId=&service=` and `GET /v1/topups?limit=&after=`. A query parameter they don't know
+// is a 400, as the API's is. A new account of `full` mode starts with four keys (one near its day's budget, one with no name, an
+// expired one and a revoked one), 45 calls in the payments (one in flight, some free) and eight top-ups in several statuses;
+// `edge` adds a key with a 60-character label and calls to the long host with the long path; `empty` has none of them. The payment
+// keys the fake issues are `af_test_` and 32 hex digits, and are kept in `FakeAccount.paymentKeys`.
 //
 // By hand: `node tests/support/fakeApi.ts full 4010 0 http://127.0.0.1:3000` (the last is the console's origin). Calls
 // made while it runs are pushed to the streams: `POST /_test/call` with a call as JSON, or with no body for a sample call.
@@ -890,6 +898,27 @@ export interface FakeAccount {
   masterKey: string;
   available: string;
   held: string;
+  keys: FakeKey[];
+  // Newest first
+  payments: Payment[];
+  // Newest first
+  topups: Topup[];
+  // The payment keys the fake issued to this account, secrets as they were shown once
+  paymentKeys: string[];
+}
+
+/** A payment key of an account as the fake keeps it: the numbers it spent are plain numbers, the API's strings are made on the way out. */
+export interface FakeKey {
+  readonly id: string;
+  label: string | null;
+  allowance: string | null;
+  dailyBudget: string;
+  maxPrice: string | null;
+  expiresAt: string | null;
+  readonly createdAt: string;
+  revokedAt: string | null;
+  spentToday: number;
+  spentTotal: number;
 }
 
 export interface FakeApi {
@@ -945,15 +974,271 @@ const sampleMasterKey = (): string => `afm_test_${randomBytes(16).toString('hex'
 
 const fail = (status: number, code: string, message: string) => ({ status, body: { error: { code, message } } });
 
+
+const samplePaymentKey = (): string => `af_test_${randomBytes(16).toString('hex')}`;
+
+/** An amount as the API prints it: at most 6 decimals, no trailing zero. */
+const amountText = (value: number): string => {
+  const text = (Math.round(value * 1_000_000) / 1_000_000).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+
+  return text === '-0' ? '0' : text;
+};
+
+/** The Key the API answers with. */
+const keyBody = (key: FakeKey): PaymentKey => ({
+  id: key.id,
+  label: key.label,
+  allowance: key.allowance,
+  dailyBudget: key.dailyBudget,
+  maxPrice: key.maxPrice,
+  expiresAt: key.expiresAt,
+  createdAt: key.createdAt,
+  revokedAt: key.revokedAt,
+  spent: { today: amountText(key.spentToday), total: amountText(key.spentTotal) },
+  remaining: {
+    allowance: key.allowance === null ? null : amountText(Math.max(0, Number(key.allowance) - key.spentTotal)),
+    dailyBudget: amountText(Math.max(0, Number(key.dailyBudget) - key.spentToday)),
+  },
+});
+
+const newKeyId = (): string => `key_${randomBytes(6).toString('hex')}`;
+
+/** In edge mode: a key whose label is 60 characters. */
+export const longLabel = `Agent ${'n'.repeat(54)}`;
+
+const seedKeys = (mode: FakeApiMode, now: number): FakeKey[] => {
+  if (mode === 'empty' || mode === 'checked')
+    return [];
+  const at = (days: number): string => new Date(now + days * day).toISOString();
+  const keys: FakeKey[] = [
+    { id: newKeyId(), label: 'research agent', allowance: '20', dailyBudget: '5', maxPrice: '0.05', expiresAt: at(60), createdAt: at(-20), revokedAt: null, spentToday: 4.2, spentTotal: 12.4 },
+    { id: newKeyId(), label: null, allowance: null, dailyBudget: '1', maxPrice: null, expiresAt: null, createdAt: at(-9), revokedAt: null, spentToday: 0.12, spentTotal: 0.5 },
+    { id: newKeyId(), label: 'trial agent', allowance: '2', dailyBudget: '0.5', maxPrice: '0.01', expiresAt: at(-2), createdAt: at(-30), revokedAt: null, spentToday: 0, spentTotal: 1.9 },
+    { id: newKeyId(), label: 'retired agent', allowance: null, dailyBudget: '2', maxPrice: '0.02', expiresAt: null, createdAt: at(-40), revokedAt: at(-12), spentToday: 0, spentTotal: 3.3 },
+  ];
+  if (mode === 'edge')
+    keys.splice(1, 0, { id: newKeyId(), label: longLabel, allowance: '100', dailyBudget: '25', maxPrice: '1', expiresAt: at(120), createdAt: at(-3), revokedAt: null, spentToday: 7.5, spentTotal: 31.2 });
+
+  return keys;
+};
+
+/** The sample calls of an account, newest first, 45 of them: some free, and in `full` and `edge` one in flight. */
+const seedPayments = (mode: FakeApiMode, keys: readonly FakeKey[], now: number): Payment[] => {
+  if (keys.length === 0)
+    return [];
+  const owners: readonly (string | null)[] = [keys[0]!.id, keys[1]!.id, keys[0]!.id, keys[2]!.id, null];
+  const payments = Array.from({ length: 45 }, (_unused, index): Payment => {
+    const call = sampleCall(index, now, index * 420 + 90);
+    const free = call.status === 'free';
+    const pending = index === 1;
+
+    return {
+      id: call.id,
+      requestId: `req_sample${String(index).padStart(4, '0')}`,
+      rail: call.paidWith,
+      targetHost: call.service,
+      targetPath: call.path,
+      amount: call.amount,
+      status: pending ? 'pending' : call.status,
+      createdAt: call.at,
+      updatedAt: call.at,
+      keyId: owners[index % owners.length] ?? null,
+      upstreamStatus: pending ? null : free ? (index === 9 ? null : 502) : 200,
+      state: pending ? 'pending' : free ? 'free' : 'paid',
+    };
+  });
+  if (mode === 'edge') {
+    const at = new Date(now - 30_000).toISOString();
+    payments.unshift({
+      id: 'pay_longpath', requestId: 'req_longpath', rail: 'near', targetHost: longHost, targetPath: longPath, amount: '0.003', status: 'paid', createdAt: at, updatedAt: at,
+      keyId: keys[1]!.id, upstreamStatus: 200, state: 'paid',
+    });
+  }
+
+  return payments;
+};
+
+const seedTopups = (mode: FakeApiMode, now: number): Topup[] => {
+  if (mode === 'empty' || mode === 'checked')
+    return [];
+  const make = (index: number, status: string, message: string, network: string, token: string, amount: string, credited: string | null, estimatedCredits: string | null): Topup =>
+    ({ id: `top_sample${index}`, status, message, network, token, amount, credited, estimatedCredits, createdAt: new Date(now - (index * 5 + 2) * 3_600_000).toISOString() });
+
+  return [
+    make(0, 'processing', 'Received. Converting.', 'base', 'USDC', '20', null, '19.99'),
+    make(1, 'credited', 'Added to your balance.', 'base', 'ETH', '0.0061', '19.84', null),
+    make(2, 'waiting', 'Waiting for your transfer.', 'solana', 'SOL', '0.2', null, '29.9'),
+    make(3, 'incomplete', 'Too little arrived.', 'near', 'USDC', '5', null, '2.5'),
+    make(4, 'refunded', 'Not added. It will be returned.', 'ethereum', 'USDC', '10', null, null),
+    make(5, 'expired', 'The time ran out.', 'arbitrum', 'USDC', '7', null, null),
+    make(6, 'failed', 'The conversion failed.', 'bitcoin', 'BTC', '0.0003', null, null),
+    make(7, 'quote_failed', 'No quote for this route.', 'near', 'wNEAR', '4', null, null),
+  ];
+};
+
+const seedAccount = (account: FakeAccount, mode: FakeApiMode, now: number): void => {
+  account.keys = seedKeys(mode, now);
+  account.payments = seedPayments(mode, account.keys, now);
+  account.topups = seedTopups(mode, now);
+};
+
+const decimalPattern = /^\d{1,12}(?:\.\d{1,6})?$/;
+
+const badRequest = (message: string) => fail(400, 'invalid_request', message);
+
+/** A message naming the field the body gets wrong, or undefined when every field is right. `null` clears an optional field. */
+const keyBodyProblem = (body: Record<string, unknown>, now: number): string | undefined => {
+  const known = ['label', 'dailyBudget', 'maxPrice', 'allowance', 'expiresAt'];
+  for (const name of Object.keys(body)) {
+    if (!known.includes(name))
+      return `${name} is not a field of a key`;
+  }
+  const { label, dailyBudget, maxPrice, allowance, expiresAt } = body;
+  if (label !== undefined && label !== null && (typeof label !== 'string' || label.length > 60))
+    return 'label is at most 60 characters';
+  if (dailyBudget !== undefined && (typeof dailyBudget !== 'string' || !decimalPattern.test(dailyBudget) || Number(dailyBudget) <= 0))
+    return 'dailyBudget is a USD amount above 0 with at most 6 decimals';
+  for (const [name, value] of [['maxPrice', maxPrice], ['allowance', allowance]] as const) {
+    if (value !== undefined && value !== null && (typeof value !== 'string' || !decimalPattern.test(value) || Number(value) <= 0))
+      return `${name} is a USD amount above 0 with at most 6 decimals`;
+  }
+  if (expiresAt !== undefined && expiresAt !== null && (typeof expiresAt !== 'string' || Number.isNaN(Date.parse(expiresAt)) || Date.parse(expiresAt) <= now))
+    return 'expiresAt is a full ISO time in the future';
+
+  return undefined;
+};
+
+const bodyObject = (body: unknown): Record<string, unknown> | undefined =>
+  body === undefined ? {} : typeof body === 'object' && body !== null && !Array.isArray(body) ? body as Record<string, unknown> : undefined;
+
+/** The page of a list that `limit` and `after` ask for, newest first. A cursor is `cur_` and the id of the last item before the page. */
+const pageOf = <TItem extends { readonly id: string }>(all: readonly TItem[], search: URLSearchParams): { readonly items: readonly TItem[]; readonly next: string | null } | string => {
+  const limitText = search.get('limit') ?? '20';
+  const limit = Number(limitText);
+  if (!/^\d+$/.test(limitText) || limit < 1 || limit > 100)
+    return 'limit is a whole number from 1 to 100';
+  const after = search.get('after');
+  let start = 0;
+  if (after !== null) {
+    const index = all.findIndex(item => `cur_${item.id}` === after);
+    if (index === -1)
+      return 'after is not a cursor this list gave';
+    start = index + 1;
+  }
+  const items = all.slice(start, start + limit);
+
+  return { items, next: start + limit < all.length && items.length > 0 ? `cur_${items.at(-1)!.id}` : null };
+};
+
+/** What a keyed route is asked beyond its method and path: the mode of the fake, the query, and the JSON body (undefined when there is none). */
+export interface KeyedAsk {
+  readonly mode: FakeApiMode;
+  readonly search: URLSearchParams;
+  readonly body: unknown;
+}
+
+const keysAnswer = (method: string, pathname: string, account: FakeAccount, ask: KeyedAsk): { readonly status: number; readonly body: unknown } | undefined => {
+  const now = Date.now();
+  if (pathname === '/v1/keys') {
+    if (method === 'GET')
+      return { status: 200, body: { keys: account.keys.map(keyBody) } };
+    if (method !== 'POST')
+      return fail(405, 'method_not_allowed', 'Use GET or POST');
+    const body = bodyObject(ask.body);
+    const problem = body === undefined ? 'The body is a JSON object' : keyBodyProblem(body, now);
+    if (body === undefined || problem !== undefined)
+      return badRequest(problem ?? 'The body is a JSON object');
+    const key: FakeKey = {
+      id: newKeyId(),
+      label: typeof body['label'] === 'string' ? body['label'] : null,
+      allowance: typeof body['allowance'] === 'string' ? body['allowance'] : null,
+      dailyBudget: typeof body['dailyBudget'] === 'string' ? body['dailyBudget'] : '5',
+      maxPrice: typeof body['maxPrice'] === 'string' ? body['maxPrice'] : null,
+      expiresAt: typeof body['expiresAt'] === 'string' ? new Date(body['expiresAt']).toISOString() : null,
+      createdAt: new Date(now).toISOString(),
+      revokedAt: null,
+      spentToday: 0,
+      spentTotal: 0,
+    };
+    const secret = samplePaymentKey();
+    account.keys.unshift(key);
+    account.paymentKeys.push(secret);
+
+    return { status: 201, body: { ...keyBody(key), key: secret } };
+  }
+  const id = /^\/v1\/keys\/([^/]+)$/.exec(pathname)?.[1];
+  if (id === undefined)
+    return undefined;
+  const key = account.keys.find(item => item.id === decodeURIComponent(id));
+  if (key === undefined)
+    return fail(404, 'not_found', 'There is no such key on this account');
+  if (method === 'PATCH') {
+    if (key.revokedAt !== null)
+      return fail(409, 'key_revoked', 'A revoked key can\'t be changed');
+    const body = bodyObject(ask.body);
+    const problem = body === undefined ? 'The body is a JSON object' : keyBodyProblem(body, now);
+    if (body === undefined || problem !== undefined)
+      return badRequest(problem ?? 'The body is a JSON object');
+    if (body['dailyBudget'] === null)
+      return badRequest('dailyBudget can\'t be cleared');
+    if ('label' in body)
+      key.label = body['label'] as string | null;
+    if (typeof body['dailyBudget'] === 'string')
+      key.dailyBudget = body['dailyBudget'];
+    if ('maxPrice' in body)
+      key.maxPrice = body['maxPrice'] as string | null;
+    if ('allowance' in body)
+      key.allowance = body['allowance'] as string | null;
+    if ('expiresAt' in body)
+      key.expiresAt = body['expiresAt'] === null ? null : new Date(body['expiresAt'] as string).toISOString();
+
+    return { status: 200, body: keyBody(key) };
+  }
+  if (method === 'DELETE') {
+    key.revokedAt ??= new Date(now).toISOString();
+
+    return { status: 200, body: { id: key.id, revokedAt: key.revokedAt } };
+  }
+
+  return fail(405, 'method_not_allowed', 'Use PATCH or DELETE');
+};
+
+const paymentsAnswer = (account: FakeAccount, search: URLSearchParams): { readonly status: number; readonly body: unknown } => {
+  for (const name of search.keys()) {
+    if (!['limit', 'after', 'state', 'keyId', 'service'].includes(name))
+      return badRequest(`${name} is not a parameter of this route`);
+  }
+  const state = search.get('state');
+  if (state !== null && !['paid', 'free', 'pending'].includes(state))
+    return badRequest('state is paid, free or pending');
+  const keyId = search.get('keyId');
+  const service = search.get('service');
+  const matching = account.payments.filter(payment => (state === null || payment.state === (state as PaymentState)) && (keyId === null || payment.keyId === keyId) && (service === null || payment.targetHost === service));
+  const page = pageOf(matching, search);
+
+  return typeof page === 'string' ? badRequest(page) : { status: 200, body: { payments: page.items, next: page.next } };
+};
+
+const topupsAnswer = (account: FakeAccount, search: URLSearchParams): { readonly status: number; readonly body: unknown } => {
+  for (const name of search.keys()) {
+    if (!['limit', 'after'].includes(name))
+      return badRequest(`${name} is not a parameter of this route`);
+  }
+  const page = pageOf(account.topups, search);
+
+  return typeof page === 'string' ? badRequest(page) : { status: 200, body: { topups: page.items, next: page.next } };
+};
+
 /**
  * The answer of a keyed route, from the accounts in `byKey`: sign-up, the account, the rotation and the balance. A
  * rotation drops the key that sent it, so that key answers `401 invalid_key` from then on.
  */
-export const keyedAnswer = (method: string, pathname: string, authorization: string | undefined, byKey: Map<string, FakeAccount>, made: FakeAccount[]): { readonly status: number; readonly body: unknown } => {
+export const keyedAnswer = (method: string, pathname: string, authorization: string | undefined, byKey: Map<string, FakeAccount>, made: FakeAccount[], ask: KeyedAsk = { mode: 'full', search: new URLSearchParams(), body: undefined }): { readonly status: number; readonly body: unknown } => {
   if (pathname === '/v1/accounts') {
     if (method !== 'POST')
       return fail(405, 'method_not_allowed', 'Use POST');
-    const account: FakeAccount = { id: `acc_${randomUUID()}`, createdAt: new Date().toISOString(), masterKey: sampleMasterKey(), available: '0.1', held: '0' };
+    const account: FakeAccount = { id: `acc_${randomUUID()}`, createdAt: new Date().toISOString(), masterKey: sampleMasterKey(), available: '0.1', held: '0', keys: [], payments: [], topups: [], paymentKeys: [] };
+    seedAccount(account, ask.mode, Date.now());
     byKey.set(account.masterKey, account);
     made.push(account);
 
@@ -981,6 +1266,12 @@ export const keyedAnswer = (method: string, pathname: string, authorization: str
   }
   if (pathname === '/v1/balance' && method === 'GET')
     return { status: 200, body: { available: account.available, held: account.held } };
+  if (pathname === '/v1/payments' && method === 'GET')
+    return paymentsAnswer(account, ask.search);
+  if (pathname === '/v1/topups' && method === 'GET')
+    return topupsAnswer(account, ask.search);
+  if (pathname === '/v1/keys' || pathname.startsWith('/v1/keys/'))
+    return keysAnswer(method, pathname, account, ask) ?? fail(404, 'not_found', 'Not found');
 
   return fail(404, 'not_found', 'Not found');
 };
@@ -1063,25 +1354,38 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0, slowMs = 0, cons
 
         return;
       }
-      const found = keyedAnswer(method, url.pathname, request.headers.authorization, byKey, made);
-      const rotated = url.pathname === '/v1/account/master-key/rotate' && found.status === 200;
-      // The rotation happened above; only its answer is changed
-      if (rotated && rotation.answer === 'drop') {
-        response.destroy();
+      // The body of a keyed request is read before it is answered: a key is made or changed from it
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        let body: unknown;
+        try {
+          const text = Buffer.concat(chunks).toString('utf8');
+          body = text === '' ? undefined : JSON.parse(text);
+        }
+        catch {
+          body = 'not json';
+        }
+        const found = keyedAnswer(method, url.pathname, request.headers.authorization, byKey, made, { mode, search: url.searchParams, body });
+        const rotated = url.pathname === '/v1/account/master-key/rotate' && found.status === 200;
+        // The rotation happened above; only its answer is changed
+        if (rotated && rotation.answer === 'drop') {
+          response.destroy();
 
-        return;
-      }
-      const send = (): void => {
-        if (rotated && rotation.answer === 'garble')
-          response.writeHead(200, { ...headers, 'content-type': 'text/html' }).end('<html><body>Bad gateway</body></html>');
+          return;
+        }
+        const send = (): void => {
+          if (rotated && rotation.answer === 'garble')
+            response.writeHead(200, { ...headers, 'content-type': 'text/html' }).end('<html><body>Bad gateway</body></html>');
+          else
+            json(response, found.status, found.body, headers);
+        };
+        const delay = rotated && rotation.answer === 'late' ? rotation.ms : slowMs;
+        if (delay > 0)
+          setTimeout(send, delay);
         else
-          json(response, found.status, found.body, headers);
-      };
-      const delay = rotated && rotation.answer === 'late' ? rotation.ms : slowMs;
-      if (delay > 0)
-        setTimeout(send, delay);
-      else
-        send();
+          send();
+      });
 
       return;
     }

@@ -558,14 +558,19 @@ describe('what the sign-in view says', () => {
 describe('the Agent view of the console', () => {
   it('lists the requests behind sign-in, the Overview and Settings, with the key named, never held', () => {
     expect(consoleAgentPages.signin.requests.map(request => `${request.method} ${request.path}`)).toEqual(['POST /v1/accounts', 'GET /v1/account']);
-    expect(consoleAgentPages.overview.requests.map(request => `${request.method} ${request.path}`)).toEqual(['GET /v1/balance']);
+    expect(consoleAgentPages.overview.requests.map(request => `${request.method} ${request.path}`)).toEqual(['GET /v1/balance', 'GET /v1/keys', 'GET /v1/payments?limit=5', 'GET /v1/topups?limit=5']);
+    expect(consoleAgentPages.keys.requests.map(request => `${request.method} ${request.path}`)).toEqual(['GET /v1/keys', 'POST /v1/keys', 'PATCH /v1/keys/<key id>', 'DELETE /v1/keys/<key id>']);
+    expect(consoleAgentPages.payments.requests.map(request => `${request.method} ${request.path}`)).toEqual(['GET /v1/payments?limit=20', 'GET /v1/keys']);
     expect(consoleAgentPages.settings.requests.map(request => `${request.method} ${request.path}`)).toEqual(['GET /v1/account', 'POST /v1/account/master-key/rotate']);
-    for (const page of ['signin', 'overview', 'settings'] as const) {
+    for (const page of ['signin', 'overview', 'keys', 'payments', 'settings'] as const) {
       const curl = curlOfPage(apiUrl, page);
       expect(curl, page).not.toMatch(/afm_(live|test)_[A-Za-z0-9]/);
       expect(curl, page).toContain(`${apiUrl}/v1/`);
     }
     expect(curlOfPage(apiUrl, 'signin')).toBe(`curl -X POST ${apiUrl}/v1/accounts\n\ncurl ${apiUrl}/v1/account \\\n  -H "Authorization: Bearer $ANYFARE_MASTER_KEY"`);
+    // A path with a placeholder or a query is quoted, and a body goes with its Content-Type
+    expect(curlOfPage(apiUrl, 'keys')).toContain(`curl -X PATCH "${apiUrl}/v1/keys/<key id>" \\\n  -H "Authorization: Bearer $ANYFARE_MASTER_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{"dailyBudget":"10.00","maxPrice":null}'`);
+    expect(curlOfPage(apiUrl, 'payments')).toContain(`curl "${apiUrl}/v1/payments?limit=20" \\\n`);
     expect(curlOfPage(apiUrl, 'settings')).toContain(`curl -X POST ${apiUrl}/v1/account/master-key/rotate \\\n  -H "Authorization: Bearer $ANYFARE_MASTER_KEY"`);
   });
 });
@@ -609,7 +614,10 @@ describe('the console\'s code', () => {
   it('touches storage in one module, under one name, and never localStorage, a cookie, IndexedDB or the history', () => {
     expect(all.length).toBeGreaterThan(10);
     for (const { file, text } of all) {
-      expect(text, file).not.toMatch(/localStorage|document\.cookie|indexedDB|history\.(push|replace)State|history\.state/);
+      expect(text, file).not.toMatch(/localStorage|document\.cookie|indexedDB|history\.pushState|history\.state/);
+      // The Payments page puts its checked filters in the address, and no other page touches the history
+      if (file !== 'PaymentsPage.tsx')
+        expect(text, file).not.toMatch(/history\.replaceState/);
       if (file !== 'session.ts')
         expect(text, file).not.toMatch(/sessionStorage/);
     }
@@ -649,11 +657,12 @@ describe('the console\'s code', () => {
     expect(siteLinks.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('reads one query value, the top-up link\'s amount, and only through amount.ts', () => {
+  it('reads the query only for the top-up link\'s amount (through amount.ts) and for the Payments filters (through payments.ts)', () => {
     const readers = all.filter(({ text }) => /searchParams|useSearchParams|location\.search|URLSearchParams/.test(text)).map(({ file }) => file).sort();
 
-    // The API client builds a query for later pages; the Top up route reads the proxy's number and flag
-    expect(readers).toEqual(['api.ts', 'app/topup/page.tsx']);
+    // The API client builds a query for the requests; the Top up route reads the proxy's number and flag; Payments reads its own three filters
+    expect(readers).toEqual(['PaymentsPage.tsx', 'api.ts', 'app/topup/page.tsx', 'payments.ts']);
+    expect(readFileSync(join(consoleRoot, 'PaymentsPage.tsx'), 'utf8')).toMatch(/filtersOfQuery\(initialSearch/);
     expect(readFileSync(join(appConsoleRoot, 'topup/page.tsx'), 'utf8')).toMatch(/topupAmount\(params\[amountParam\]\)/);
   });
 });

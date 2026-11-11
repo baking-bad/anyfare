@@ -24,3 +24,20 @@ export const utcDateTime = (iso: string): string => {
 
   return `${at.getUTCDate()} ${months[at.getUTCMonth()]} ${at.getUTCFullYear()}, ${two(at.getUTCHours())}:${two(at.getUTCMinutes())} UTC`;
 };
+
+/** A moment as "11 Nov, 09:12", in UTC. A value that isn't a time reads as a dash. */
+export const shortUtc = (iso: string): string => {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime()))
+    return '-';
+  const two = (value: number): string => String(value).padStart(2, '0');
+
+  return `${at.getUTCDate()} ${months[at.getUTCMonth()]}, ${two(at.getUTCHours())}:${two(at.getUTCMinutes())}`;
+};
+
+/** A moment's day as "11 Nov 2026", in UTC. A value that isn't a time reads as a dash. */
+export const utcDate = (iso: string): string => {
+  const at = new Date(iso);
+
+  return Number.isNaN(at.getTime()) ? '-' : `${at.getUTCDate()} ${months[at.getUTCMonth()]} ${at.getUTCFullYear()}`;
+};
