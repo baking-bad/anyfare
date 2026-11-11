@@ -61,21 +61,34 @@ export const createLiveCache = <TValue>({ read, clock, ttlMs = liveCacheMs, retr
 export interface KeyedCache<TValue> {
   /**
    * The value read for `key` within the last `ttlMs`, else a new read, shared by every caller of the key
-   * while it runs. A failed read is not kept. With `maxReading` reads of other keys running, it throws
-   * StatsUnavailableError instead of starting another.
+   * while it runs. A failed read is not kept, nor a value larger than `maxEntryBytes`. With `maxReading`
+   * reads of other keys running, it throws StatsUnavailableError instead of starting another.
    */
   get(key: string, read: () => Promise<TValue>): Promise<TValue>;
+  // What it keeps now, as `sizeOf` measures it
+  readonly bytes: number;
 }
 
-/** At most `maxEntries` values, the oldest dropped first, and at most `maxReading` reads at once. */
-export const createKeyedCache = <TValue>({ clock, ttlMs, maxEntries, maxReading }: {
+/**
+ * At most `maxBytes` of values in all, as `sizeOf` measures them: the expired dropped first, then the
+ * oldest. At most `maxReading` reads at once.
+ */
+export const createKeyedCache = <TValue>({ clock, ttlMs, maxBytes, maxEntryBytes, maxReading, sizeOf }: {
   readonly clock: Clock;
   readonly ttlMs: number;
-  readonly maxEntries: number;
+  readonly maxBytes: number;
+  readonly maxEntryBytes: number;
   readonly maxReading: number;
+  readonly sizeOf: (value: TValue) => number;
 }): KeyedCache<TValue> => {
-  const kept = new Map<string, { readonly at: number; readonly value: TValue }>();
+  // In the order they were kept, oldest first
+  const kept = new Map<string, { readonly at: number; readonly value: TValue; readonly bytes: number }>();
   const reading = new Map<string, Promise<TValue>>();
+  let bytes = 0;
+  const drop = (key: string): void => {
+    bytes -= kept.get(key)?.bytes ?? 0;
+    kept.delete(key);
+  };
 
   return {
     get: (key, read) => {
@@ -83,6 +96,8 @@ export const createKeyedCache = <TValue>({ clock, ttlMs, maxEntries, maxReading 
       const found = kept.get(key);
       if (found && now - found.at < ttlMs)
         return Promise.resolve(found.value);
+      if (found)
+        drop(key);
       const running = reading.get(key);
       if (running)
         return running;
@@ -92,10 +107,18 @@ export const createKeyedCache = <TValue>({ clock, ttlMs, maxEntries, maxReading 
       const promise = (async () => {
         try {
           const value = await read();
-          kept.delete(key);
-          kept.set(key, { at: now, value });
-          while (kept.size > maxEntries)
-            kept.delete(kept.keys().next().value!);
+          const size = sizeOf(value);
+          if (size > maxEntryBytes)
+            return value;
+          // The expired first, then the oldest, until it fits
+          for (const [other, entry] of kept) {
+            if (now - entry.at >= ttlMs)
+              drop(other);
+          }
+          while (bytes + size > maxBytes && kept.size > 0)
+            drop(kept.keys().next().value!);
+          kept.set(key, { at: now, value, bytes: size });
+          bytes += size;
 
           return value;
         }
@@ -106,6 +129,9 @@ export const createKeyedCache = <TValue>({ clock, ttlMs, maxEntries, maxReading 
       reading.set(key, promise);
 
       return promise;
+    },
+    get bytes() {
+      return bytes;
     },
   };
 };

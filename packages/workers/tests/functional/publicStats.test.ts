@@ -45,8 +45,11 @@ const closedPort = async (): Promise<number> => {
   return port;
 };
 
+// The others' database, for the counts that run on a pool of their own
+let elsewhere: TestDatabase;
+
 beforeAll(async () => {
-  [database, redis] = await Promise.all([createTestDatabase(), createTestRedis()]);
+  [database, redis, elsewhere] = await Promise.all([createTestDatabase(), createTestRedis(), createTestDatabase()]);
   const loaded = await loadPlatformConfig({ env: { CONFIG_PATH: 'config/example.yaml' } });
   config = { ...loaded, stats: { ...loaded.stats, intervalSeconds: 600, allIntervalSeconds: 3_600 } };
   await seed('first.example.com', fixtureTime(1, 2, 11, 0, 0, 0));
@@ -54,7 +57,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await Promise.all([database?.drop(), redis?.cleanup()]);
+  await Promise.all([database?.drop(), redis?.cleanup(), elsewhere?.drop()]);
 });
 
 const capture = () => {
@@ -124,8 +127,35 @@ describe('the public numbers\' counts in the workers', () => {
     }
   });
 
+  it('first run only once every other job due within their interval has run once, the treasury\'s too', async () => {
+    const { lines, logger } = capture();
+    const timers = createManualTimers();
+    const clock = createFakeClock(fixtureTime(1, 2, 12, 30, 0, 0));
+    const balance = { balance: async () => 1_000_000n };
+    // The treasury's balances first run 5 minutes after start; the frequent count every 10 minutes
+    const workers = createApp({ config, logger, postgres: database.postgres, clock, timers, balanceReaders: { evm: balance, solana: balance, near: balance } });
+    try {
+      await workers.listen({ host: '127.0.0.1', port: 0 });
+      for (const step of [settlementFollowUpIntervalMs, holdExpiryIntervalMs - settlementFollowUpIntervalMs])
+        timers.advance(step);
+      await vi.waitFor(() => expect(ran(lines, 'routing_losses')).toHaveLength(1));
+      timers.advance(0);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      // Hold expiry, the settlement follow-up and routing losses have run; the treasury's balances haven't
+      expect(ran(lines, 'public_stats')).toEqual([]);
+      timers.advance(5 * 60_000 - holdExpiryIntervalMs);
+      await vi.waitFor(() => expect(ran(lines, 'treasury_balances')).toHaveLength(1));
+      await vi.waitFor(() => {
+        timers.advance(0);
+        expect(ran(lines, 'public_stats')).toHaveLength(1);
+      });
+    }
+    finally {
+      await workers.close();
+    }
+  });
+
   it('count, read and write through their own pool only', async () => {
-    const elsewhere = await createTestDatabase();
     const timers = createManualTimers();
     const clock = createFakeClock(fixtureTime(1, 2, 12, 30, 0, 0));
     const workers = createApp({ config, logger: createLogger({ level: 'silent' }), postgres: elsewhere.postgres, statsPostgres: database.postgres, clock, timers });
@@ -141,7 +171,6 @@ describe('the public numbers\' counts in the workers', () => {
     finally {
       await unlock();
       await workers.close();
-      await elsewhere.drop();
     }
   });
 

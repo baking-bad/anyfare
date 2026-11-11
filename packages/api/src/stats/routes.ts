@@ -1,9 +1,9 @@
-import type { FastifyInstance, onRequestHookHandler } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest, onRequestHookHandler } from 'fastify';
 
 import { formatUsd, type Clock } from '@anyfare/common';
 import {
   buildEndpointAnswer, buildLiveAnswer, buildServicePage, composePlatformAnswer, createPaidWith, emptyTopAnswer, endpointDailyDays, endpointListEntry,
-  endpointNumbersOf, lastUtcDays, minuteStart, periodBefore, periodStart, type EndpointAnswer, type LiveAnswer, type PlatformConfig,
+  endpointNumbersOf, lastUtcDays, maxEndpointReadPathLength, minuteStart, periodBefore, periodStart, type EndpointAnswer, type LiveAnswer, type PlatformConfig,
   type ServiceAnswer, type StatsPeriod,
 } from '@anyfare/core';
 import {
@@ -33,12 +33,14 @@ export interface StatsRoutesOptions {
 const countedCache = 'public, max-age=60';
 const liveCache = 'public, max-age=10';
 // A host or an endpoint with no row of its own is read when asked for: its newest calls up to this cap, each
-// statement giving up after the timeout, kept in the process for a minute, a few such reads at once
+// statement giving up after the timeout, kept in the process for a minute in a few MB, a few such reads at once
 export const askedReadCap = 10_000;
 export const askedReadTimeoutMs = 2_000;
 const askedCacheMs = 60_000;
-const askedCacheEntries = 500;
-const askedReadsAtOnce = 4;
+export const askedCacheBytes = 4 * 1024 * 1024;
+// A served service answer stays under about 100 KB: a larger one isn't kept
+export const askedCacheEntryBytes = 128 * 1024;
+const askedReadsAtOnce = 2;
 // The live numbers' read of the calls since the frequent count gives up after this
 const liveReadTimeoutMs = 2_000;
 const dayMs = 86_400_000;
@@ -55,7 +57,14 @@ const kindOf = (period: StatsPeriod) => (period === 'all' ? 'all' : 'recent') as
 /** When a stored row's numbers are true: its own time, or its kind's last complete count, which left it in place. */
 const verified = (countedAt: Date, period: StatsPeriod, marks: CountMarks): Date => later(countedAt, marks[kindOf(period)]);
 
-// A bounded read that couldn't finish answers 503, never a number it didn't count
+// Every answer is no-store until it succeeds: an error, a 503 above all, is never kept by a cache
+const noStore = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+  reply.header('cache-control', 'no-store');
+};
+// The size of an answer kept in the process, as the characters of its JSON
+const sizeOf = (value: unknown): number => JSON.stringify(value, (_key, item: unknown) => (typeof item === 'bigint' ? String(item) : item))?.length ?? 0;
+
+// A read that couldn't finish, or a pool with no connection free in time, answers 503, never a number it didn't count
 const bounded = async <TValue>(read: () => Promise<TValue>): Promise<TValue> => {
   try {
     return await read();
@@ -84,22 +93,24 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
   const live = createLiveCache<LiveAnswer>({
     read: async now => {
       const base = await store.live();
-      const at = base ? new Date(Math.min(now.getTime(), base.countedAt.getTime() + tailMs)) : now;
-      const from = base?.countedAt ?? new Date(at.getTime() - tailMs);
-      const tail = await counter.liveTail({ from, at, minutesFrom: new Date(minuteStart(at).getTime() - 29 * minuteMs), timeoutMs: liveReadTimeoutMs });
+      // Before a first count there are no numbers to add the calls since to
+      if (!base)
+        throw new StatsUnavailableError('The live numbers haven\'t been counted yet: try again shortly');
+      const at = new Date(Math.min(now.getTime(), base.countedAt.getTime() + tailMs));
+      const tail = await counter.liveTail({ from: base.countedAt, at, minutesFrom: new Date(minuteStart(at).getTime() - 29 * minuteMs), timeoutMs: liveReadTimeoutMs });
 
-      return buildLiveAnswer(base?.answer, tail);
+      return buildLiveAnswer(base.answer, tail);
     },
     clock,
   });
   // What a read when asked for found, and when
   const services = createKeyedCache<{ readonly answer: ServiceAnswer | undefined; readonly at: Date }>({
-    clock, ttlMs: askedCacheMs, maxEntries: askedCacheEntries, maxReading: askedReadsAtOnce,
+    clock, ttlMs: askedCacheMs, maxBytes: askedCacheBytes / 2, maxEntryBytes: askedCacheEntryBytes, maxReading: askedReadsAtOnce, sizeOf,
   });
   const endpoints = createKeyedCache<{ readonly answer: EndpointAnswer; readonly at: Date }>({
-    clock, ttlMs: askedCacheMs, maxEntries: askedCacheEntries, maxReading: askedReadsAtOnce,
+    clock, ttlMs: askedCacheMs, maxBytes: askedCacheBytes / 2, maxEntryBytes: askedCacheEntryBytes, maxReading: askedReadsAtOnce, sizeOf,
   });
-  const read = { method: [...publicReadMethods], onRequest: [publicCors, limit] };
+  const read = { method: [...publicReadMethods], onRequest: [publicCors, noStore, limit] };
 
   /** A service with no page of its own: its newest calls, up to the cap, from what the page needs. Undefined: no paid call, ever. */
   const askService = async (host: string, period: StatsPeriod, now: Date): Promise<ServiceAnswer | undefined> => {
@@ -131,15 +142,21 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
   const askEndpoint = async (host: string, path: string, period: StatsPeriod, now: Date): Promise<EndpointAnswer> => {
     const from = periodStart(period, now);
     const dailyFrom = new Date(periodStart('today', now)!.getTime() - (endpointDailyDays - 1) * dayMs);
-    const scope: CallScope = { endpoint: { host, path }, from: from === undefined ? undefined : earliest([from, dailyFrom]), cap: readCap };
+    const since = from === undefined ? undefined : earliest([from, dailyFrom]);
     const periods = [{ period, from }];
+    const daily = lastUtcDays(now, endpointDailyDays);
+    // The narrower way to its calls: the host's, or the path's on every host. A host with no call has no endpoint, nor a path with none.
+    const scope = await counter.endpointScope({ host, path, from: since, cap: readCap, timeoutMs: askedReadTimeoutMs });
+    if (!scope)
+      return buildEndpointAnswer({ host, path, period, numbers: undefined, daily: daily.map(() => 0), dailyTo: now, exact: true });
     const capped = await counter.isCapped({ scope, timeoutMs: askedReadTimeoutMs });
-    const [found] = await counter.endpoints({ scope, periods, rankBy: period, withFree: true, dailyFrom, timeoutMs: askedReadTimeoutMs });
+    const [found] = await counter.endpoints({
+      scope, periods, rankBy: period, withFree: true, dailyFrom, maxPathLength: maxEndpointReadPathLength, timeoutMs: askedReadTimeoutMs,
+    });
     const days = new Map((found?.daily ?? []).map(day => [day.day, day.calls]));
 
     return buildEndpointAnswer({
-      host, path, period, numbers: endpointNumbersOf(found?.periods[period]), daily: lastUtcDays(now, endpointDailyDays).map(day => days.get(day) ?? 0),
-      dailyTo: now, exact: !capped,
+      host, path, period, numbers: endpointNumbersOf(found?.periods[period]), daily: daily.map(day => days.get(day) ?? 0), dailyTo: now, exact: !capped,
     });
   };
 
@@ -148,7 +165,7 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
     url: '/v1/stats',
     schema: { querystring: noQuerySchema, response: { 200: platformSchema, ...errors } },
     handler: async (_request, reply) => {
-      const { recent, all } = await store.platform();
+      const { recent, all } = await bounded(() => store.platform());
       reply.header('cache-control', countedCache);
 
       return { updatedAt: iso(recent?.countedAt), allUpdatedAt: iso(all?.countedAt), ...composePlatformAnswer(recent?.answer, all?.answer, clock.now()) };
@@ -160,7 +177,7 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
     url: '/v1/stats/live',
     schema: { querystring: noQuerySchema, response: { 200: liveSchema, ...errors } },
     handler: async (_request, reply) => {
-      const answer = await live.get();
+      const answer = await bounded(() => live.get());
       reply.header('cache-control', liveCache);
 
       return answer;
@@ -173,7 +190,7 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
     schema: { querystring: periodQuerySchema, response: { 200: topSchema, ...errors } },
     handler: async (request, reply) => {
       const { period } = request.query;
-      const stored = await store.top(period);
+      const stored = await bounded(() => store.top(period));
       reply.header('cache-control', countedCache);
 
       return { period, updatedAt: iso(stored?.countedAt), ...stored?.answer ?? emptyTopAnswer };
@@ -188,7 +205,7 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
       const { sort, page, size } = request.query;
       // An empty search is none
       const q = request.query.q === '' ? undefined : request.query.q;
-      const found = await store.services({ ...q === undefined ? {} : { q }, sort, offset: (page - 1) * size, limit: size });
+      const found = await bounded(() => store.services({ ...q === undefined ? {} : { q }, sort, offset: (page - 1) * size, limit: size }));
       const totals = found.totals?.answer ?? { services: 0, paidEndpoints: 0, calls30d: 0 };
       // The oldest time of what the page shows
       const times = [...found.totals ? [found.totals.countedAt] : [], ...found.rows.map(row => verified(row.countedAt, '30d', found.marks))];
@@ -226,7 +243,7 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
     handler: async (request, reply) => {
       const host = lowercase(request.params['*']);
       const { period } = request.query;
-      const stored = await store.servicePage(host, period);
+      const stored = await bounded(() => store.servicePage(host, period));
       const numbersOf = (row: StoredEndpointRow) => (period === 'all' ? row.all : row.recent[period]);
       if (stored) {
         const times = [
@@ -264,20 +281,22 @@ export const registerStatsRoutes = (app: FastifyInstance, { db, config, limit, c
     handler: async (request, reply) => {
       const { path, period } = request.query;
       const host = lowercase(request.query.host);
-      const stored = await store.endpoint(host, path);
+      const stored = await bounded(() => store.endpoint(host, path));
       const numbers = stored === undefined ? undefined : period === 'all' ? stored.row.all : stored.row.recent[period];
-      reply.header('cache-control', countedCache);
       if (stored && numbers) {
         const countedAt = period === 'all' ? stored.row.allCountedAt ?? stored.row.countedAt : stored.row.countedAt;
+        reply.header('cache-control', countedCache);
 
+        // Its 14 days end on the day the frequent count last found them so, written or not
         return {
-          ...buildEndpointAnswer({ host, path, period, numbers, daily: stored.row.daily, dailyTo: stored.row.countedAt, exact: true }),
+          ...buildEndpointAnswer({ host, path, period, numbers, daily: stored.row.daily, dailyTo: verified(stored.row.countedAt, 'today', stored.marks), exact: true }),
           updatedAt: verified(countedAt, period, stored.marks).toISOString(),
         };
       }
 
       const now = clock.now();
       const asked = await bounded(() => endpoints.get(`${host} ${period} ${path}`, async () => ({ answer: await askEndpoint(host, path, period, now), at: now })));
+      reply.header('cache-control', countedCache);
 
       return { ...asked.answer, updatedAt: asked.at.toISOString() };
     },

@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -13,16 +14,28 @@ export const migrationsFolder = fileURLToPath(new URL('../migrations', import.me
 const migrationLockId = 7_301_746_117;
 
 // A migration gives up waiting for a table's lock after this: while it waits, every write to that table
-// queues behind it, payments' too
-export const migrationLockTimeoutMs = 10_000;
+// queues behind it, payments' too. Then it tries again after a pause that lets those writes through, a
+// few times, and fails: the deploy restarts it, and each attempt holds writes up for this long at most.
+export const migrationLockTimeoutMs = 3_000;
+export const migrationAttempts = 3;
+export const migrationRetryPauseMs = 5_000;
 
 export interface MigrateDatabaseOptions {
   // DATABASE_URL. It carries the password, so it stays in a Secret and is never logged.
   readonly url: Secret;
   readonly logger: Logger;
-  // Default: 10 s
+  // Defaults: 3 s, 3 attempts, 5 s between them
   readonly lockTimeoutMs?: number;
+  readonly attempts?: number;
+  readonly retryPauseMs?: number;
 }
+
+// Postgres gave up waiting for a lock
+const isLockTimeout = (error: unknown): boolean => {
+  const codes = (value: unknown): unknown[] => (value instanceof Error ? [(value as Error & { code?: unknown }).code, ...codes(value.cause)] : []);
+
+  return codes(error).includes('55P03');
+};
 
 const countApplied = async (client: pg.Client): Promise<number> => {
   const { rows: [table] } = await client.query<{ name: string | null }>(`select to_regclass('drizzle.__drizzle_migrations')::text as name`);
@@ -37,9 +50,12 @@ const countApplied = async (client: pg.Client): Promise<number> => {
 /**
  * Applies pending migrations and returns how many it applied. Running it again applies nothing. A
  * one-off command runs it before the apps roll; apps never migrate on boot. A statement that waits for a
- * lock longer than `lockTimeoutMs` fails the run, and the migration's transaction rolls back.
+ * lock longer than `lockTimeoutMs` rolls the migrations' transaction back; the run tries again after a
+ * pause, `attempts` times in all, then fails.
  */
-export const migrateDatabase = async ({ url, logger, lockTimeoutMs = migrationLockTimeoutMs }: MigrateDatabaseOptions): Promise<number> => {
+export const migrateDatabase = async ({
+  url, logger, lockTimeoutMs = migrationLockTimeoutMs, attempts = migrationAttempts, retryPauseMs = migrationRetryPauseMs,
+}: MigrateDatabaseOptions): Promise<number> => {
   const client = new pg.Client({ connectionString: url.expose() });
   client.on('error', error => logger.error({ error }, 'Postgres connection error'));
   await client.connect();
@@ -48,8 +64,20 @@ export const migrateDatabase = async ({ url, logger, lockTimeoutMs = migrationLo
     // Only once the runner holds its own lock: a second runner waits for the first however long it takes,
     // and a migration that can't get a table's lock fails instead of stalling writes behind it
     await client.query(`set lock_timeout = ${Math.max(1, Math.trunc(lockTimeoutMs))}`);
-    const before = await countApplied(client);
-    await migrate(drizzle({ client }), { migrationsFolder });
+    let before = 0;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        before = await countApplied(client);
+        await migrate(drizzle({ client }), { migrationsFolder });
+        break;
+      }
+      catch (error) {
+        if (!isLockTimeout(error) || attempt >= attempts)
+          throw error;
+        logger.warn({ attempt, attempts, retryPauseMs }, 'A migration couldn\'t get a table\'s lock in time: it tries again after a pause');
+        await sleep(retryPauseMs);
+      }
+    }
     const applied = await countApplied(client) - before;
     logger.info({ applied }, applied > 0 ? 'Applied migrations' : 'Migrations are up to date');
 

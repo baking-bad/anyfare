@@ -19,8 +19,11 @@ export interface Job {
   readonly lockId: number;
   // The pause between the end of one run and the start of the next
   readonly intervalMs: number;
-  /** One run. It must be idempotent and safe to rerun after a crash. Throwing marks it failed. */
-  run(): Promise<JobOutcome | void>;
+  /**
+   * One run. It must be idempotent and safe to rerun after a crash. Throwing marks it failed. `stopping`
+   * aborts when the scheduler stops: a long run may end early, between two of its steps.
+   */
+  run(stopping: AbortSignal): Promise<JobOutcome | void>;
   /**
    * How long after start its first run comes, such as from when it last ran, so a job with a long
    * interval still runs across frequent restarts. Default: one interval. Zero or less: now.
@@ -31,11 +34,17 @@ export interface Job {
    * first run is scheduled: its delay counts from then. A name of no job here is ignored.
    */
   readonly after?: readonly string[];
+  /**
+   * Comes after every job that comes after none, too: those whose first run is due within this job's
+   * interval of the start. One due later, such as a daily job, isn't waited for.
+   */
+  readonly afterOthers?: boolean;
   // Its advisory lock's sessions. Default: the scheduler's.
   readonly locks?: Pick<Postgres, 'tryAdvisoryLock'>;
 }
 
-export type JobRunResult = 'success' | 'failure' | 'skipped';
+// Stopped: the scheduler stopped while it ran, and it ended early
+export type JobRunResult = 'success' | 'failure' | 'skipped' | 'stopped';
 
 export interface Scheduler {
   /**
@@ -43,7 +52,7 @@ export interface Scheduler {
    * from when the jobs it comes `after` first ran.
    */
   start(): Promise<void>;
-  /** Stops scheduling, and waits for the runs in progress. */
+  /** Stops scheduling, tells the runs in progress to stop, and waits for them. */
   stop(): Promise<void>;
   /** Runs one job now, under its lock: `skipped` when another runner holds it. */
   runNow(name: string): Promise<JobRunResult>;
@@ -61,6 +70,15 @@ export interface SchedulerOptions {
 
 // A run that failed and was logged already
 class JobFailedError extends Error {}
+// A run that ended early as the scheduler stopped, and was logged already
+class JobStoppedError extends Error {}
+
+/** What a run throws when it ends early because `stopping` aborted, with the counts it reached. */
+export class RunStoppedError extends Error {
+  constructor(readonly result: Readonly<Record<string, number>> = {}) {
+    super('The run ended early: the workers are stopping');
+  }
+}
 
 /**
  * Runs each job every interval, under its advisory lock, so one replica runs it at a time. A run that
@@ -82,7 +100,7 @@ export const createScheduler = ({ jobs, locks, clock, timers, logger, registry }
   });
   const runs = new Counter({
     name: 'workers_job_runs_total',
-    help: 'Job runs by result: success, failure, or skipped (another replica holds the lock)',
+    help: 'Job runs by result: success, failure, skipped (another replica holds the lock), or stopped (it ended early as the workers stopped)',
     labelNames: ['job', 'result'] as const,
     registers: [registry],
   });
@@ -95,6 +113,7 @@ export const createScheduler = ({ jobs, locks, clock, timers, logger, registry }
   const handles = new Map<string, unknown>();
   const running = new Set<Promise<JobRunResult>>();
   let stopped = true;
+  let stopping = new AbortController();
 
   // Each job's first run in this process, ended
   const firstRuns = new Map(jobs.map(job => {
@@ -118,12 +137,17 @@ export const createScheduler = ({ jobs, locks, clock, timers, logger, registry }
     const durationMs = (): number => Math.round(performance.now() - started);
     try {
       let outcome: JobOutcome | void;
+      const { signal } = stopping;
       try {
-        outcome = await job.run();
+        outcome = await job.run(signal);
       }
       catch (error) {
         // The cause chain, and the counts the run reached, when its error carries them
         const counts = isRecord(error) && isRecord(error['result']) ? { counts: error['result'] } : {};
+        if (error instanceof RunStoppedError) {
+          logger.info({ job: job.name, ...counts, durationMs: durationMs() }, 'A job stopped early: the workers are stopping');
+          throw new JobStoppedError();
+        }
         logger.error({ error, job: job.name, ...counts, durationMs: durationMs() }, 'A job failed');
         throw new JobFailedError();
       }
@@ -146,9 +170,9 @@ export const createScheduler = ({ jobs, locks, clock, timers, logger, registry }
     }
     catch (error) {
       // The job's own failure is logged where it happened; this is the lock or its connection
-      if (!(error instanceof JobFailedError))
+      if (!(error instanceof JobFailedError) && !(error instanceof JobStoppedError))
         logger.error({ error, job: job.name }, 'A job failed');
-      result = 'failure';
+      result = error instanceof JobStoppedError ? 'stopped' : 'failure';
     }
     runs.inc({ job: job.name, result });
 
@@ -199,17 +223,29 @@ export const createScheduler = ({ jobs, locks, clock, timers, logger, registry }
         return;
 
       stopped = false;
-      await Promise.all(jobs.filter(job => !job.after?.some(name => byName.has(name))).map(async job => schedule(job, await firstDelayOf(job))));
+      if (stopping.signal.aborted)
+        stopping = new AbortController();
+      const comesAfter = (job: Job): boolean => job.afterOthers === true || job.after?.some(name => byName.has(name)) === true;
+      const first = jobs.filter(job => !comesAfter(job));
+      const delays = new Map(await Promise.all(first.map(async job => [job.name, await firstDelayOf(job)] as const)));
+      for (const job of first)
+        schedule(job, delays.get(job.name));
       // The others once the jobs they come after have run once
-      for (const job of jobs.filter(each => each.after?.some(name => byName.has(name)))) {
+      for (const job of jobs.filter(comesAfter)) {
+        const names = [
+          ...(job.after ?? []).filter(name => byName.has(name)),
+          ...job.afterOthers === true ? first.filter(other => (delays.get(other.name) ?? 0) <= job.intervalMs).map(other => other.name) : [],
+        ];
         void (async () => {
-          await Promise.all(job.after!.filter(name => byName.has(name)).map(name => firstRuns.get(name)!.promise));
+          await Promise.all(names.map(name => firstRuns.get(name)!.promise));
           schedule(job, await firstDelayOf(job));
         })();
       }
     },
     stop: async () => {
       stopped = true;
+      // A long run ends between two of its steps, so shutdown doesn't wait for it to finish
+      stopping.abort();
       // Nothing waits for a first run that won't come
       for (const first of firstRuns.values())
         first.ended();

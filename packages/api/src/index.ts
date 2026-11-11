@@ -1,7 +1,7 @@
 export { createApp } from './app.js';
 export type { ApiAddresses, ApiDependencies, ApiListenOptions, ApiServer } from './app.js';
 export { errorStatuses, InvalidRequestError, NotFoundError, StatsUnavailableError } from './errors.js';
-export { defaultInternalPort, defaultMetricsPort, defaultPort, startApi } from './start.js';
+export { defaultInternalPort, defaultMetricsPort, defaultPort, startApi, statsConnections } from './start.js';
 export { authenticatedAccount, createMasterKeyAuth, decorateAccount } from './accounts/auth.js';
 export type { AuthenticatedAccount, MasterKeyAuthOptions } from './accounts/auth.js';
 export { accountIdPrefix, createAccountService, keyIdPrefix } from './accounts/service.js';

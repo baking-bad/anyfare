@@ -1,8 +1,10 @@
-import { sql, type SQL } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
+
+import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 
 import type { MicroUsd } from '@anyfare/common';
 import {
-  endpointsPerService, maxListedHostLength, utcDayStart, maxListedPathLength, topListSize, type CallCounts, type DayCounts, type EndpointCounts, type EndpointPeriodCounts,
+  endpointsPerService, maxListedHostLength, maxListedPathLength, storedPathBytesPerService, topListSize, utcDayStart, type CallCounts, type DayCounts, type EndpointCounts,
   type LiveTail, type PaidWithWay, type PlatformPeriodCounts, type ServicePeriodCounts, type StatsPeriod, type TopBuyerCounts, type TopCounts, type TopupCounts, type WayCounts,
 } from '@anyfare/core';
 
@@ -17,7 +19,9 @@ import { topups } from './schema/topups.js';
 // The statements that count the public numbers from the finished calls, the call details and the
 // credited top-ups. Each runs alone in a short transaction of its own, read-only unless it writes, with
 // its own statement timeout, so no count holds a snapshot or a connection past one statement. What
-// comes back is bounded: ranked and cut in SQL, never a list of every host or path.
+// comes back is bounded: ranked and cut in SQL, never a list of every host or path. Each reads its calls
+// once and counts every period in that one pass, by filters: no statement joins one set of rows to
+// another but by an index or a hash, so its cost grows with the calls it reads, not with their square.
 
 /** A period, and when it starts: undefined for all time. */
 export interface CountedPeriod {
@@ -32,8 +36,8 @@ export interface CallScope {
   readonly to?: Date | undefined;
   // Some hosts, by their md5: payments_calls_host_idx
   readonly hostHashes?: readonly string[];
-  // One host and one path, exactly, by the path's md5: payments_calls_path_idx
-  readonly endpoint?: { readonly host: string; readonly path: string };
+  // One host and one path, exactly, by the index of `by`: payments_calls_host_idx or payments_calls_path_idx
+  readonly endpoint?: { readonly host: string; readonly path: string; readonly by: 'host' | 'path' };
   // One host, exactly, by its md5: payments_calls_host_idx
   readonly host?: string;
   // The newest calls only, at most this many
@@ -69,7 +73,11 @@ export interface StatsCounter {
     readonly counts: readonly (ServicePeriodCounts & { readonly hostHash: string; readonly period: StatsPeriod })[];
     readonly capped: boolean;
   }>;
-  /** The top endpoints of each service by paid calls of `rankBy`, at most 100, of those that may be listed, with their numbers. */
+  /**
+   * The top endpoints of each service by paid calls of `rankBy`, of those whose path is at most
+   * `maxPathLength` long: at most 100, and at most 24 KB of path text, with their numbers. `rankBy` is
+   * one of `periods`.
+   */
   endpoints(input: {
     readonly scope: CallScope;
     readonly periods: readonly CountedPeriod[];
@@ -78,7 +86,10 @@ export interface StatsCounter {
     readonly withFree?: boolean;
     // Only these, of each host
     readonly only?: readonly { readonly hostHash: string; readonly pathHash: string }[];
+    // Paid calls per day from this
     readonly dailyFrom: Date | undefined;
+    // Default: the longest path the counts keep
+    readonly maxPathLength?: number;
     readonly timeoutMs: number;
   }): Promise<EndpointCounts[]>;
   /** Some services' paid calls per UTC day, from the scope's start. */
@@ -89,12 +100,21 @@ export interface StatsCounter {
     readonly windows: readonly { readonly period: StatsPeriod; readonly from: Date; readonly to: Date }[];
     readonly timeoutMs: number;
   }): Promise<{ readonly hostHash: string; readonly period: StatsPeriod; readonly calls: number }[]>;
-  /** The cheapest last quote of each host's routed endpoints with a paid call from `from`, by the routed endpoints' key. */
-  priceFrom(input: { readonly hosts: readonly string[]; readonly from: Date; readonly to: Date; readonly timeoutMs: number }): Promise<Map<string, MicroUsd>>;
+  /**
+   * The cheapest last quote of each host's routed endpoints that may be listed and had a paid call from
+   * `from`: the hosts' calls by the host index, each path's quote by the routed endpoints' key.
+   */
+  priceFrom(input: { readonly hostHashes: readonly string[]; readonly from: Date; readonly to: Date; readonly timeoutMs: number }): Promise<Map<string, MicroUsd>>;
   /** Whether a capped scope holds more calls than its cap. */
   isCapped(input: { readonly scope: CallScope; readonly timeoutMs: number }): Promise<boolean>;
   /** Whether the host has a paid call, ever: the first one the host index finds. */
   hasPaidCall(input: { readonly host: string; readonly timeoutMs: number }): Promise<boolean>;
+  /**
+   * The scope of one endpoint's newest calls from `from`, at most `cap`, by the narrower of the host's
+   * index and the path's: the finished calls of the host, and of the path on any host, each counted up
+   * to `cap` by its own index tell which. Undefined when either has none: the endpoint has no call then.
+   */
+  endpointScope(input: { readonly host: string; readonly path: string; readonly from: Date | undefined; readonly cap: number; readonly timeoutMs: number }): Promise<CallScope | undefined>;
   /**
    * The live numbers' tail: paid calls from `from`, the frequent count's time, to `at`, today's among them
    * with today's buyers counted once with the kept ones, and the calls per minute from `minutesFrom`. One
@@ -109,6 +129,8 @@ const optional = <TValue>(value: TValue | null): TValue | undefined => value ?? 
 const micro = (value: string | null): MicroUsd => BigInt(value ?? '0');
 const roundedMs = (value: number | null): number | undefined => value === null ? undefined : Math.round(value);
 const json = (value: unknown): SQL => sql`${JSON.stringify(value)}::jsonb`;
+// As Postgres's md5 of text reckons it: of its UTF-8 bytes
+const md5 = (text: string): string => createHash('md5').update(text, 'utf8').digest('hex');
 const timeoutOf = (ms: number): SQL => sql.raw(`set local statement_timeout = ${Math.max(1, Math.trunc(ms))}`);
 
 /** One statement in a transaction of its own, giving up after `timeoutMs`; read-only unless it writes. */
@@ -133,37 +155,56 @@ const buyerOf = sql`(case when ${payments.rail} = 'credits' then 'account:' || m
   when ${callDetails.payer} ~ '^0x[0-9a-fA-F]{40}$' then 'payer:' || lower(${callDetails.payer})
   else 'payer:' || ${callDetails.payer} end)`;
 
+
+/** What a scope carries of a call's host and path as text: none, or each when at most so long. */
+interface ScopeText {
+  readonly hostLength?: number;
+  readonly pathLength?: number;
+}
+
 /**
  * Finished calls in a scope, with their details: by the calls index on their time, or the host or path
- * index for some hosts or one endpoint. The host and the path come as their md5 and their length, never
- * their text, so a long path costs a statement nothing. Never an account, a key, a request ID, a
- * receipt or a settle request: a chain payer's address only.
+ * index for some hosts or one endpoint. The host and the path come as their md5 and their length, and
+ * as text only when asked and short enough to be listed, so a long path costs a statement nothing. Never
+ * an account, a key, a request ID, a receipt or a settle request: a chain payer's address only.
  */
-const scopedCalls = (ways: readonly PaidWithWay[], scope: CallScope, { paidOnly = false }: { readonly paidOnly?: boolean } = {}): SQL => {
+const scopedCalls = (ways: readonly PaidWithWay[], scope: CallScope, { paidOnly = false, text = {} }: { readonly paidOnly?: boolean; readonly text?: ScopeText } = {}): SQL => {
   const where: SQL[] = [
     finished,
-    ...paidOnly ? [paid] : [],
     ...scope.from === undefined ? [] : [sql`${payments.createdAt} >= ${scope.from}`],
     ...scope.to === undefined ? [] : [sql`${payments.createdAt} < ${scope.to}`],
     ...scope.hostHashes === undefined ? [] : [sql`md5(${payments.targetHost}) = any(array(select jsonb_array_elements_text(${json(scope.hostHashes)})))`],
-    // The md5 for the index, the text against a collision
-    ...scope.host === undefined ? [] : [sql`md5(${payments.targetHost}) = md5(${scope.host}::text)`, sql`${payments.targetHost} = ${scope.host}`],
+    // The md5 for the index, the text against a collision. The md5 is reckoned here, so the planner sees its
+    // value and the index's statistics for it.
+    ...scope.host === undefined ? [] : [sql`md5(${payments.targetHost}) = ${md5(scope.host)}::text`, sql`${payments.targetHost} = ${scope.host}`],
+    // One md5 only, the narrower's: the planner has no statistics of either, so the caller tells it which
     ...scope.endpoint === undefined ? [] : [
-      sql`md5(${payments.targetPath}) = md5(${scope.endpoint.path}::text)`, sql`${payments.targetPath} = ${scope.endpoint.path}`,
-      sql`${payments.targetHost} = ${scope.endpoint.host}`,
+      scope.endpoint.by === 'host' ? sql`md5(${payments.targetHost}) = ${md5(scope.endpoint.host)}::text` : sql`md5(${payments.targetPath}) = ${md5(scope.endpoint.path)}::text`,
+      sql`${payments.targetPath} = ${scope.endpoint.path}`, sql`${payments.targetHost} = ${scope.endpoint.host}`,
     ],
   ];
-  const select = sql`select ${payments.id} as id, ${payments.createdAt} as at,
+  const textOf = (column: SQLWrapper, limit: number | undefined, name: string): SQL => limit === undefined
+    ? sql.raw(`null::text as ${name}`)
+    : sql`case when length(${column}) <= ${limit} then ${column} end as ${sql.identifier(name)}`;
+  const select = (filters: readonly SQL[]) => sql`select ${payments.id} as id, ${payments.createdAt} as at,
       md5(${payments.targetHost}) as host_hash, length(${payments.targetHost}) as host_length,
       md5(${payments.targetPath}) as path_hash, length(${payments.targetPath}) as path_length,
+      ${textOf(payments.targetHost, text.hostLength, 'host')}, ${textOf(payments.targetPath, text.pathLength, 'path')},
       ${paidWithOf(ways)} as paid_with, ${paid} as paid, ${payments.amount} as amount,
       case when ${payments.upstreamStatus} is not null then ${payments.upstreamLatencyMs} end as ms,
       ${buyerOf} as buyer, case when ${payments.rail} = 'credits' then null else ${callDetails.payer} end as payer,
       ${callDetails.method} as method
     from ${payments} left join ${callDetails} on ${callDetails.paymentId} = ${payments.id}
-    where ${sql.join(where, sql` and `)}`;
+    where ${sql.join([...filters], sql` and `)}`;
 
-  return scope.cap === undefined ? select : sql`${select} order by ${payments.createdAt} desc, ${payments.id} desc limit ${scope.cap}`;
+  // A capped scope is the newest finished calls, paid or not, so each statement of one read counts the same calls
+  if (scope.cap !== undefined) {
+    const newest = sql`${select(where)} order by ${payments.createdAt} desc, ${payments.id} desc limit ${scope.cap}`;
+
+    return paidOnly ? sql`select * from (${newest}) as newest where newest.paid` : newest;
+  }
+
+  return select(paidOnly ? [...where, paid] : where);
 };
 
 // Whether a capped scope holds more calls than its cap: the first `cap + 1` of them, counted
@@ -171,72 +212,34 @@ const cappedOf = (ways: readonly PaidWithWay[], scope: CallScope): SQL => scope.
   ? sql`false`
   : sql`((select count(*) from (${scopedCalls(ways, { ...scope, cap: scope.cap + 1 })}) as newest) > ${scope.cap})`;
 
-// The periods a statement counts, joined to each call in them
-const periodsOf = (periods: readonly CountedPeriod[]): SQL =>
-  sql`(values ${sql.join(periods.map(({ period, from }) => sql`(${period}::text, ${from ?? null}::timestamptz)`), sql`, `)}) as periods(period, since)`;
-const inPeriod = sql`(periods.since is null or calls.at >= periods.since)`;
+// A call in a period: from its start, or any call for all time
+const within = (from: Date | undefined): SQL => (from === undefined ? sql`true` : sql`at >= ${from}`);
+const named = (name: string, index: number): SQL => sql`${sql.identifier(`${name}_${index}`)}`;
 
-// The numbers of a group of calls
-const numbers = sql`(count(*) filter (where paid))::int as calls,
-  coalesce(sum(amount) filter (where paid), 0)::text as volume,
-  (count(distinct buyer) filter (where paid))::int as buyers,
-  (count(*) filter (where not paid))::int as free,
-  percentile_cont(0.5) within group (order by ms) as p50,
-  percentile_cont(0.95) within group (order by ms) as p95`;
+// The numbers of a group of calls, for each period, in one pass
+const numbersOf = (periods: readonly CountedPeriod[]): SQL => sql.join(periods.map(({ from }, index) => sql`
+  (count(*) filter (where paid and ${within(from)}))::int as ${named('calls', index)},
+  coalesce(sum(amount) filter (where paid and ${within(from)}), 0)::text as ${named('volume', index)},
+  (count(distinct buyer) filter (where paid and ${within(from)}))::int as ${named('buyers', index)},
+  (count(*) filter (where not paid and ${within(from)}))::int as ${named('free', index)},
+  percentile_cont(0.5) within group (order by ms) filter (where ${within(from)}) as ${named('p50', index)},
+  percentile_cont(0.95) within group (order by ms) filter (where ${within(from)}) as ${named('p95', index)}`), sql`,`);
 
-interface NumbersRow extends Record<string, unknown> {
-  readonly calls: number;
-  readonly volume: string;
-  readonly buyers: number;
-  readonly free: number;
-  readonly p50: number | null;
-  readonly p95: number | null;
-}
+type Row = Readonly<Record<string, unknown>>;
 
-const countsOf = (row: NumbersRow): CallCounts => ({
-  calls: row.calls, volume: micro(row.volume), buyers: row.buyers, free: row.free, p50Ms: roundedMs(row.p50), p95Ms: roundedMs(row.p95),
+const numberOf = (row: Row, name: string, index: number): number => Number(row[`${name}_${index}`] ?? 0);
+const countsAt = (row: Row, index: number): CallCounts => ({
+  calls: numberOf(row, 'calls', index),
+  volume: micro((row[`volume_${index}`] as string | null) ?? null),
+  buyers: numberOf(row, 'buyers', index),
+  free: numberOf(row, 'free', index),
+  p50Ms: roundedMs((row[`p50_${index}`] as number | null) ?? null),
+  p95Ms: roundedMs((row[`p95_${index}`] as number | null) ?? null),
 });
-
-interface GroupRow extends NumbersRow {
-  readonly by_way: number;
-  readonly period: StatsPeriod;
-  readonly host_hash: string | null;
-  readonly paid_with: string | null;
-  readonly services: number;
-  readonly paid_endpoints: number;
-}
-
-const groupWays = (rows: readonly GroupRow[], key: (row: GroupRow) => string): Map<string, WayCounts[]> => {
-  const ways = new Map<string, WayCounts[]>();
-  for (const row of rows.filter(each => each.by_way === 0 && each.paid_with !== null)) {
-    const list = ways.get(key(row)) ?? ways.set(key(row), []).get(key(row))!;
-    list.push({ paidWith: row.paid_with!, calls: row.calls, volume: micro(row.volume), buyers: row.buyers });
-  }
-
-  return ways;
-};
-
-
-interface BuyersRow extends Record<string, unknown> {
-  readonly period: StatsPeriod;
-  readonly host_hash: string;
-  readonly known: number;
-  readonly returning: number;
-  readonly top: readonly { readonly payer: string | null; readonly paidWith: string; readonly calls: number; readonly spent: string; readonly lastCallAt: number }[];
-}
-
-interface EndpointRow extends Record<string, unknown> {
-  readonly host_hash: string;
-  readonly path_hash: string;
-  readonly path: string | null;
-  readonly method: string | null;
-  readonly price: string | null;
-  readonly periods: Record<string, NumbersRow & { readonly ways: readonly { readonly paidWith: string; readonly calls: number }[] }> | null;
-  readonly daily: readonly (readonly [string, number])[];
-}
-
-// The paths a host's calls may be listed by: only those the endpoint read takes
-const listable = (alias: string): SQL => sql.raw(`${alias}.path_length <= ${maxListedPathLength} and ${alias}.host_length <= ${maxListedHostLength}`);
+const waysAt = (rows: readonly Row[], index: number): WayCounts[] => rows.map(row => ({
+  paidWith: String(row['paid_with']), calls: numberOf(row, 'calls', index), volume: micro((row[`volume_${index}`] as string | null) ?? null), buyers: numberOf(row, 'buyers', index),
+}));
+const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 export interface StatsCounterOptions {
   readonly db: Database;
@@ -245,22 +248,22 @@ export interface StatsCounterOptions {
 }
 
 export const createStatsCounter = ({ db, ways }: StatsCounterOptions): StatsCounter => {
-  const calls = (scope: CallScope, options?: { readonly paidOnly?: boolean }) => scopedCalls(ways, scope, options);
+  const calls = (scope: CallScope, options?: { readonly paidOnly?: boolean; readonly text?: ScopeText }) => scopedCalls(ways, scope, options);
   // The earliest start of these periods, or none when one is all time
   const earliest = (periods: readonly CountedPeriod[]): Date | undefined =>
     periods.some(period => period.from === undefined) ? undefined : new Date(Math.min(...periods.map(period => period.from!.getTime())));
 
   return {
     platform: async ({ periods, to, timeoutMs }) => {
-      const rows = await run<GroupRow>(db, timeoutMs, sql`with calls as (${calls({ from: earliest(periods), to })})
-        select grouping(calls.paid_with)::int as by_way, periods.period, null::text as host_hash, calls.paid_with, ${numbers},
-          (count(distinct calls.host_hash) filter (where paid))::int as services, 0 as paid_endpoints
-        from calls join ${periodsOf(periods)} on ${inPeriod}
-        group by grouping sets ((periods.period), (periods.period, calls.paid_with))`);
-      const wayLists = groupWays(rows, row => row.period);
+      const rows = await run<Row>(db, timeoutMs, sql`with calls as (${calls({ from: earliest(periods), to })})
+        select grouping(paid_with)::int as by_way, paid_with, ${numbersOf(periods)},
+          ${sql.join(periods.map(({ from }, index) => sql`(count(distinct host_hash) filter (where paid and ${within(from)}))::int as ${named('services', index)}`), sql`, `)}
+        from calls group by grouping sets ((), (paid_with))`);
+      const total = rows.find(row => row['by_way'] === 1);
+      const byWay = rows.filter(row => row['by_way'] === 0);
 
-      return Object.fromEntries(rows.filter(row => row.by_way === 1).map(row => [row.period, {
-        ...countsOf(row), services: row.services, ways: wayLists.get(row.period) ?? [],
+      return Object.fromEntries(total === undefined ? [] : periods.map(({ period }, index) => [period, {
+        ...countsAt(total, index), services: numberOf(total, 'services', index), ways: waysAt(byWay, index),
       }]));
     },
 
@@ -281,81 +284,73 @@ export const createStatsCounter = ({ db, ways }: StatsCounterOptions): StatsCoun
     },
 
     top: async ({ periods, to, timeoutMs }) => {
-      // Ranked by the md5 on a tie, then each one's text read by its index
-      const rows = await run<{ kind: 'service' | 'endpoint'; period: StatsPeriod; rank: number; calls: number; host: string; path: string | null }>(db, timeoutMs, sql`
-        with calls as (${calls({ from: earliest(periods), to }, { paidOnly: true })}),
-        counted as (
-          select periods.period, calls.host_hash, calls.path_hash, calls.host_length, calls.path_length from calls join ${periodsOf(periods)} on ${inPeriod}
+      // Each endpoint's paid calls per period in one pass, with the text of those that may be listed; each
+      // service's from its endpoints'; then the top of each period, ranked by the md5 on a tie
+      const counts = sql.join(periods.map(({ from }, index) => sql`(count(*) filter (where ${within(from)}))::int as ${named('calls', index)}`), sql`, `);
+      const sums = sql.join(periods.map((_, index) => sql`sum(${named('calls', index)})::int as ${named('calls', index)}`), sql`, `);
+      const tops = periods.flatMap((_, index) => [
+        sql`select 'service' as kind, ${index}::int as period, host, null::text as path, calls from (
+          select host, ${named('calls', index)} as calls, row_number() over (order by ${named('calls', index)} desc, host_hash) as rank
+          from hosts where host is not null and ${named('calls', index)} > 0
+        ) as ranked where rank <= ${topListSize}`,
+        sql`select 'endpoint', ${index}::int, host, path, calls from (
+          select host, path, ${named('calls', index)} as calls, row_number() over (order by ${named('calls', index)} desc, host_hash, path_hash) as rank
+          from paths where host is not null and path is not null and ${named('calls', index)} > 0
+        ) as ranked where rank <= ${topListSize}`,
+      ]);
+      const rows = await run<{ kind: 'service' | 'endpoint'; period: number; host: string; path: string | null; calls: number }>(db, timeoutMs, sql`
+        with paths as (
+          select host_hash, path_hash, min(host) as host, min(path) as path, ${counts}
+          from (${calls({ from: earliest(periods), to }, { paidOnly: true, text: { hostLength: maxListedHostLength, pathLength: maxListedPathLength } })}) as calls
+          group by host_hash, path_hash
         ),
-        hosts as (
-          select * from (
-            select period, host_hash, count(*)::int as calls, row_number() over (partition by period order by count(*) desc, host_hash) as rank
-            from counted where host_length <= ${maxListedHostLength} group by period, host_hash
-          ) as ranked where rank <= ${topListSize}
-        ),
-        paths as (
-          select * from (
-            select period, host_hash, path_hash, count(*)::int as calls,
-              row_number() over (partition by period order by count(*) desc, host_hash, path_hash) as rank
-            from counted as listed where ${listable('listed')} group by period, host_hash, path_hash
-          ) as ranked where rank <= ${topListSize}
-        )
-        select 'service' as kind, period, rank::int, calls,
-          (select ${payments.targetHost} from ${payments} where md5(${payments.targetHost}) = hosts.host_hash and ${finished} limit 1) as host, null as path
-        from hosts
-        union all
-        select 'endpoint', period, rank::int, calls, found.host, found.path
-        from paths cross join lateral (
-          select ${payments.targetHost} as host, ${payments.targetPath} as path from ${payments}
-          where md5(${payments.targetPath}) = paths.path_hash and md5(${payments.targetHost}) = paths.host_hash and ${finished} limit 1
-        ) as found`);
-      const byName = (a: { calls: number; name: string }, b: { calls: number; name: string }) => b.calls - a.calls || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+        hosts as (select host_hash, min(host) as host, ${sums} from paths group by host_hash)
+        ${sql.join(tops, sql` union all `)}`);
+      const byCalls = <TItem extends { calls: number }>(name: (item: TItem) => string) => (a: TItem, b: TItem) => b.calls - a.calls || compareText(name(a), name(b));
 
-      return Object.fromEntries(periods.map(({ period }) => [period, {
-        services: rows.filter(row => row.kind === 'service' && row.period === period).map(row => ({ host: row.host, calls: row.calls, name: row.host }))
-          .sort(byName).map(({ host, calls: count }) => ({ host, calls: count })),
-        endpoints: rows.filter(row => row.kind === 'endpoint' && row.period === period).map(row => ({ host: row.host, path: row.path!, calls: row.calls, name: `${row.host} ${row.path!}` }))
-          .sort(byName).map(({ host, path, calls: count }) => ({ host, path, calls: count })),
+      return Object.fromEntries(periods.map(({ period }, index) => [period, {
+        services: rows.filter(row => row.kind === 'service' && row.period === index).map(row => ({ host: row.host, calls: row.calls })).sort(byCalls(row => row.host)),
+        endpoints: rows.filter(row => row.kind === 'endpoint' && row.period === index).map(row => ({ host: row.host, path: row.path!, calls: row.calls }))
+          .sort(byCalls(row => `${row.host} ${row.path}`)),
       }]));
     },
 
     topups: async ({ periods, to, timeoutMs }) => {
       // The credits by the ledger's operation index, then each one's top-up by its deposit address, which names one
-      const rows = await run<{ period: StatsPeriod; network: string; token: string; count: number; amount: string }>(db, timeoutMs, sql`
-        with credits as (
-          select ${ledgerTransactions.createdAt} as at, credited.network, credited.token, credited.amount
-          from ${ledgerTransactions} cross join lateral (
-            select ${topups.network} as network, ${topups.tokenSymbol} as token, ${topups.creditedAmount} as amount
-            from ${topups}
-            where ${topups.depositAddress} is not null and ${topups.depositAddress} = ${ledgerTransactions.reference}
-              and ${topups.ledgerTransactionId} = ${ledgerTransactions.id} and ${topups.status} = 'credited'
-            limit 1
-          ) as credited
-          where ${ledgerTransactions.operation} = 'top_up' and ${ledgerTransactions.createdAt} < ${to}
-        )
-        select periods.period, network, token, count(*)::int as count, coalesce(sum(amount), 0)::text as amount
-        from credits join ${periodsOf(periods)} on (periods.since is null or credits.at >= periods.since)
-        group by periods.period, network, token
+      const rows = await run<Row>(db, timeoutMs, sql`
+        select credited.network, credited.token,
+          ${sql.join(periods.map(({ from }, index) => sql`(count(*) filter (where ${from === undefined ? sql`true` : sql`${ledgerTransactions.createdAt} >= ${from}`}))::int
+            as ${named('count', index)}, coalesce(sum(credited.amount) filter (where ${from === undefined ? sql`true` : sql`${ledgerTransactions.createdAt} >= ${from}`}), 0)::text
+            as ${named('amount', index)}`), sql`, `)}
+        from ${ledgerTransactions} cross join lateral (
+          select ${topups.network} as network, ${topups.tokenSymbol} as token, ${topups.creditedAmount} as amount
+          from ${topups}
+          where ${topups.depositAddress} is not null and ${topups.depositAddress} = ${ledgerTransactions.reference}
+            and ${topups.ledgerTransactionId} = ${ledgerTransactions.id} and ${topups.status} = 'credited'
+          limit 1
+        ) as credited
+        where ${ledgerTransactions.operation} = 'top_up' and ${ledgerTransactions.createdAt} < ${to}
+        group by credited.network, credited.token
         order by count(*) desc limit 1000`);
 
-      return Object.fromEntries(periods.map(({ period }) => [period, rows.filter(row => row.period === period)
-        .map(row => ({ network: row.network, token: row.token, count: row.count, amount: micro(row.amount) }))]));
+      return Object.fromEntries(periods.map(({ period }, index) => [period, rows.filter(row => numberOf(row, 'count', index) > 0).map(row => ({
+        network: String(row['network']), token: String(row['token']), count: numberOf(row, 'count', index), amount: micro(row[`amount_${index}`] as string),
+      }))]));
     },
 
     ranking: async ({ from, to, limit, timeoutMs }) => {
       const rows = await run<{ host_hash: string | null; host: string | null; calls: number; services: number; paid_endpoints: number }>(db, timeoutMs, sql`
-        with calls as (${calls({ from, to }, { paidOnly: true })}),
-        hosts as (select host_hash, max(host_length) as host_length, count(*)::int as calls, count(distinct path_hash)::int as paths from calls group by host_hash),
-        chosen as (select host_hash, calls from hosts where host_length <= ${maxListedHostLength} order by calls desc, host_hash limit ${limit})
+        with hosts as (
+          select host_hash, min(host) as host, count(*)::int as calls, count(distinct path_hash)::int as paths
+          from (${calls({ from, to }, { paidOnly: true, text: { hostLength: maxListedHostLength } })}) as calls group by host_hash
+        )
         select null as host_hash, null as host, coalesce(sum(calls), 0)::int as calls, count(*)::int as services, coalesce(sum(paths), 0)::int as paid_endpoints from hosts
         union all
-        select host_hash, (select ${payments.targetHost} from ${payments} where md5(${payments.targetHost}) = chosen.host_hash and ${finished} limit 1), calls, 0, 0
-        from chosen`);
+        select * from (select host_hash, host, calls, 0, 0 from hosts where host is not null order by calls desc, host_hash limit ${limit}) as chosen`);
       const [totals, ...chosen] = rows;
 
       return {
-        services: chosen.map(row => ({ hostHash: row.host_hash!, host: row.host!, calls: row.calls }))
-          .sort((a, b) => b.calls - a.calls || (a.host < b.host ? -1 : a.host > b.host ? 1 : 0)),
+        services: chosen.map(row => ({ hostHash: row.host_hash!, host: row.host!, calls: row.calls })).sort((a, b) => b.calls - a.calls || compareText(a.host, b.host)),
         totals: { services: totals?.services ?? 0, paidEndpoints: totals?.paid_endpoints ?? 0, calls: totals?.calls ?? 0 },
       };
     },
@@ -365,6 +360,10 @@ export const createStatsCounter = ({ db, ways }: StatsCounterOptions): StatsCoun
       await run(db, timeoutMs, sql`insert into ${statsBuyers} (day, buyer_hash)
         select ${day}::date, md5(buyer) from (${calls({ from, to }, { paidOnly: true })}) as calls group by md5(buyer) order by md5(buyer) limit ${cap}
         on conflict do nothing`, true);
+      // The lowest `cap` by hash, as every run picks them: one that came lower pushes out the highest
+      await run(db, timeoutMs, sql`delete from ${statsBuyers} where ${statsBuyers.day} = ${day}::date and ${statsBuyers.buyerHash} > (
+        select ${statsBuyers.buyerHash} from ${statsBuyers} where ${statsBuyers.day} = ${day}::date order by ${statsBuyers.buyerHash} offset ${cap - 1} limit 1
+      )`, true);
       const [kept] = await run<{ kept: number }>(db, timeoutMs, sql`select count(*)::int as kept from ${statsBuyers} where ${statsBuyers.day} = ${day}::date`);
 
       return kept?.kept ?? 0;
@@ -372,120 +371,116 @@ export const createStatsCounter = ({ db, ways }: StatsCounterOptions): StatsCoun
 
     services: async ({ scope, periods, timeoutMs }) => {
       const scoped = { ...scope, from: scope.from ?? earliest(periods) };
-      const [groups, buyers] = [
-        await run<GroupRow & { capped: boolean }>(db, timeoutMs, sql`with calls as (${calls(scoped)})
-          select grouping(calls.paid_with)::int as by_way, periods.period, calls.host_hash, calls.paid_with, ${numbers}, 0 as services,
-            (count(distinct calls.path_hash) filter (where paid))::int as paid_endpoints, ${cappedOf(ways, scoped)} as capped
-          from calls join ${periodsOf(periods)} on ${inPeriod}
-          group by grouping sets ((periods.period, calls.host_hash), (periods.period, calls.host_hash, calls.paid_with))`),
-        // Each buyer's last call gives how it paid and its payer: numbered newest first, so no buyer's calls are held at once
-        await run<BuyersRow>(db, timeoutMs, sql`with calls as (${calls(scoped)}),
-          counted as (
-            select periods.period, calls.*, row_number() over (partition by periods.period, calls.host_hash, calls.buyer order by calls.at desc, calls.id desc) as recent
-            from calls join ${periodsOf(periods)} on ${inPeriod} where calls.paid
-          ),
-          buyers as (
-            select period, host_hash, buyer, buyer like 'unknown:%' as unknown, count(*)::int as calls, sum(amount) as spent, max(at) as last_at,
-              count(distinct (at at time zone 'UTC')::date) as days,
-              max(paid_with) filter (where recent = 1) as paid_with, max(payer) filter (where recent = 1) as payer
-            from counted group by period, host_hash, buyer
-          ),
-          ranked as (
-            select *, row_number() over (partition by period, host_hash order by unknown, calls desc, spent desc, last_at desc, buyer) as rank from buyers
-          )
-          select period, host_hash, (count(*) filter (where not unknown))::int as known, (count(*) filter (where not unknown and days >= 2))::int as returning,
-            coalesce(jsonb_agg(jsonb_build_object(
-              'payer', payer, 'paidWith', paid_with, 'calls', calls, 'spent', spent::text, 'lastCallAt', (extract(epoch from last_at) * 1000)::bigint
-            ) order by rank) filter (where rank <= ${topListSize} and not unknown), '[]'::jsonb) as top
-          from ranked group by period, host_hash`),
-      ];
-      const wayLists = groupWays(groups, row => `${row.period} ${row.host_hash!}`);
-      const buyersOf = new Map(buyers.map(row => [`${row.period} ${row.host_hash}`, row]));
+      const groups = await run<Row>(db, timeoutMs, sql`with calls as (${calls(scoped)})
+        select grouping(paid_with)::int as by_way, host_hash, paid_with, ${numbersOf(periods)},
+          ${sql.join(periods.map(({ from }, index) => sql`(count(distinct path_hash) filter (where paid and ${within(from)}))::int as ${named('paths', index)}`), sql`, `)},
+          ${cappedOf(ways, scoped)} as capped
+        from calls group by grouping sets ((host_hash), (host_hash, paid_with))`);
+      // Each buyer's numbers of every period in one pass; its last call, the latest of any period it paid
+      // in, gives how it paid and its payer. Then each period's top buyers by a window of their own.
+      const buyers = await run<Row>(db, timeoutMs, sql`with numbered as (
+          select calls.*, row_number() over (partition by host_hash, buyer order by at desc, id desc) as recent from (${calls(scoped, { paidOnly: true })}) as calls
+        ),
+        buyers as (
+          select host_hash, buyer, buyer like 'unknown:%' as unknown, max(paid_with) filter (where recent = 1) as paid_with, max(payer) filter (where recent = 1) as payer,
+            ${sql.join(periods.map(({ from }, index) => sql`(count(*) filter (where ${within(from)}))::int as ${named('calls', index)},
+              coalesce(sum(amount) filter (where ${within(from)}), 0) as ${named('spent', index)}, max(at) filter (where ${within(from)}) as ${named('last', index)},
+              count(distinct (at at time zone 'UTC')::date) filter (where ${within(from)}) as ${named('days', index)}`), sql`, `)}
+          from numbered group by host_hash, buyer
+        ),
+        ranked as (
+          select buyers.*, ${sql.join(periods.map((_, index) => sql`row_number() over (partition by host_hash, ${named('calls', index)} > 0
+            order by unknown, ${named('calls', index)} desc, ${named('spent', index)} desc, ${named('last', index)} desc, buyer) as ${named('rank', index)}`), sql`, `)}
+          from buyers
+        )
+        select host_hash, ${sql.join(periods.map((_, index) => sql`
+          (count(*) filter (where ${named('calls', index)} > 0 and not unknown))::int as ${named('known', index)},
+          (count(*) filter (where ${named('calls', index)} > 0 and not unknown and ${named('days', index)} >= 2))::int as ${named('returning', index)},
+          coalesce(jsonb_agg(jsonb_build_object(
+            'payer', payer, 'paidWith', paid_with, 'calls', ${named('calls', index)}, 'spent', ${named('spent', index)}::text,
+            'lastCallAt', (extract(epoch from ${named('last', index)}) * 1000)::bigint
+          ) order by ${named('rank', index)}) filter (where ${named('calls', index)} > 0 and ${named('rank', index)} <= ${topListSize} and not unknown), '[]'::jsonb)
+            as ${named('top', index)}`), sql`, `)}
+        from ranked group by host_hash`);
+      const buyersOf = new Map(buyers.map(row => [String(row['host_hash']), row]));
 
       return {
-        capped: groups.some(row => row.capped),
-        counts: groups.filter(row => row.by_way === 1).map(row => {
-          const key = `${row.period} ${row.host_hash!}`;
-          const found = buyersOf.get(key);
+        capped: groups.some(row => row['capped'] === true),
+        counts: groups.filter(row => row['by_way'] === 1).flatMap(row => {
+          const hostHash = String(row['host_hash']);
+          const found = buyersOf.get(hostHash);
+          const byWay = groups.filter(each => each['by_way'] === 0 && each['host_hash'] === hostHash);
 
-          return {
-            ...countsOf(row),
-            hostHash: row.host_hash!,
-            period: row.period,
-            paidEndpoints: row.paid_endpoints,
-            ways: wayLists.get(key) ?? [],
-            knownBuyers: found?.known ?? 0,
-            returning: found?.returning ?? 0,
-            topBuyers: (found?.top ?? []).map((buyer): TopBuyerCounts => ({
-              payer: optional(buyer.payer), paidWith: buyer.paidWith, calls: buyer.calls, spent: BigInt(buyer.spent), lastCallAt: new Date(buyer.lastCallAt),
-            })),
-          };
+          return periods.map(({ period }, index) => ({
+            ...countsAt(row, index),
+            hostHash,
+            period,
+            paidEndpoints: numberOf(row, 'paths', index),
+            ways: waysAt(byWay, index),
+            knownBuyers: found === undefined ? 0 : numberOf(found, 'known', index),
+            returning: found === undefined ? 0 : numberOf(found, 'returning', index),
+            topBuyers: ((found?.[`top_${index}`] ?? []) as { payer: string | null; paidWith: string; calls: number; spent: string; lastCallAt: number }[])
+              .map((buyer): TopBuyerCounts => ({
+                payer: optional(buyer.payer), paidWith: buyer.paidWith, calls: buyer.calls, spent: BigInt(buyer.spent), lastCallAt: new Date(buyer.lastCallAt),
+              })),
+          }));
         }),
       };
     },
 
-    endpoints: async ({ scope, periods, rankBy, withFree = false, only, dailyFrom, timeoutMs }) => {
+    endpoints: async ({ scope, periods, rankBy, withFree = false, only, dailyFrom, maxPathLength = maxListedPathLength, timeoutMs }) => {
       const scoped = { ...scope, from: scope.from ?? earliest(periods) };
-      const chosen = only === undefined
-        ? sql`select host_hash, path_hash from (
-            select host_hash, path_hash, row_number() over (partition by host_hash order by calls desc, free desc, path_hash) as rank
-            from numbers where period = ${rankBy}::text and ${listable('numbers')}${withFree ? sql`` : sql` and calls > 0`}
-          ) as ranked where rank <= ${endpointsPerService}`
-        : sql`select host_hash, path_hash from jsonb_to_recordset(${json(only.map(key => ({ host_hash: key.hostHash, path_hash: key.pathHash })))})
-            as given(host_hash text, path_hash text)`;
-      const rows = await run<EndpointRow>(db, timeoutMs, sql`with calls as (${calls(scoped)}),
-        counted as (select periods.period, calls.* from calls join ${periodsOf(periods)} on ${inPeriod}),
-        numbers as (
-          select period, host_hash, path_hash, max(host_length) as host_length, max(path_length) as path_length, ${numbers}
-          from counted group by period, host_hash, path_hash
+      const rank = Math.max(0, periods.findIndex(({ period }) => period === rankBy));
+      const given = only === undefined ? undefined : Object.fromEntries(only.map(key => [`${key.hostHash}:${key.pathHash}`, true]));
+      // An endpoint the ranking takes: its host and path short enough, a paid call unless free ones count, one given if any are
+      const eligible = sql`(level = 3 and host is not null and path is not null${withFree ? sql`` : sql` and ${named('calls', rank)} > 0`}${
+        given === undefined ? sql`` : sql` and ${json(given)} ? (host_hash || ':' || path_hash)`})`;
+      const firsts = sql.join(periods.flatMap((_, index) => ['calls', 'volume', 'buyers', 'free', 'p50', 'p95']
+        .map(name => sql`max(${named(name, index)}) filter (where level = 3) as ${named(name, index)}`)), sql`, `);
+      // Every endpoint's numbers, ways to pay and days in one pass, grouped three ways; each ranked and its
+      // path bytes summed by a window; its ways and days kept by a window over its own rows, never a join
+      const rows = await run<Row>(db, timeoutMs, sql`with grouped as (
+          select grouping(paid_with, day)::int as level, host_hash, path_hash, paid_with, day,
+            min(host) as host, min(path) as path, max(path_length)::int as path_length, mode() within group (order by method) as method,
+            ${numbersOf(periods)}, (count(*) filter (where paid))::int as day_calls
+          from (
+            select calls.*, case when calls.paid${dailyFrom === undefined ? sql`` : sql` and calls.at >= ${dailyFrom}`}
+              then to_char(calls.at at time zone 'UTC', 'YYYY-MM-DD') end as day
+            from (${calls(scoped, { text: { hostLength: maxListedHostLength, pathLength: maxPathLength } })}) as calls
+          ) as calls
+          group by grouping sets ((host_hash, path_hash), (host_hash, path_hash, paid_with), (host_hash, path_hash, day))
         ),
-        chosen as (${chosen}),
-        way_lists as (
-          select period, host_hash, path_hash, jsonb_agg(jsonb_build_object('paidWith', paid_with, 'calls', calls)) as ways from (
-            select counted.period, counted.host_hash, counted.path_hash, counted.paid_with, count(*)::int as calls
-            from counted join chosen using (host_hash, path_hash) where counted.paid group by 1, 2, 3, 4
-          ) as by_way group by 1, 2, 3
+        ranked as (
+          select grouped.*, case when ${eligible} then row_number() over listing end as listed, case when ${eligible} then sum(path_length) over listing end as bytes
+          from grouped
+          window listing as (partition by host_hash, ${eligible} order by ${named('calls', rank)} desc, ${named('free', rank)} desc, path_hash rows unbounded preceding)
         ),
-        period_lists as (
-          select numbers.host_hash, numbers.path_hash, jsonb_object_agg(numbers.period, jsonb_build_object(
-            'calls', numbers.calls, 'volume', numbers.volume, 'buyers', numbers.buyers, 'free', numbers.free, 'p50', numbers.p50, 'p95', numbers.p95,
-            'ways', coalesce(way_lists.ways, '[]'::jsonb)
-          )) as periods
-          from numbers join chosen using (host_hash, path_hash) left join way_lists using (period, host_hash, path_hash)
-          group by numbers.host_hash, numbers.path_hash
+        kept as (
+          select ranked.*, bool_or(listed <= ${endpointsPerService} and bytes <= ${storedPathBytesPerService}) over (partition by host_hash, path_hash) as keep from ranked
         ),
-        details as (
-          select host_hash, path_hash, mode() within group (order by calls.method) as method from calls join chosen using (host_hash, path_hash) group by host_hash, path_hash
-        ),
-        day_lists as (
-          select host_hash, path_hash, jsonb_agg(jsonb_build_array(day, calls)) as daily from (
-            select calls.host_hash, calls.path_hash, to_char(calls.at at time zone 'UTC', 'YYYY-MM-DD') as day, count(*)::int as calls
-            from calls join chosen using (host_hash, path_hash) where calls.paid${dailyFrom === undefined ? sql`` : sql` and calls.at >= ${dailyFrom}`}
-            group by 1, 2, 3
-          ) as by_day group by host_hash, path_hash
+        endpoints as (
+          select host_hash, path_hash, max(host) filter (where level = 3) as host, max(path) filter (where level = 3) as path,
+            max(method) filter (where level = 3) as method, ${firsts},
+            coalesce(jsonb_agg(jsonb_build_array(paid_with, ${sql.join(periods.map((_, index) => named('calls', index)), sql`, `)})) filter (where level = 1), '[]'::jsonb) as ways,
+            coalesce(jsonb_agg(jsonb_build_array(day, day_calls)) filter (where level = 2 and day is not null), '[]'::jsonb) as daily
+          from kept where keep group by host_hash, path_hash
         )
-        select chosen.host_hash, chosen.path_hash, found.host, found.path, details.method, ${routedEndpoints.lastPrice}::text as price,
-          period_lists.periods, coalesce(day_lists.daily, '[]'::jsonb) as daily
-        from chosen
-          join details using (host_hash, path_hash)
-          left join period_lists using (host_hash, path_hash)
-          left join day_lists using (host_hash, path_hash)
-          cross join lateral (
-            select ${payments.targetHost} as host, ${payments.targetPath} as path from ${payments}
-            where md5(${payments.targetPath}) = chosen.path_hash and md5(${payments.targetHost}) = chosen.host_hash and ${finished} limit 1
-          ) as found
-          left join ${routedEndpoints} on ${routedEndpoints.host} = found.host and ${routedEndpoints.path} = found.path`);
+        select endpoints.*, quoted.price::text as price
+        from endpoints left join lateral (
+          select ${routedEndpoints.lastPrice} as price from ${routedEndpoints} where ${routedEndpoints.host} = endpoints.host and ${routedEndpoints.path} = endpoints.path limit 1
+        ) as quoted on true`);
 
-      return rows.filter(row => row.path !== null).map(row => ({
-        hostHash: row.host_hash,
-        pathHash: row.path_hash,
-        path: row.path!,
-        method: optional(row.method),
-        price: row.price === null ? undefined : BigInt(row.price),
-        periods: Object.fromEntries(Object.entries(row.periods ?? {}).map(([period, counted]): [string, EndpointPeriodCounts] => [period, {
-          ...countsOf(counted), ways: counted.ways,
+      return rows.map(row => ({
+        hostHash: String(row['host_hash']),
+        pathHash: String(row['path_hash']),
+        path: String(row['path']),
+        method: optional((row['method'] as string | null) ?? null),
+        price: row['price'] === null || row['price'] === undefined ? undefined : BigInt(row['price'] as string),
+        periods: Object.fromEntries(periods.map(({ period }, index) => [period, {
+          ...countsAt(row, index),
+          ways: (row['ways'] as [string, ...number[]][]).map(([paidWith, ...counts]) => ({ paidWith, calls: counts[index] ?? 0 })),
         }])),
-        daily: row.daily.map(([day, count]) => ({ day, calls: count })),
+        daily: (row['daily'] as [string, number][]).map(([day, count]) => ({ day, calls: count })),
       }));
     },
 
@@ -502,29 +497,31 @@ export const createStatsCounter = ({ db, ways }: StatsCounterOptions): StatsCoun
         return [];
       const from = new Date(Math.min(...windows.map(window => window.from.getTime())));
       const to = new Date(Math.max(...windows.map(window => window.to.getTime())));
-      const rows = await run<{ host_hash: string; period: StatsPeriod; calls: number }>(db, timeoutMs, sql`with calls as (${calls({ ...scope, from, to }, { paidOnly: true })})
-        select calls.host_hash, windows.period, count(*)::int as calls
-        from calls join (values ${sql.join(windows.map(window => sql`(${window.period}::text, ${window.from}::timestamptz, ${window.to}::timestamptz)`), sql`, `)})
-          as windows(period, since, until) on calls.at >= windows.since and calls.at < windows.until
-        group by 1, 2`);
+      // Each window by a filter of the one pass; a capped scope keeps its own, so its statements count the same calls
+      const rows = await run<Row>(db, timeoutMs, sql`with calls as (${calls(scope.cap === undefined ? { ...scope, from, to } : scope, { paidOnly: true })})
+        select host_hash, ${sql.join(windows.map((window, index) => sql`(count(*) filter (where at >= ${window.from} and at < ${window.to}))::int as ${named('calls', index)}`), sql`, `)}
+        from calls group by host_hash`);
 
-      return rows.map(row => ({ hostHash: row.host_hash, period: row.period, calls: row.calls }));
+      return rows.flatMap(row => windows.map(({ period }, index) => ({ hostHash: String(row['host_hash']), period, calls: numberOf(row, 'calls', index) })));
     },
 
-    priceFrom: async ({ hosts, from, to, timeoutMs }) => {
-      if (hosts.length === 0)
+    priceFrom: async ({ hostHashes, from, to, timeoutMs }) => {
+      if (hostHashes.length === 0)
         return new Map();
-      // Each host's routed endpoints by their key, and for each a paid call since `from` by the path index
+      // The hosts' paths with a paid call, by the host index, then each one's quote by the routed endpoints' key
       const rows = await run<{ host_hash: string; price: string }>(db, timeoutMs, sql`
-        select md5(${routedEndpoints.host}) as host_hash, min(${routedEndpoints.lastPrice})::text as price from ${routedEndpoints}
-        where ${routedEndpoints.host} = any(array(select jsonb_array_elements_text(${json(hosts)}))) and ${routedEndpoints.lastPrice} is not null
-          and length(${routedEndpoints.path}) <= ${maxListedPathLength}
-          and exists (
-            select 1 from ${payments}
-            where md5(${payments.targetPath}) = md5(${routedEndpoints.path}) and ${payments.targetPath} = ${routedEndpoints.path}
-              and ${payments.targetHost} = ${routedEndpoints.host} and ${finished} and ${paid} and ${payments.createdAt} >= ${from} and ${payments.createdAt} < ${to}
-          )
-        group by ${routedEndpoints.host}`);
+        with paths as (
+          select distinct host_hash, host, path
+          from (${calls({ hostHashes, from, to }, { paidOnly: true, text: { hostLength: maxListedHostLength, pathLength: maxListedPathLength } })}) as calls
+          where host is not null and path is not null
+        )
+        select paths.host_hash, min(quoted.price)::text as price
+        from paths cross join lateral (
+          -- One lookup by the key per path: the lateral read with its limit keeps it so, whatever the table's size
+          select ${routedEndpoints.lastPrice} as price from ${routedEndpoints}
+          where ${routedEndpoints.host} = paths.host and ${routedEndpoints.path} = paths.path and ${routedEndpoints.lastPrice} is not null limit 1
+        ) as quoted
+        group by paths.host_hash`);
 
       return new Map(rows.map(row => [row.host_hash, BigInt(row.price)]));
     },
@@ -572,6 +569,18 @@ export const createStatsCounter = ({ db, ways }: StatsCounterOptions): StatsCoun
       ) as found`);
 
       return row?.found === true;
+    },
+
+    endpointScope: async ({ host, path, from, cap, timeoutMs }) => {
+      const since = from === undefined ? sql`` : sql` and ${payments.createdAt} >= ${from}`;
+      const [row] = await run<{ host: number; path: number }>(db, timeoutMs, sql`select
+        (select count(*)::int from (select 1 from ${payments} where md5(${payments.targetHost}) = ${md5(host)}::text and ${finished}${since} limit ${cap}) as by_host) as host,
+        (select count(*)::int from (select 1 from ${payments} where md5(${payments.targetPath}) = ${md5(path)}::text and ${finished}${since} limit ${cap}) as by_path) as path`);
+      const reach = { host: row?.host ?? 0, path: row?.path ?? 0 };
+      if (reach.host === 0 || reach.path === 0)
+        return undefined;
+
+      return { endpoint: { host, path, by: reach.host <= reach.path ? 'host' : 'path' }, from, cap };
     },
   };
 };

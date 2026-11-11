@@ -24,10 +24,14 @@ export const liveMinutes = 30;
 export const topListSize = 5;
 // The endpoints one service keeps and lists, by paid calls: its count says how many it has in all
 export const endpointsPerService = 100;
-// The longest path the endpoint read takes, and the longest host routing keeps: longer ones are counted,
-// never stored, listed or linked
-export const maxListedPathLength = 2_048;
+// The longest path the counts keep and list, and the longest host routing keeps: longer ones are counted,
+// never stored, listed or linked, and the endpoint read reads them when asked for
+export const maxListedPathLength = 512;
 export const maxListedHostLength = 259;
+// The path text one service keeps in all, in rank order: what its served answer holds stays small
+export const storedPathBytesPerService = 24_576;
+// The longest path the endpoint read takes
+export const maxEndpointReadPathLength = 2_048;
 
 export const utcDayStart = (time: Date): Date => new Date(Math.floor(time.getTime() / dayMs) * dayMs);
 export const minuteStart = (time: Date): Date => new Date(Math.floor(time.getTime() / minuteMs) * minuteMs);

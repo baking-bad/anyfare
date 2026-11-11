@@ -53,6 +53,10 @@ beforeAll(async () => {
       updatedAt: new Date(createdAt.getTime() + 700),
     };
   });
+  // A path every host has, and a host with few calls
+  rows.push(...Array.from({ length: 6_000 }, (_, index) => ({
+    ...rows[callCount - 1 - index]!, id: `pay_common_${index}`, targetPath: '/', targetHost: index < 3 ? 'rare.example.com' : `api-${index % 40}.example.com`,
+  })));
   for (let index = 0; index < rows.length; index += 1_000) {
     const batch = rows.slice(index, index + 1_000);
     await db.insert(schema.payments).values(batch);
@@ -126,8 +130,8 @@ const plan = async (query: { readonly sql: string; readonly params: readonly unk
 // The statements sent: no begin, set or commit
 const statements = () => queries.filter(query => /^\s*(with|select|insert|update|delete)\b/i.test(query.sql));
 const plans = async () => Promise.all(statements().map(plan));
-// The finished calls by time, or the paid ones by status and time
-const byTime = /(?:Index|Index Only) Scan(?: Backward)? using payments_(?:calls|status)_idx on payments|Bitmap Index Scan on payments_(?:calls|status)_idx\b/;
+// The finished calls by an index on their time, whichever the planner takes
+const byTime = /(?:Index|Index Only|Bitmap Index) Scan(?: Backward)? (?:using|on) payments_\w+_idx(?: on payments)?\n\s+Index Cond: [^\n]*created_at >= /;
 const hostHashes = Array.from({ length: 5 }, (_, host) => md5(`api-${host}.example.com`));
 const dayAgo = (days: number) => new Date(now.getTime() - days * dayMs);
 
@@ -150,7 +154,7 @@ describe('the plans of the public numbers', () => {
     }
   });
 
-  it('read a batch of services by the host index, and their prices by the routed endpoints\' key and the path index', async () => {
+  it('read a batch of services by the host index, and their prices by the host index and the routed endpoints\' key', async () => {
     const counter = createStatsCounter({ db: recording(), ways });
     const scope = { hostHashes, to: now };
     const periods = [{ period: '30d' as const, from: dayAgo(30) }];
@@ -159,23 +163,56 @@ describe('the plans of the public numbers', () => {
     await counter.serviceDays({ scope: { ...scope, from: dayAgo(30) }, timeoutMs: 30_000 });
     await counter.callsIn({ scope, windows: [{ period: '30d', from: dayAgo(60), to: dayAgo(30) }], timeoutMs: 30_000 });
     const batchPlans = await plans();
-    await counter.priceFrom({ hosts: ['api-1.example.com', 'api-2.example.com'], from: dayAgo(30), to: now, timeoutMs: 30_000 });
+    await counter.priceFrom({ hostHashes: [md5('api-1.example.com'), md5('api-2.example.com')], from: dayAgo(30), to: now, timeoutMs: 30_000 });
     const [prices] = (await plans()).slice(-1);
 
     for (const text of batchPlans) {
       expect(text, text).toContain('payments_calls_host_idx');
       expect(text, text).not.toMatch(/Seq Scan on payments/);
     }
+    expect(prices, prices).toContain('payments_calls_host_idx');
     expect(prices, prices).toContain('routed_endpoints_pkey');
-    expect(prices, prices).toContain('payments_calls_path_idx');
     expect(prices, prices).not.toMatch(/Seq Scan on (?:payments|routed_endpoints)/);
+  });
+
+  it('read one endpoint asked for by the narrower of its host\'s and its path\'s index, as their counts up to the cap tell, and not at all with no call', async () => {
+    const counter = createStatsCounter({ db: recording(), ways });
+    const periods = [{ period: '30d' as const, from: dayAgo(30) }];
+    const ask = async (host: string, path: string) => {
+      const scope = await counter.endpointScope({ host, path, from: dayAgo(30), cap: 10_000, timeoutMs: 30_000 });
+      if (!scope)
+        throw new Error(`no scope for ${host}${path}`);
+      await counter.endpoints({ scope, periods, rankBy: '30d', withFree: true, dailyFrom: dayAgo(14), maxPathLength: 2_048, timeoutMs: 30_000 });
+
+      return { scope, plans: (await plans()).slice(-2) };
+    };
+
+    // A path every host has, on a host with few calls; then a path of few calls on a host with many
+    const common = await ask('rare.example.com', '/');
+    const narrow = await ask('api-1.example.com', '/v1/endpoint/1');
+
+    expect([common.scope, narrow.scope]).toEqual([
+      { endpoint: { host: 'rare.example.com', path: '/', by: 'host' }, from: dayAgo(30), cap: 10_000 },
+      { endpoint: { host: 'api-1.example.com', path: '/v1/endpoint/1', by: 'path' }, from: dayAgo(30), cap: 10_000 },
+    ]);
+    // A host with no call, and a path no host has: nothing to read
+    expect(await counter.endpointScope({ host: 'never.example.com', path: '/', from: dayAgo(30), cap: 10_000, timeoutMs: 30_000 })).toBeUndefined();
+    expect(await counter.endpointScope({ host: 'api-1.example.com', path: '/v1/never', from: dayAgo(30), cap: 10_000, timeoutMs: 30_000 })).toBeUndefined();
+    const [commonReach, commonRead] = common.plans;
+    const [, narrowRead] = narrow.plans;
+    expect(commonReach, commonReach).toContain('payments_calls_host_idx');
+    expect(commonReach, commonReach).toContain('payments_calls_path_idx');
+    expect(commonRead, commonRead).toContain('payments_calls_host_idx');
+    expect(narrowRead, narrowRead).toContain('payments_calls_path_idx');
+    for (const text of [...common.plans, ...narrow.plans])
+      expect(text, text).not.toMatch(/Seq Scan on payments/);
   });
 
   it('read one endpoint asked for by the path index, up to its cap, and a host by the host index', async () => {
     const counter = createStatsCounter({ db: recording(), ways });
     const periods = [{ period: '30d' as const, from: dayAgo(30) }];
-    await counter.endpoints({ scope: { endpoint: { host: 'api-7.example.com', path: '/v1/endpoint/7' }, from: dayAgo(30), cap: 10_000 }, periods, rankBy: '30d', withFree: true, dailyFrom: dayAgo(14), timeoutMs: 30_000 });
-    await counter.isCapped({ scope: { endpoint: { host: 'api-7.example.com', path: '/v1/endpoint/7' }, from: dayAgo(30), cap: 10_000 }, timeoutMs: 30_000 });
+    await counter.endpoints({ scope: { endpoint: { host: 'api-7.example.com', path: '/v1/endpoint/7', by: 'path' }, from: dayAgo(30), cap: 10_000 }, periods, rankBy: '30d', withFree: true, dailyFrom: dayAgo(14), timeoutMs: 30_000 });
+    await counter.isCapped({ scope: { endpoint: { host: 'api-7.example.com', path: '/v1/endpoint/7', by: 'path' }, from: dayAgo(30), cap: 10_000 }, timeoutMs: 30_000 });
     const endpointPlans = await plans();
     await counter.hasPaidCall({ host: 'api-7.example.com', timeoutMs: 30_000 });
     await counter.services({ scope: { host: 'api-7.example.com', from: dayAgo(30), cap: 10_000 }, periods, timeoutMs: 30_000 });

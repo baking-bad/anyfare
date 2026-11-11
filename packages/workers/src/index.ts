@@ -9,7 +9,7 @@ export {
   recentStatementTimeoutMs, servicesPerBatch,
 } from './publicStats.js';
 export type { PublicStatsMetrics, PublicStatsOptions, PublicStatsResult } from './publicStats.js';
-export { createScheduler } from './scheduler.js';
+export { createScheduler, RunStoppedError } from './scheduler.js';
 export type { Job, JobOutcome, JobRunResult, Scheduler, SchedulerOptions } from './scheduler.js';
 export {
   createSettlementFollowUp, presubmissionRefusals, SettlementFollowUpError, settlementFollowUpIntervalMs, settlementFollowUpJobName, settlementFollowUpLockId,

@@ -14,6 +14,7 @@ import {
 import { createFakeClock, createFakeIdGenerator, createTestDatabase, createTestRedis, fixtureTime, type TestDatabase, type TestRedis } from '@anyfare/testing';
 
 import { PublicStatsBudgetError } from '../../src/publicStats.js';
+import { RunStoppedError } from '../../src/scheduler.js';
 import { seedCall, statsApi, statsJobs } from '../support/stats.js';
 
 // What the counts must take: a path of any length and the longest host, through the ledger; at most 100
@@ -173,6 +174,8 @@ describe('the public numbers\' counts, on what a buyer controls', () => {
 
     const text = await tablesText();
     expect(text).toContain('private.example.com');
+    // The kept buyers hold the Credits buyer in this form only, which no answer may show
+    expect(text).toContain(md5(`account:${md5(accountId)}`));
     for (const secret of [accountId, keyId, md5(accountId), md5(keyId), 'req-pay_limits', 'secret-in-query', 'secret-in-body', 'secret-in-receipt', 'token='])
       expect(text, secret).not.toContain(secret);
   });
@@ -188,7 +191,8 @@ describe('the public numbers\' counts, on what a buyer controls', () => {
     for (const path of paths) {
       const answer = await api.get(path);
       expect(answer.status, path).toBe(200);
-      for (const secret of [accountId, keyId, md5(accountId), md5(keyId), 'secret-in-query', 'secret-in-body', 'secret-in-receipt', 'token='])
+      // The account's md5, and the form the kept buyers hold
+      for (const secret of [accountId, keyId, md5(accountId), md5(keyId), md5(`account:${md5(accountId)}`), 'secret-in-query', 'secret-in-body', 'secret-in-receipt', 'token='])
         expect(answer.text, `${path} ${secret}`).not.toContain(secret);
     }
     // Counted as a buyer, never named
@@ -300,4 +304,75 @@ describe('the public numbers\' counts, next to the payments', () => {
     expect(error).toBeInstanceOf(PublicStatsBudgetError);
     expect(await marked()).toEqual(before);
   });
+
+  it('end as the budget\'s error, with its counts, when the budget cuts a statement short', async () => {
+    const blocker = new pg.Client({ connectionString: database.url.expose() });
+    await blocker.connect();
+    try {
+      await blocker.query('begin');
+      await blocker.query('lock table payments in access exclusive mode');
+
+      const error = await jobs({ budgetMs: 400 }).recent().catch((thrown: unknown) => thrown) as PublicStatsBudgetError;
+
+      expect(error).toBeInstanceOf(PublicStatsBudgetError);
+      expect(error.result).toEqual({ services: 0, written: 0, deleted: 0 });
+      expect((error.cause as { cause?: { code?: string } } | undefined)?.cause?.code ?? (error.cause as { code?: string } | undefined)?.code).toBe('57014');
+    }
+    finally {
+      await blocker.query('rollback');
+      await blocker.end();
+    }
+  });
+
+  it('end between two statements once the workers stop', async () => {
+    const stopping = new AbortController();
+    const { options } = jobs();
+    const counter = {
+      ...options.counter,
+      platform: async (input: Parameters<typeof options.counter.platform>[0]) => {
+        const counted = await options.counter.platform(input);
+        stopping.abort();
+
+        return counted;
+      },
+    };
+
+    const error = await jobs({ counter }).recent(stopping.signal).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(RunStoppedError);
+  });
+
+  it('go on from where a run stopped at its budget, with the same services, and complete the cycle as of its first run', async () => {
+    const store = db.createStatsRepository({ db: database.db });
+    const services = (await store.storedServices({ timeoutMs: 5_000 })).length;
+    expect(services).toBeGreaterThan(4);
+    const { options } = jobs();
+    // Each service takes a while: a run's budget covers a few of them
+    const slow = {
+      ...options.counter,
+      services: async (input: Parameters<typeof options.counter.services>[0]) => {
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        return options.counter.services(input);
+      },
+    };
+    const firstAt = clock.now().getTime() + 1_000;
+    const progress: number[] = [];
+    for (let run = 0; run < 20; run += 1) {
+      const result = await jobs({ counter: slow, budgetMs: 1_200, batchSize: 1 }).recent().catch((thrown: unknown) => thrown);
+      const cycle = await store.cycle({ timeoutMs: 5_000 });
+      if (!(result instanceof PublicStatsBudgetError)) {
+        expect(cycle).toBeUndefined();
+        break;
+      }
+      progress.push(cycle!.next);
+    }
+
+    // Each run went on from the last: further every time, and never from the first service again
+    expect(progress.length).toBeGreaterThan(1);
+    expect(progress.every((next, index) => index === 0 || next > progress[index - 1]!)).toBe(true);
+    // Complete as of the cycle's first run, which every one of its rows is true at least as of
+    const marked = (await database.db.execute(sql`select counted_at from stats_answers where key = 'run:recent'`)).rows[0]?.['counted_at'];
+    expect(new Date(String(marked)).getTime()).toBe(firstAt);
+  }, 60_000);
 });

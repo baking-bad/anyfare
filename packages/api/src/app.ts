@@ -62,6 +62,9 @@ export interface ApiDependencies {
   readonly callStreamTimings?: { readonly pollMs?: number; readonly pingMs?: number };
   // The calls a public number read when asked for counts at most. Default: 10,000.
   readonly statsReadCap?: number;
+  // The public numbers' own pool, so no public read holds a connection the other routes need, the internal
+  // ones above all. Default: `postgres`.
+  readonly statsPostgres?: Postgres;
 }
 
 export interface ApiListenOptions extends ListenOptions {
@@ -115,6 +118,7 @@ export const createApp = ({
   }),
   callStreamTimings,
   statsReadCap,
+  statsPostgres = postgres,
 }: ApiDependencies): ApiServer => {
   const server = createServer({
     logger,
@@ -177,7 +181,7 @@ export const createApp = ({
   registerCallRoutes(app, {
     db: postgres.db, config, limit: publicReadsLimit, clock, logger, ...callStreamTimings === undefined ? {} : { timings: callStreamTimings },
   });
-  registerStatsRoutes(app, { db: postgres.db, config, limit: publicReadsLimit, clock, ...statsReadCap === undefined ? {} : { readCap: statsReadCap } });
+  registerStatsRoutes(app, { db: statsPostgres.db, config, limit: publicReadsLimit, clock, ...statsReadCap === undefined ? {} : { readCap: statsReadCap } });
 
   // The internal API on a listener of its own, with the same request IDs, logs, and error envelope
   const internal = createServer({ logger, errorStatuses, requestIds });

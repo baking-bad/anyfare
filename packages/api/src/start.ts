@@ -12,6 +12,8 @@ export const defaultPort = 8081;
 export const defaultMetricsPort = 9081;
 // The internal API: no Traefik labels and no published port, so only the internal network reaches it
 export const defaultInternalPort = 8082;
+// The public numbers' pool: a read when asked for or two, the live read, and stored reads, one statement each
+export const statsConnections = 4;
 
 /** Wires the production dependencies from platform config and the environment, then listens. */
 export const startApi = async ({ env, logger }: AppContext): Promise<RunningApp> => {
@@ -39,11 +41,13 @@ export const startApi = async ({ env, logger }: AppContext): Promise<RunningApp>
   });
 
   const postgres = createPostgres({ url: databaseUrl, logger });
+  // The public numbers' reads on a pool of their own: they never hold a connection the other routes need
+  const statsPostgres = createPostgres({ url: databaseUrl, logger, maxConnections: statsConnections });
   const redis = createRedis({ url: redisUrl, logger });
   const closeConnections = async () => {
-    await Promise.all([postgres.close(), redis.close()]);
+    await Promise.all([postgres.close(), statsPostgres.close(), redis.close()]);
   };
-  const server = createApp({ config, logger, postgres, redis, trustProxy, internalSecret, oneClick });
+  const server = createApp({ config, logger, postgres, statsPostgres, redis, trustProxy, internalSecret, oneClick });
   let ports;
   try {
     ports = await server.listen(listen);

@@ -5,7 +5,7 @@ import type {
   StoredEndpoint, TopAnswer,
 } from '@anyfare/core';
 
-import { withTransaction, type Database } from './postgres.js';
+import { withTransaction, type Database, type DatabaseExecutor } from './postgres.js';
 import { statsAnswers, statsEndpoints, statsServicePages, statsServices } from './schema/stats.js';
 
 // The public numbers' own tables. A count writes a row only when its numbers changed, and deletes the
@@ -35,6 +35,14 @@ export interface CountMarks {
 }
 
 export type ServicesSort = 'calls' | 'buyers' | 'volume' | 'endpoints' | 'price';
+
+/** A cycle of the frequent count over its services: one or more runs, each going on from the last. */
+export interface StatsCycle {
+  // Its first run's time: each of its rows is true at least as of then
+  readonly startedAt: Date;
+  readonly services: readonly { readonly hostHash: string; readonly host: string }[];
+  readonly next: number;
+}
 
 /** A stored endpoint with the times of its two kinds of numbers. */
 export interface StoredEndpointRow extends StoredEndpoint {
@@ -74,6 +82,14 @@ export interface StatsRepository {
   dropOutside(input: { readonly hostHashes: readonly string[]; readonly batch: number; readonly timeoutMs: number }): Promise<number>;
   /** Records that a count of this kind completed. */
   markComplete(input: { readonly kind: CountKind; readonly countedAt: Date; readonly timeoutMs: number }): Promise<void>;
+  /** The frequent count's cycle under way: when it started, its services in order, and the next to count. Undefined: none. */
+  cycle(input: { readonly timeoutMs: number }): Promise<StatsCycle | undefined>;
+  /** Starts a cycle of these services, from the first. */
+  startCycle(input: StatsCycle & { readonly timeoutMs: number }): Promise<void>;
+  /** Records the next service of the cycle under way to count. */
+  advanceCycle(input: { readonly next: number; readonly timeoutMs: number }): Promise<void>;
+  /** Ends the cycle under way. */
+  endCycle(input: { readonly timeoutMs: number }): Promise<void>;
   /** The stored services, most paid calls first. */
   storedServices(input: { readonly timeoutMs: number }): Promise<{ readonly hostHash: string; readonly host: string }[]>;
   /** The stored endpoints of these hosts. */
@@ -98,12 +114,15 @@ export interface StatsRepository {
     readonly endpoints: readonly StoredEndpointRow[];
     readonly marks: CountMarks;
   } | undefined>;
-  /** A stored endpoint. Undefined: not stored. */
-  endpoint(host: string, path: string): Promise<{ readonly row: StoredEndpointRow; readonly marks: CountMarks } | undefined>;
+  /** A stored endpoint. Undefined: not stored. With `timeoutMs`, the statement gives up after it, in a transaction of its own. */
+  endpoint(host: string, path: string, options?: { readonly timeoutMs?: number }): Promise<{ readonly row: StoredEndpointRow; readonly marks: CountMarks } | undefined>;
 }
 
 const keys = {
   marks: { recent: 'run:recent', all: 'run:all' } satisfies Record<CountKind, string>,
+  // The frequent count's cycle under way: its services, written once, and how far it is, after each batch
+  cycle: 'cycle:recent',
+  next: 'cycle:recent:next',
 };
 // Rows per insert: well under Postgres's 65,535 parameters, and few enough that one stays short
 const insertBatch = 200;
@@ -263,11 +282,11 @@ export const createStatsRepository = ({ db }: StatsRepositoryOptions): StatsRepo
       if (hostHashes.length === 0)
         return { written, deleted: 0 };
       // The hosts' endpoints that left their top: at most 100 each
-      const kept = endpoints.map(endpoint => ({ host_hash: endpoint.hostHash, path_hash: endpoint.pathHash }));
+      // The kept ones as the keys of one object: each row is looked up in it, never compared with each
+      const kept = Object.fromEntries(endpoints.map(endpoint => [`${endpoint.hostHash}:${endpoint.pathHash}`, true]));
       const deleted = await statement(db, timeoutMs, tx => tx.delete(statsEndpoints).where(and(
         sql`${statsEndpoints.hostHash} = any(array(select jsonb_array_elements_text(${json(hostHashes)})))`,
-        sql`not exists (select 1 from jsonb_to_recordset(${json(kept)}) as kept(host_hash text, path_hash text)
-          where kept.host_hash = ${statsEndpoints.hostHash} and kept.path_hash = ${statsEndpoints.pathHash})`,
+        sql`not (${json(kept)} ? (${statsEndpoints.hostHash} || ':' || ${statsEndpoints.pathHash}))`,
       )).returning({ hostHash: statsEndpoints.hostHash }));
 
       return { written, deleted: deleted.length };
@@ -289,7 +308,9 @@ export const createStatsRepository = ({ db }: StatsRepositoryOptions): StatsRepo
     },
 
     dropOutside: async ({ hostHashes, batch, timeoutMs }) => {
-      const outside = (column: SQL | typeof statsServices.hostHash) => sql`not (${column} = any(array(select jsonb_array_elements_text(${json(hostHashes)}))))`;
+      // The set as the keys of one object: each row is looked up in it, never compared with each
+      const set = Object.fromEntries(hostHashes.map(hostHash => [hostHash, true]));
+      const outside = (column: SQL) => sql`not (${json(set)} ? ${column})`;
       let deleted = 0;
       for (const table of [statsEndpoints, statsServicePages, statsServices] as const) {
         for (;;) {
@@ -304,6 +325,30 @@ export const createStatsRepository = ({ db }: StatsRepositoryOptions): StatsRepo
       }
 
       return deleted;
+    },
+
+    cycle: async ({ timeoutMs }) => {
+      const rows = await statement(db, timeoutMs, tx => tx.select().from(statsAnswers).where(inArray(statsAnswers.key, [keys.cycle, keys.next])));
+      const cycle = rows.find(row => row.key === keys.cycle);
+      const next = rows.find(row => row.key === keys.next);
+
+      return cycle === undefined
+        ? undefined
+        : { startedAt: cycle.countedAt, services: cycle.answer['services'] as StatsCycle['services'], next: Number(next?.answer['next'] ?? 0) };
+    },
+
+    startCycle: async ({ startedAt, services, next, timeoutMs }) => {
+      await statement(db, timeoutMs, tx => tx.insert(statsAnswers)
+        .values([{ key: keys.cycle, answer: { services: services.map(({ hostHash, host }) => ({ hostHash, host })) }, countedAt: startedAt }, { key: keys.next, answer: { next }, countedAt: startedAt }])
+        .onConflictDoUpdate({ target: statsAnswers.key, set: { answer: sql`excluded.answer`, countedAt: sql`excluded.counted_at` } }));
+    },
+
+    advanceCycle: async ({ next, timeoutMs }) => {
+      await statement(db, timeoutMs, tx => tx.update(statsAnswers).set({ answer: { next } }).where(eq(statsAnswers.key, keys.next)));
+    },
+
+    endCycle: async ({ timeoutMs }) => {
+      await statement(db, timeoutMs, tx => tx.delete(statsAnswers).where(inArray(statsAnswers.key, [keys.cycle, keys.next])));
     },
 
     markComplete: async ({ kind, countedAt, timeoutMs }) => {
@@ -378,10 +423,11 @@ export const createStatsRepository = ({ db }: StatsRepositoryOptions): StatsRepo
       return { page: { answer: row.answer, countedAt: new Date(row.counted_at) }, endpoints: row.endpoints.map(toEndpointRow), marks: marksOf(row) };
     },
 
-    endpoint: async (host, path) => {
-      const { rows: [row] } = await db.execute<{ endpoint: EndpointJson | null } & Record<string, unknown>>(sql`
+    endpoint: async (host, path, options) => {
+      const read = (executor: DatabaseExecutor) => executor.execute<{ endpoint: EndpointJson | null } & Record<string, unknown>>(sql`
         select (select ${endpointJson} from ${statsEndpoints} where ${statsEndpoints.hostHash} = md5(${host}::text) and ${statsEndpoints.pathHash} = md5(${path}::text)
           and ${statsEndpoints.path} = ${path}) as endpoint, ${marksSql}`);
+      const { rows: [row] } = options?.timeoutMs === undefined ? await read(db) : await statement(db, options.timeoutMs, read);
 
       return row?.endpoint ? { row: toEndpointRow(row.endpoint), marks: marksOf(row) } : undefined;
     },

@@ -73,9 +73,9 @@ const outcomeOf = <TCounts extends { readonly [Name in keyof TCounts]: number }>
 /**
  * Workers have no public listener. Health, readiness (Postgres), and metrics share the metrics port.
  * Jobs start with the listener and stop before it closes: hold expiry, the settlement follow-up, routing
- * losses, the public numbers' two counts, after the first two have run once, with the top-ups section
- * configured and a 1Click client, the top-up status job, and with a balance reader, the treasury's balance
- * monitor and the daily reconciliation.
+ * losses, the public numbers' two counts, once every other job due within their interval has run once,
+ * with the top-ups section configured and a 1Click client, the top-up status job, and with a balance
+ * reader, the treasury's balance monitor and the daily reconciliation.
  */
 export const createApp = ({
   config,
@@ -146,17 +146,19 @@ export const createApp = ({
     locks: statsPostgres,
     intervalMs: publicStatsIntervalMs(config),
     // Every few minutes, with what it wrote: its line, with its duration, is info
-    run: async () => ({ ...outcomeOf(await recentStats(), []), acted: true }),
-    // Never at start: first the payments' own jobs, so a count that fails or takes the process down can't keep them from running
-    after: [holdExpiryJobName, settlementFollowUpJobName],
+    run: async stopping => ({ ...outcomeOf(await recentStats(stopping), []), acted: true }),
+    // Never at start: first every other job due within its interval, so a count that fails or takes the
+    // process down can't keep them from running
+    afterOthers: true,
     firstRunDelayMs: async () => 0,
   }, {
     name: publicStatsAllJobName,
     lockId: publicStatsAllLockId,
     locks: statsPostgres,
     intervalMs: publicStatsAllIntervalMs(config),
-    run: async () => ({ ...outcomeOf(await allStats(), []), acted: true }),
-    after: [holdExpiryJobName, settlementFollowUpJobName, publicStatsJobName],
+    run: async stopping => ({ ...outcomeOf(await allStats(stopping), []), acted: true }),
+    after: [publicStatsJobName],
+    afterOthers: true,
     firstRunDelayMs: async () => 0,
   }];
 

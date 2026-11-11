@@ -8,7 +8,7 @@ import {
   buildEndpointAnswer, buildServicePage, endpointNumbersOf, hashApiKey, loadPlatformConfig, type LiveBase, type PaymentStatus, type PlatformConfig, type ServiceRow,
   type StoredEndpoint,
 } from '@anyfare/core';
-import { callDetails, createAccountRepository, createPaymentKeyRepository, createStatsRepository, payments } from '@anyfare/db';
+import { callDetails, createAccountRepository, createPaymentKeyRepository, createPostgres, createStatsRepository, payments } from '@anyfare/db';
 import { createFakeClock, createTestDatabase, createTestRedis, type FakeClock, type TestDatabase, type TestRedis } from '@anyfare/testing';
 
 import { createApp, type ApiServer } from '../../src/app.js';
@@ -118,7 +118,7 @@ afterAll(async () => {
 });
 
 describe('the public numbers before any count', () => {
-  it('answer 200 with zeros, empty lists and zero-filled days, and no time; a host with no paid call answers 404', async () => {
+  it('answer 200 with zeros, empty lists and zero-filled days, and no time; a host with no paid call answers 404, and the live numbers 503', async () => {
     const zeros = { today: 0, '7d': 0, '30d': 0, all: 0 };
 
     expect((await get('/v1/stats')).body).toEqual({
@@ -135,9 +135,10 @@ describe('the public numbers before any count', () => {
       daily: daysTo15(14).map(day => ({ day, calls: 0 })), byPaidWith: [], exact: true,
     });
     expect(await get('/v1/services/one.example.com')).toMatchObject({ status: 404, body: { error: { code: 'not_found' } } });
+    // No count yet: no base to add the last minutes to, so no number at all, and nothing to keep
     const live = await get('/v1/stats/live');
-    expect(live.body).toMatchObject({ at: noon, today: { calls: 0, volume: '0', buyers: 0, nearShare: 0 }, last24h: { calls: 0, volume: '0', volumeBefore: '0' } });
-    expect(live.body?.['perMinute']).toEqual(Array.from({ length: 30 }, (_, index) => ({ minute: new Date(Date.parse(noon) - (29 - index) * 60_000).toISOString(), calls: 0 })));
+    expect(live).toMatchObject({ status: 503, body: { error: { code: 'stats_unavailable' } } });
+    expect(live.headers.get('cache-control')).toBe('no-store');
   });
 });
 
@@ -236,6 +237,23 @@ describe('the stored public numbers', () => {
     });
   });
 
+  it('label a stored endpoint\'s 14 days from when the last complete count found them so, not when they were last written', async () => {
+    const numbers = endpointNumbersOf({ calls: 2, volume: 20_000n, buyers: 1, free: 0, p50Ms: 100, p95Ms: 100, ways: [{ paidWith: 'credits', calls: 2 }] });
+    // Written the day before, left in place by the count completed at 11:55 today: today is its last day
+    await store().putEndpoints({
+      hostHashes: [md5('labels.example.com')], countedAt: new Date('2026-12-14T23:00:00.000Z'), timeoutMs: 5_000,
+      endpoints: [{
+        hostHash: md5('labels.example.com'), pathHash: md5('/v1/x'), path: '/v1/x', method: 'GET', price: undefined,
+        recent: { today: numbers, '7d': numbers, '30d': numbers }, daily: [...Array.from({ length: 13 }, () => 0), 2],
+      }],
+    });
+
+    const answer = await get('/v1/endpoints/stats?host=labels.example.com&path=/v1/x&period=7d');
+
+    expect((answer.body?.['daily'] as { day: string; calls: number }[]).at(-1)).toEqual({ day: '2026-12-15', calls: 2 });
+    expect(answer.body?.['updatedAt']).toBe(marked.toISOString());
+  });
+
   it('answer a stored endpoint from its row, its 14 days to its count\'s day', async () => {
     const answer = await get('/v1/endpoints/stats?host=One.Example.com&path=/v1/one&period=today');
 
@@ -321,8 +339,12 @@ describe('the public numbers of a host or an endpoint with no row, read when ask
       await blocker.query('begin');
       await blocker.query('lock table payments in access exclusive mode');
 
-      expect(await get('/v1/services/blocked.example.com')).toMatchObject({ status: 503, body: { error: { code: 'stats_unavailable' } } });
-      expect(await get('/v1/endpoints/stats?host=blocked.example.com&path=/v1/x')).toMatchObject({ status: 503, body: { error: { code: 'stats_unavailable' } } });
+      for (const path of ['/v1/services/blocked.example.com', '/v1/endpoints/stats?host=blocked.example.com&path=/v1/x']) {
+        const answer = await get(path);
+        expect(answer, path).toMatchObject({ status: 503, body: { error: { code: 'stats_unavailable' } } });
+        // Never kept by a cache
+        expect(answer.headers.get('cache-control'), path).toBe('no-store');
+      }
     }
     finally {
       await blocker.query('rollback');
@@ -334,7 +356,8 @@ describe('the public numbers of a host or an endpoint with no row, read when ask
     for (const path of ['/v1/services/asked.example.com', '/v1/services/asked.example.com?period=all', '/v1/endpoints/stats?host=asked.example.com&path=/v1/a', '/v1/endpoints/stats?host=asked.example.com&path=/v1/b']) {
       const answer = await get(path);
       expect(answer.status, path).toBe(200);
-      for (const secret of [accountId, keyId, md5(accountId), md5(keyId), 'secret-in-query', 'secret-in-body', 'secret-in-header', 'token='])
+      // The account's md5, and the form the kept buyers hold
+      for (const secret of [accountId, keyId, md5(accountId), md5(keyId), md5(`account:${md5(accountId)}`), 'secret-in-query', 'secret-in-body', 'secret-in-header', 'token='])
         expect(answer.text, `${path} ${secret}`).not.toContain(secret);
     }
     const service = (await get('/v1/services/asked.example.com')).body as { topBuyers: { buyers: { payer: unknown; paidWith: string }[] } };
@@ -482,7 +505,53 @@ describe('GET /v1/stats/live', () => {
   });
 });
 
+describe('the public numbers\' own pool', () => {
+  let elsewhere: TestDatabase;
+
+  beforeAll(async () => {
+    elsewhere = await createTestDatabase();
+  }, 60_000);
+
+  afterAll(async () => {
+    await elsewhere?.drop();
+  });
+
+  it('reads the public numbers on a pool of their own, and only there', async () => {
+    const server = createApp({ config, logger: createLogger({ level: 'silent' }), postgres: elsewhere.postgres, statsPostgres: database.postgres, redis, clock });
+    servers.push(server);
+    const { port } = await server.listen({ host: '127.0.0.1', port: 0, metricsPort: 0 });
+
+    // The rows are where the stats pool is, none where the others' is
+    expect((await get('/v1/services', {}, `http://127.0.0.1:${port}`)).body).toMatchObject({ total: 4 });
+  });
+
+  it('answers 503, never kept, when its pool has no connection, while the other routes go on', async () => {
+    const down = createPostgres({ url: Secret.from('postgres://anyfare:anyfare@127.0.0.1:9/anyfare'), logger: createLogger({ level: 'silent' }), connectTimeoutMs: 500 });
+    const server = createApp({ config, logger: createLogger({ level: 'silent' }), postgres: database.postgres, statsPostgres: down, redis, clock });
+    servers.push(server);
+    const { port } = await server.listen({ host: '127.0.0.1', port: 0, metricsPort: 0 });
+    try {
+      for (const path of ['/v1/stats', '/v1/services', '/v1/services/asked.example.com', '/v1/endpoints/stats?host=asked.example.com&path=/v1/a']) {
+        const answer = await get(path, {}, `http://127.0.0.1:${port}`);
+        expect([answer.status, errorCode(answer), answer.headers.get('cache-control')], path).toEqual([503, 'stats_unavailable', 'no-store']);
+      }
+      expect((await get('/v1/calls', {}, `http://127.0.0.1:${port}`)).status).toBe(200);
+      expect((await fetch(`http://127.0.0.1:${port}/_/ready`)).status).toBe(200);
+    }
+    finally {
+      await down.close();
+    }
+  });
+});
+
 describe('the shared parts of the public numbers', () => {
+  it('are kept by a cache only when they succeed: an error is no-store', async () => {
+    for (const path of ['/v1/services/nothing.example.com', '/v1/stats/top?period=90d', '/v1/endpoints/stats?host=a..b&path=/x'])
+      expect((await get(path)).headers.get('cache-control'), path).toBe('no-store');
+    for (const path of ['/v1/stats', '/v1/stats/top', '/v1/services', '/v1/services/asked.example.com', '/v1/endpoints/stats?host=asked.example.com&path=/v1/a'])
+      expect((await get(path)).headers.get('cache-control'), path).toBe('public, max-age=60');
+  });
+
   it('answer any origin, on errors too, and the preflight', async () => {
     const preflight = { method: 'OPTIONS', headers: { origin: 'https://site.example', 'access-control-request-method': 'GET' } };
 

@@ -5,18 +5,30 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLogger } from '@anyfare/common';
 import { createTestDatabase, type TestDatabase } from '@anyfare/testing';
 
-import { migrateDatabase, migrationLockTimeoutMs } from '../../src/index.js';
+import { migrateDatabase, migrationAttempts, migrationLockTimeoutMs } from '../../src/index.js';
 
 const logger = createLogger({ level: 'silent' });
 let database: TestDatabase;
+// Migrated, for the runs that meet a lock
+let locked: TestDatabase;
 
 beforeAll(async () => {
-  database = await createTestDatabase({ migrate: false });
+  [database, locked] = await Promise.all([createTestDatabase({ migrate: false }), createTestDatabase()]);
 });
 
 afterAll(async () => {
-  await database?.drop();
+  await Promise.all([database?.drop(), locked?.drop()]);
 });
+
+// A session that holds the migrations table's lock, as a long transaction would: every statement on it queues behind
+const lockMigrations = async (): Promise<pg.Client> => {
+  const blocker = new pg.Client({ connectionString: locked.url.expose() });
+  await blocker.connect();
+  await blocker.query('begin');
+  await blocker.query('lock table drizzle.__drizzle_migrations in access exclusive mode');
+
+  return blocker;
+};
 
 const tables = async (): Promise<readonly string[]> => {
   const { rows } = await database.db.execute<{ name: string }>(sql`select table_name as name from information_schema.tables where table_schema = 'public' order by table_name`);
@@ -35,27 +47,37 @@ describe('migrateDatabase', () => {
     expect(await migrateDatabase({ url: database.url, logger })).toBe(0);
   });
 
-  it('fails a run whose statement can\'t get a table\'s lock within its lock timeout, 10 s by default, instead of waiting', async () => {
-    const fresh = await createTestDatabase();
-    const blocker = new pg.Client({ connectionString: fresh.url.expose() });
-    await blocker.connect();
+  it('fails a run whose statements can\'t get a table\'s lock within its lock timeout, after a few attempts with a pause, instead of waiting', async () => {
+    const lines: Record<string, unknown>[] = [];
+    const capturing = createLogger({ level: 'warn' }, { write: (line: string) => lines.push(JSON.parse(line) as Record<string, unknown>) });
+    const blocker = await lockMigrations();
     try {
-      // As a long transaction would: every statement on the table queues behind the lock
-      await blocker.query('begin');
-      await blocker.query('lock table drizzle.__drizzle_migrations in access exclusive mode');
       const started = performance.now();
 
-      const error = await migrateDatabase({ url: fresh.url, logger, lockTimeoutMs: 300 }).catch((thrown: unknown) => thrown) as { code?: string; cause?: { code?: string } };
+      const error = await migrateDatabase({ url: locked.url, logger: capturing, lockTimeoutMs: 200, attempts: 3, retryPauseMs: 100 })
+        .catch((thrown: unknown) => thrown) as { code?: string; cause?: { code?: string } };
 
-      // 55P03: the lock wasn't available in time
+      // 55P03: the lock wasn't available in time, three times
       expect(error.cause?.code ?? error.code).toBe('55P03');
+      expect(performance.now() - started).toBeGreaterThanOrEqual(3 * 200 + 2 * 100);
       expect(performance.now() - started).toBeLessThan(5_000);
-      expect(migrationLockTimeoutMs).toBe(10_000);
+      expect(lines.filter(line => line['msg'] === 'A migration couldn\'t get a table\'s lock in time: it tries again after a pause')).toHaveLength(2);
+      expect([migrationLockTimeoutMs, migrationAttempts]).toEqual([3_000, 3]);
     }
     finally {
-      await blocker.query('rollback');
       await blocker.end();
-      await fresh.drop();
+    }
+  });
+
+  it('goes on once the lock is free again in one of its pauses', async () => {
+    const blocker = await lockMigrations();
+    try {
+      setTimeout(() => void blocker.query('rollback'), 300);
+
+      expect(await migrateDatabase({ url: locked.url, logger, lockTimeoutMs: 200, attempts: 3, retryPauseMs: 300 })).toBe(0);
+    }
+    finally {
+      await blocker.end();
     }
   });
 

@@ -7,7 +7,7 @@ import { createLogger } from '@anyfare/common';
 import { createPostgres, type Postgres } from '@anyfare/db';
 import { createFakeClock, createManualTimers, createTestDatabase, type TestDatabase } from '@anyfare/testing';
 
-import { createScheduler, type Job } from '../../src/scheduler.js';
+import { createScheduler, RunStoppedError, type Job } from '../../src/scheduler.js';
 
 const logger = createLogger({ level: 'silent' });
 const start = fixtureTime(0, 9, 12, 0, 0, 0);
@@ -36,7 +36,7 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-const setup = (run: () => Promise<void>, locks: Pick<Postgres, 'tryAdvisoryLock'> = database.postgres) => {
+const setup = (run: (stopping: AbortSignal) => Promise<void>, locks: Pick<Postgres, 'tryAdvisoryLock'> = database.postgres) => {
   lockId += 1;
   const registry = new Registry();
   const clock = createFakeClock(start);
@@ -275,6 +275,65 @@ describe('the job scheduler', () => {
     }
     finally {
       gate.resolve();
+      await scheduler.stop();
+    }
+  });
+
+  it('tells a running job to stop when it stops, and counts the run stopped when it ends early', async () => {
+    let steps = 0;
+    const { scheduler, registry } = setup(async stopping => {
+      for (;;) {
+        if (stopping.aborted)
+          throw new RunStoppedError({ steps });
+        steps += 1;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    });
+
+    const running = scheduler.runNow('test_job');
+    await vi.waitFor(() => expect(steps).toBeGreaterThan(0));
+    const started = performance.now();
+    await scheduler.stop();
+
+    expect(await running).toBe('stopped');
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(await metric(registry, 'workers_job_runs_total{job="test_job",result="stopped"}')).toBe(1);
+  });
+
+  it('comes after every job that comes after none and is due within its interval, and not one due later', async () => {
+    const order: string[] = [];
+    const timers = createManualTimers();
+    const job = (name: string, changes: Partial<Job>): Job => {
+      lockId += 1;
+
+      return { name, lockId, intervalMs: 60_000, run: async () => {
+        order.push(name);
+      }, ...changes };
+    };
+    const jobs = [
+      job('soon', { intervalMs: 30_000 }),
+      job('within', { intervalMs: 300_000 }),
+      job('daily', { intervalMs: 86_400_000, firstRunDelayMs: async () => 86_400_000 }),
+      job('later', { intervalMs: 300_000, afterOthers: true, firstRunDelayMs: async () => 0 }),
+    ];
+    const scheduler = createScheduler({ jobs, locks: database.postgres, clock: createFakeClock(start), timers, logger, registry: new Registry() });
+    try {
+      await scheduler.start();
+      timers.advance(30_000);
+      await vi.waitFor(() => expect(order).toContain('soon'));
+      timers.advance(0);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      // The one due within its interval hasn't run yet
+      expect(order).not.toContain('later');
+      timers.advance(270_000);
+      await vi.waitFor(() => {
+        timers.advance(0);
+        expect(order).toContain('later');
+      });
+      // The daily one is a day away, and not waited for
+      expect(order).not.toContain('daily');
+    }
+    finally {
       await scheduler.stop();
     }
   });
