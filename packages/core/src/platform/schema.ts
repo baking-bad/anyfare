@@ -79,6 +79,8 @@ export const platformConfigSchema: SchemaObject = {
       ['paymentKey', 'unpaidIp', 'signup'],
     ),
     callStream: object({ maxPerIp: positive, maxTotal: positive }),
+    // From 10 seconds to a day, all time from a minute to a week, and up to 10,000 services
+    stats: object({ intervalSeconds: integer(10, 86_400), allIntervalSeconds: integer(60, 604_800), maxServices: integer(1, 10_000) }),
     timeouts: object({ connectMs: positive, requestMs: positive, settleMs: positive }),
     sizeLimits: object({ requestBodyBytes: positive, bufferedResponseBytes: positive }),
     signer: object({

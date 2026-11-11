@@ -14,3 +14,5 @@ export * from './treasury/index.js';
 export * from './routing/index.js';
 export * from './catalog.js';
 export * from './topups.js';
+export * from './paidWith.js';
+export * from './stats.js';

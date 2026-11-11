@@ -102,6 +102,15 @@ export interface PlatformConfig {
     readonly maxPerIp: number;
     readonly maxTotal: number;
   };
+  // The public numbers the workers count from the calls and top-ups
+  readonly stats: {
+    // The pause between one count of today, 7 and 30 days and the next
+    readonly intervalSeconds: number;
+    // The pause between one count of all time and the next: it reads every call
+    readonly allIntervalSeconds: number;
+    // The services with pages of their own, by paid calls over 30 days. Others are read when asked for.
+    readonly maxServices: number;
+  };
   readonly timeouts: {
     readonly connectMs: number;
     readonly requestMs: number;

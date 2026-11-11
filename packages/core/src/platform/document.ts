@@ -83,6 +83,15 @@ export interface CallStreamDocument {
   readonly maxTotal?: number;
 }
 
+export interface StatsDocument {
+  // How often the workers count today, 7 and 30 days, in seconds. Default: 300.
+  readonly intervalSeconds?: number;
+  // How often they count all time, in seconds. Default: 3600.
+  readonly allIntervalSeconds?: number;
+  // The services with pages of their own, by paid calls over 30 days. Default: 1000.
+  readonly maxServices?: number;
+}
+
 export interface TimeoutsDocument {
   readonly connectMs?: number;
   readonly requestMs?: number;
@@ -163,6 +172,7 @@ export interface PlatformConfigDocument {
   readonly mpp: MppDocument;
   readonly rateLimits: RateLimitsDocument;
   readonly callStream?: CallStreamDocument;
+  readonly stats?: StatsDocument;
   readonly timeouts?: TimeoutsDocument;
   readonly sizeLimits?: SizeLimitsDocument;
   readonly signer?: SignerLimitsDocument;

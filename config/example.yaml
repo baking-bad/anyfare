@@ -96,6 +96,12 @@ rateLimits:
 #   maxPerIp: 20                # Per client IP
 #   maxTotal: 1000              # In all
 
+# Optional. The public numbers the workers count from the calls and top-ups. The values are the defaults
+# stats:
+#   intervalSeconds: 300        # The pause between one count of today, 7 and 30 days and the next: 10 to 86400
+#   allIntervalSeconds: 3600    # The pause between one count of all time and the next: 60 to 604800
+#   maxServices: 1000           # Services with pages of their own, by paid calls over 30 days: 1 to 10000
+
 # Optional. Free Credits for each new account, so a visitor can try the service without a wallet. The values are the
 # defaults, except maxPerDay, which has none
 # freeCredits:

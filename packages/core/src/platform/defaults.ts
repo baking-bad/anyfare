@@ -23,6 +23,9 @@ export const platformDefaults = {
   publicReadsRateLimit: { requests: 120, windowSeconds: 60 },
   // Open streams of calls on each API process: per client IP, and in all
   callStream: { maxPerIp: 20, maxTotal: 1_000 },
+  // The public numbers: today, 7 and 30 days again every 5 minutes, all time every hour, and pages of their
+  // own for the 1,000 services with the most paid calls over 30 days
+  stats: { intervalSeconds: 300, allIntervalSeconds: 3_600, maxServices: 1_000 },
   // Free Credits on sign-up: off unless the deployment turns them on, then $0.10 for each of the first
   // three new accounts a day from one client IP. No daily cap unless set.
   freeCredits: { enabled: false, amount: '0.1', perIp: { requests: 3, windowSeconds: 86_400 } },
