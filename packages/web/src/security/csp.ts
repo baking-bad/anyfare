@@ -9,10 +9,12 @@ export interface CspOptions {
   readonly payUrl: string;
   // `next dev` needs eval, inline styles and its websocket
   readonly development: boolean;
+  // The console host's pages talk only to the site itself and the Platform API
+  readonly console?: boolean;
 }
 
-export const contentSecurityPolicy = ({ nonce, apiUrl, payUrl, development }: CspOptions): string => {
-  const origins = [...new Set([new URL(apiUrl).origin, new URL(payUrl).origin])];
+export const contentSecurityPolicy = ({ nonce, apiUrl, payUrl, development, console: forConsole = false }: CspOptions): string => {
+  const origins = [...new Set(forConsole ? [new URL(apiUrl).origin] : [new URL(apiUrl).origin, new URL(payUrl).origin])];
 
   return [
     'default-src \'self\'',

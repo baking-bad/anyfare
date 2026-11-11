@@ -1,0 +1,10 @@
+/* The Console page. Classes only: the content security policy allows no inline style. */
+
+.console { padding-top: 64px; padding-bottom: 96px; }
+@media (min-width: 640px) { .console { padding-top: 96px; } }
+.console-column { max-width: 640px; margin: 0 auto; }
+.console-title { font-size: 24px; line-height: 28px; letter-spacing: var(--tracking-tight); }
+@media (min-width: 640px) { .console-title { font-size: 32px; line-height: 36px; } }
+.console-heading { font-size: var(--text-xl); line-height: var(--leading-xl); }
+.console-plans { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; color: var(--text-secondary); }
+.console-plans li::marker { color: var(--text-tertiary); }

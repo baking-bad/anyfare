@@ -10,7 +10,7 @@ import { ViewSwitch } from './ViewSwitch';
  * The main links behind a button, for narrow screens. The menu closes on Escape, on a click outside, and
  * on a link, and the focus goes back to the button. It traps no focus: Tab leaves it as it would any list.
  */
-export const MobileMenu = () => {
+export const MobileMenu = ({ base = '', showView = true }: { readonly base?: string; readonly showView?: boolean }) => {
   const [open, setOpen] = useState(false);
   const button = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -54,13 +54,13 @@ export const MobileMenu = () => {
         <div ref={panel} id="mobile-menu" className="mobile-menu">
           <div className="container">
             <nav className="stack" aria-label="Main">
-              <NavLinks onNavigate={() => {
+              <NavLinks base={base} onNavigate={() => {
                 setOpen(false);
                 button.current?.focus();
               }}
               />
             </nav>
-            <div className="menu-view only-sm"><ViewSwitch /></div>
+            {showView ? <div className="menu-view only-sm"><ViewSwitch /></div> : null}
           </div>
         </div>
       ) : null}

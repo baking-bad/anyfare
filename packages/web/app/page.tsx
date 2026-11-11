@@ -7,12 +7,17 @@ import { serverReader } from '../src/api/server';
 import { PageView } from '../src/components/AgentView';
 import { readSettings } from '../src/config';
 import { homeDescription, homeTitle } from '../src/content/home';
+import { consoleLink } from '../src/hosts';
 import { homeJson, homeRequests, loadHome } from '../src/home/data';
 import { LiveCalls } from '../src/home/LiveCalls';
 import { ForAgents, Hero, Questions, TopServices, TwoWays } from '../src/home/sections';
 import { StatsBand } from '../src/home/StatsBand';
 import { homeMarkdown } from '../src/markdown/home';
+import { socialTags } from '../src/seo/social';
 import { markdownUrl } from '../src/markdown/negotiate';
+import { requestNonce } from '../src/nonce';
+import { JsonLd } from '../src/seo/JsonLdScript';
+import { organizationJsonLd, websiteJsonLd } from '../src/seo/jsonld';
 
 export const generateMetadata = (): Metadata => {
   const { siteUrl } = readSettings();
@@ -21,8 +26,7 @@ export const generateMetadata = (): Metadata => {
     title: { absolute: homeTitle },
     description: homeDescription,
     alternates: { canonical: siteUrl, types: { 'text/markdown': `${siteUrl}${markdownUrl('/')}` } },
-    openGraph: { type: 'website', siteName: 'Anyfare', title: homeTitle, description: homeDescription, url: siteUrl },
-    twitter: { card: 'summary', title: homeTitle, description: homeDescription },
+    ...socialTags({ siteUrl, title: homeTitle, description: homeDescription, url: siteUrl }),
   };
 };
 
@@ -34,8 +38,12 @@ const Home = async () => {
   const settings = readSettings();
   const data = await loadHome(serverReader(await headers(), settings));
   const { siteUrl, apiUrl, payUrl, consoleUrl } = settings;
+  const nonce = await requestNonce();
 
   return (
+    <>
+    <JsonLd data={organizationJsonLd(settings)} nonce={nonce} />
+    <JsonLd data={websiteJsonLd(settings)} nonce={nonce} />
     <PageView
       agent={{
         title: homeTitle,
@@ -45,7 +53,7 @@ const Home = async () => {
         markdownUrl: `${siteUrl}${markdownUrl('/')}`,
       }}
     >
-      <Hero consoleUrl={consoleUrl} />
+      <Hero consoleUrl={consoleLink(settings)} />
       <LiveCalls
         now={Date.now()}
         calls={data.calls.ok ? data.calls.value.calls : null}
@@ -57,6 +65,7 @@ const Home = async () => {
       <ForAgents siteUrl={siteUrl} />
       <Questions />
     </PageView>
+    </>
   );
 };
 

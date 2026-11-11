@@ -1,10 +1,12 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { request } from 'node:http';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { textOfHtml } from '../support/curl';
 import { refusedUrl, sampleCall, startFakeApi, type FakeApi } from '../support/fakeApi';
 
 // The website from a production build (`next build`, then `next start`), as the image runs it, against a
@@ -33,7 +35,15 @@ interface Running {
   readonly api: FakeApi | undefined;
 }
 
-const startSite = async (api: FakeApi | undefined, apiInternalUrl: string): Promise<Running> => {
+// The site's settings: the public host and the console host. `sharedUrls` names one host twice.
+interface Urls {
+  readonly site: string;
+  readonly console: string;
+}
+const twoHosts: Urls = { site, console: consoleUrl };
+const sharedUrls: Urls = { site, console: site };
+
+const startSite = async (api: FakeApi | undefined, apiInternalUrl: string, urls: Urls = twoHosts): Promise<Running> => {
   const port = await freePort();
   const child = spawn(process.execPath, [nextBin, 'start', '-p', String(port), '-H', '127.0.0.1'], {
     cwd: webRoot,
@@ -42,9 +52,9 @@ const startSite = async (api: FakeApi | undefined, apiInternalUrl: string): Prom
       NODE_ENV: 'production',
       NEXT_DIST_DIR: distDir,
       NEXT_TELEMETRY_DISABLED: '1',
-      SITE_URL: site,
+      SITE_URL: urls.site,
       PAY_URL: pay,
-      CONSOLE_URL: consoleUrl,
+      CONSOLE_URL: urls.console,
       API_URL: 'https://api.example.com',
       API_INTERNAL_URL: apiInternalUrl,
       PAY_INTERNAL_URL: apiInternalUrl,
@@ -71,6 +81,7 @@ let full: Running;
 let empty: Running;
 let down: Running;
 let refused: Running;
+let shared: Running;
 
 beforeAll(async () => {
   const build = spawnSync(process.execPath, [nextBin, 'build'], {
@@ -82,16 +93,17 @@ beforeAll(async () => {
     throw new Error(`next build failed:\n${build.stdout}\n${build.stderr}`);
 
   const [fullApi, emptyApi, downApi] = await Promise.all([startFakeApi('full'), startFakeApi('empty'), startFakeApi('down')]);
-  [full, empty, down, refused] = await Promise.all([
+  [full, empty, down, refused, shared] = await Promise.all([
     startSite(fullApi, fullApi.url),
     startSite(emptyApi, emptyApi.url),
     startSite(downApi, downApi.url),
     startSite(undefined, await refusedUrl()),
+    startSite(fullApi, fullApi.url, sharedUrls),
   ]);
 }, 300_000);
 
 afterAll(async () => {
-  for (const running of [full, empty, down, refused]) {
+  for (const running of [full, empty, down, refused, shared]) {
     running?.process.kill();
     await running?.api?.close();
   }
@@ -102,6 +114,26 @@ const get = async (at: Running, path: string, init?: RequestInit) => {
 
   return { response, body: await response.text() };
 };
+
+interface Reply {
+  readonly status: number;
+  readonly headers: Readonly<Record<string, string | string[] | undefined>>;
+  readonly body: string;
+}
+
+// A request with the `Host` header of a host the site answers to: the server listens on one address, and each host is a header
+const getAs = (at: Running, host: string, path: string, headers: Readonly<Record<string, string>> = {}): Promise<Reply> => new Promise((resolve, reject) => {
+  const url = new URL(at.url);
+  const outgoing = request({ host: url.hostname, port: url.port, path, method: 'GET', headers: { host, ...headers } }, incoming => {
+    const chunks: Buffer[] = [];
+    incoming.on('data', (chunk: Buffer) => chunks.push(chunk));
+    incoming.on('end', () => resolve({ status: incoming.statusCode ?? 0, headers: incoming.headers, body: Buffer.concat(chunks).toString('utf8') }));
+  });
+  outgoing.on('error', reject);
+  outgoing.end();
+});
+const publicHost = new URL(site).host;
+const consoleHost = new URL(consoleUrl).host;
 
 const sectionTexts = [
   'For AI agents and the people who run them',
@@ -1172,5 +1204,647 @@ describe('the pages that are not built yet', () => {
   it('answers 404 for a page with no route, and 200 for /_/health', async () => {
     expect((await get(full, '/no-such-page')).response.status).toBe(404);
     expect(await (await fetch(`${full.url}/_/health`)).json()).toEqual({ status: 'ok' });
+  });
+});
+
+describe('the files for agents', () => {
+  it.each([
+    ['/llms.txt', 'text/plain; charset=utf-8'],
+    ['/llms-full.txt', 'text/plain; charset=utf-8'],
+    ['/skills/anyfare-buyer/SKILL.md', 'text/markdown; charset=utf-8'],
+  ])('serves %s as %s, built for the hosts it runs with', async (path, type) => {
+    const { response, body } = await get(full, path);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe(type);
+    expect(body).toContain('https://api.example.com');
+    expect(body).toContain(pay);
+    expect(body).not.toMatch(/bakingbad\.dev|Proposal|Designed|topup-link/);
+  });
+
+  it('serves the skill with its front matter, and answers 404 for a skill that is not there', async () => {
+    expect((await get(full, '/skills/anyfare-buyer/SKILL.md')).body.startsWith('---\nname: anyfare-buyer\ndescription: ')).toBe(true);
+    expect((await get(full, '/skills/nothing/SKILL.md')).response.status).toBe(404);
+  });
+
+  it('serves the same files with the API down: they read no API', async () => {
+    for (const path of ['/llms.txt', '/llms-full.txt', '/skills/anyfare-buyer/SKILL.md', '/agents', '/agents.md'])
+      expect((await get(down, path)).response.status, path).toBe(200);
+  });
+});
+
+describe('the For agents page', () => {
+  it('answers 200 with every section, the prompt for this site, and the real llms.txt', async () => {
+    const { response, body } = await get(full, '/agents');
+    const { platformGuide } = await import('../../src/agents/guide');
+    const { readSettings } = await import('../../src/config');
+    const text = textOf(body);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/html');
+    for (const part of ['Your agent can do all of this without you.', 'Give this to your agent', 'Start in four requests', 'The API', 'llms.txt', 'Read https://anyfare.example.com/llms.txt and follow it.', 'Sign up', 'Make a payment key with limits', 'Top up with any token', 'Call any paid API'])
+      expect(text).toContain(part);
+    // The file's text in the code block, as the file is served
+    const served = (await get(full, '/llms.txt')).body;
+    expect(served).toBe(platformGuide(readSettings({ SITE_URL: site, PAY_URL: pay, CONSOLE_URL: consoleUrl, API_URL: 'https://api.example.com' })));
+    expect(body.replace(/<script[\s\S]*?<\/script>/g, '')).toContain('# Anyfare');
+    expect(body).toMatch(/<title>For agents \| Anyfare<\/title>/);
+    expect(body).toContain('property="og:title" content="For agents | Anyfare"');
+    expect(body).toContain('rel="canonical" href="https://anyfare.example.com/agents"');
+    expect(body).toContain('aria-current="page"');
+  });
+
+  it('lists every endpoint of the shared list, marked Built, and nothing unbuilt', async () => {
+    const { endpoints, endpointUrl } = await import('../../src/agents/endpoints');
+    const { body } = await get(full, '/agents');
+    const text = textOfHtml(body);
+
+    for (const endpoint of endpoints) {
+      const host = new URL(endpoint.host === 'pay' ? pay : 'https://api.example.com').host;
+      expect(text, endpoint.path).toContain(`${host}${endpoint.path}`);
+      expect(endpointUrl({ apiUrl: 'https://api.example.com', payUrl: pay }, endpoint)).toContain(host);
+    }
+    expect(body.match(/>Built</g)!.length).toBeGreaterThanOrEqual(endpoints.length);
+    expect(text).not.toMatch(/Proposal|Designed|topup-link|Andrew/);
+  });
+
+  it('shows every curl of the four requests as written', async () => {
+    const { startSteps } = await import('../../src/agents/content');
+    const { curlById } = await import('../../src/agents/examples');
+    const hosts = { siteUrl: site, apiUrl: 'https://api.example.com', payUrl: pay, consoleUrl };
+    const { body } = await get(full, '/agents');
+    const text = body.replace(/<script[\s\S]*?<\/script>/g, '').replace(/<[^>]+>/g, '').replace(/&quot;/g, '"').replace(/&#x27;/g, '\'').replace(/&amp;/g, '&');
+
+    for (const step of startSteps(hosts))
+      expect(text, step.example).toContain(curlById(hosts, step.example));
+  });
+
+  it('keeps the header\'s For agents item active and leads every link somewhere', async () => {
+    const { body } = await get(full, '/agents');
+    const links = [...body.replace(/<script[\s\S]*?<\/script>/g, '').matchAll(/<a [^>]*?href="([^"]*)"/g)].map(match => match[1]!.replaceAll('&amp;', '&'));
+
+    // No bare `#`, no empty link; a fragment names an element of the page
+    for (const link of links) {
+      expect(link, 'an empty link').not.toBe('');
+      expect(link, 'a link to nowhere').not.toBe('#');
+      if (link.startsWith('#'))
+        expect(body, link).toContain(`id="${link.slice(1)}"`);
+    }
+    expect(body).toMatch(/<a [^>]*aria-current="page"[^>]*>For agents<\/a>/);
+    const internal = [...new Set(links.filter(link => link.startsWith('/') || link.startsWith(site)).map(link => link.startsWith(site) ? link.slice(site.length) : link))];
+    const cards = ['/llms.txt', '/skills/anyfare-buyer/SKILL.md', '/agents.md', '/llms-full.txt', '/services.md', '/calls.md', '/services', '/calls', '/'];
+    for (const card of cards)
+      expect(internal, card).toContain(card);
+    for (const link of internal) {
+      const target = link.split('#')[0]!;
+      expect((await get(full, target === '' ? '/agents' : target)).response.status, link).toBe(200);
+    }
+    // The cards for the OpenAPI files go to the API host and the pay host
+    expect(links).toContain('https://api.example.com/openapi.json');
+    expect(links).toContain(`${pay}/openapi.json`);
+  });
+
+  it('has a footer whose agent links lead to the files and the table', async () => {
+    const { body } = await get(full, '/');
+    const footer = body.slice(body.indexOf('<footer'));
+
+    expect(footer).toContain('href="/llms.txt"');
+    expect(footer).toContain('href="/agents#api"');
+    expect(footer).toContain('href="/skills/anyfare-buyer/SKILL.md"');
+    expect(footer).not.toMatch(/href="#"/);
+    expect(body).toContain('href="/llms.txt"');
+    expect((await get(full, '/agents')).body).toContain('id="api"');
+  });
+
+  it('has a Markdown twin, by .md and by Accept, with its link in the page\'s headers', async () => {
+    const twin = await get(full, '/agents.md');
+    const byAccept = await get(full, '/agents', { headers: { accept: 'text/markdown' } });
+    const page = await get(full, '/agents');
+
+    expect(twin.response.status).toBe(200);
+    expect(twin.response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(twin.body).toContain('# For agents');
+    expect(twin.body).toContain('## The API');
+    expect(twin.body).toContain('```sh\ncurl ');
+    expect(byAccept.body).toBe(twin.body);
+    expect(page.response.headers.get('link')).toContain('/agents.md');
+    expect(page.response.headers.get('vary')).toContain('Accept');
+  });
+
+  it('shows the Agent view with the endpoint list as its JSON and the three files as its requests', async () => {
+    const { agentsJson, agentsRequests } = await import('../../src/agents/content');
+    const { endpoints } = await import('../../src/agents/endpoints');
+    const hosts = { siteUrl: site, apiUrl: 'https://api.example.com', payUrl: pay, consoleUrl };
+
+    expect(agentsJson(hosts).endpoints).toHaveLength(endpoints.length);
+    expect(agentsRequests(hosts).map(request => request.url)).toEqual([`${site}/llms.txt`, `${site}/llms-full.txt`, `${site}/skills/anyfare-buyer/SKILL.md`]);
+  });
+});
+
+// What crawlers and agents find first: robots.txt, the sitemap, the icons and the share image, the links on
+// every page, the structured data and the API catalog.
+
+const publicPages = ['/', '/services', '/services/api.example.com', '/calls', '/calls/pay_sample0000', '/agents', '/check?url=api.example.com/v1/sample/quotes/latest'];
+
+describe('the Link header and the link tags of every public page', () => {
+  it.each(publicPages)('has the twin, llms.txt and the OpenAPI file, and keeps Next.js\'s own hints, on %s', async path => {
+    const { response, body } = await get(full, path);
+    const header = response.headers.get('link')!;
+
+    expect(response.status).toBe(200);
+    expect(header).toMatch(/<https:\/\/anyfare\.example\.com\/[^>]*>; rel="alternate"; type="text\/markdown"/);
+    expect(header).toContain(`<${site}/llms.txt>; rel="alternate"; type="text/plain"; title="llms.txt: a guide for agents"`);
+    expect(header).toContain('<https://api.example.com/openapi.json>; rel="service-desc"; type="application/openapi+json"');
+    // Next.js's own hint is still there: the proxy adds its header and doesn't replace theirs
+    expect(header).toContain('rel=preconnect');
+    expect(body).toMatch(/<link rel="alternate" type="text\/markdown" href="https:\/\/anyfare\.example\.com\/[^"]*"\/>/);
+    expect(body).toContain(`<link rel="alternate" href="${site}/llms.txt" type="text/plain" title="llms.txt: a guide for agents"/>`);
+    expect(body).toContain('<link rel="service-desc" href="https://api.example.com/openapi.json" type="application/openapi+json"/>');
+    expect(header + body).not.toContain('127.0.0.1');
+  });
+
+  it('keeps the stylesheet preload hints Next.js adds on the home page', async () => {
+    const { response } = await get(full, '/');
+
+    expect(response.headers.get('link')).toMatch(/rel=preload; as="style"/);
+  });
+
+  it('has a canonical URL on the site, and for the check page one without the query', async () => {
+    expect((await get(full, '/services')).body).toContain(`<link rel="canonical" href="${site}/services"/>`);
+    expect((await get(full, '/check?url=api.example.com/v1/sample/quotes/latest')).body).toContain(`<link rel="canonical" href="${site}/check"/>`);
+  });
+
+  it('has Open Graph and Twitter tags with the page\'s own title and the share image', async () => {
+    for (const path of publicPages) {
+      const { body } = await get(full, path);
+
+      expect(body, path).toMatch(/<meta property="og:image" content="https:\/\/anyfare\.example\.com\/opengraph-image[^"]*"\/>/);
+      expect(body, path).toMatch(/<meta name="twitter:image" content="https:\/\/anyfare\.example\.com\/opengraph-image[^"]*"\/>/);
+      expect(body, path).toContain('<meta name="twitter:card" content="summary_large_image"/>');
+      expect(body, path).toMatch(/<meta property="og:title" content="[^"]+"\/>/);
+      expect(body, path).toMatch(/<meta name="twitter:description" content="[^"]+"\/>/);
+    }
+  });
+});
+
+describe('robots.txt and the sitemap', () => {
+  it('lets everyone read the pages, keeps out only what is not a page, and names the sitemap on the site\'s host', async () => {
+    const { response, body } = await get(full, '/robots.txt');
+
+    expect(response.headers.get('content-type')).toContain('text/plain');
+    expect(body).toContain('User-Agent: *\nAllow: /\nDisallow: /_/\nDisallow: /md/\nDisallow: /dev/');
+    expect(body).toContain(`Sitemap: ${site}/sitemap.xml`);
+    expect(body).not.toMatch(/GPTBot|ClaudeBot|CCBot/);
+    expect(body).not.toContain('bakingbad.dev');
+  });
+
+  it('lists the pages and the first 100 services, with absolute URLs on the site', async () => {
+    const { response, body } = await get(full, '/sitemap.xml');
+    const urls = [...body.matchAll(/<loc>([^<]+)<\/loc>/g)].map(match => match[1]!);
+
+    expect(response.headers.get('content-type')).toContain('xml');
+    expect(urls.slice(0, 4)).toEqual([site, `${site}/services`, `${site}/calls`, `${site}/agents`]);
+    expect(urls).toContain(`${site}/services/api.example.com`);
+    expect(urls.every(url => url.startsWith(site))).toBe(true);
+    expect(urls.some(url => url.includes('/check') || url.includes('/calls/') || url.includes('127.0.0.1'))).toBe(false);
+    expect(full.api!.requests.some(request => request.path === '/v1/services?sort=calls&page=1&size=100')).toBe(true);
+  });
+
+  it.each([['empty', () => empty], ['down', () => down], ['refused', () => refused]])('lists the four pages alone when the API is %s, and answers 200', async (_name, running) => {
+    const { response, body } = await get(running(), '/sitemap.xml');
+
+    expect(response.status).toBe(200);
+    expect([...body.matchAll(/<loc>/g)]).toHaveLength(4);
+  });
+});
+
+const pngSize = (bytes: Uint8Array): { width: number; height: number } => {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  expect([...bytes.slice(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  return { width: view.getUint32(16), height: view.getUint32(20) };
+};
+
+describe('the icons and the share image', () => {
+  it.each([
+    ['/opengraph-image', 1200, 630],
+    ['/icon', 64, 64],
+    ['/apple-icon', 180, 180],
+  ])('serves %s as a PNG of the right size', async (path, width, height) => {
+    const response = await fetch(`${full.url}${path}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('image/png');
+    expect(pngSize(bytes)).toEqual({ width, height });
+  });
+
+  it('serves the logo as an SVG', async () => {
+    const { response, body } = await get(full, '/logo.svg');
+
+    expect(response.headers.get('content-type')).toBe('image/svg+xml');
+    expect(body).toContain('<svg');
+    expect(body).toContain('#00ec97');
+  });
+
+  it('serves the share image the page names, from the same site', async () => {
+    const { body } = await get(full, '/');
+    const url = new URL(/<meta property="og:image" content="([^"]+)"/.exec(body)![1]!);
+    const response = await fetch(`${full.url}${url.pathname}${url.search}`);
+
+    expect(url.origin).toBe(site);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('image/png');
+  });
+});
+
+describe('the structured data', () => {
+  it('is on the home page only: an Organization and a WebSite, as data blocks the policy allows', async () => {
+    const home = await get(full, '/');
+    const blocks = [...home.body.matchAll(/<script type="application\/ld\+json"[^>]*>([^<]*)<\/script>/g)].map(match => JSON.parse(match[1]!) as Record<string, unknown>);
+    const nonce = /'nonce-([^']+)'/.exec(home.response.headers.get('content-security-policy')!)![1]!;
+
+    expect(blocks.map(block => block['@type'])).toEqual(['Organization', 'WebSite']);
+    expect(blocks[0]).toMatchObject({ name: 'Anyfare', url: site, logo: `${site}/logo.svg`, sameAs: ['https://x.com/3route_io', 'https://github.com/baking-bad/anyfare'] });
+    expect(home.body).toContain(`<script type="application/ld+json" nonce="${nonce}">`);
+    for (const path of publicPages.slice(1))
+      expect((await get(full, path)).body, path).not.toContain('application/ld+json');
+  });
+});
+
+describe('the well-known files', () => {
+  it('serves no file this site has no standard for', async () => {
+    for (const path of ['/.well-known/api-catalog', '/.well-known/ai-plugin.json', '/.well-known/agent.json', '/.well-known/agent-card.json', '/.well-known/mcp.json', '/.well-known/x402', '/.well-known/security.txt', '/.well-known/llms.txt'])
+      expect((await get(full, path)).response.status, path).toBe(404);
+  });
+});
+
+describe('the 404 page and the pages that stay hidden', () => {
+  it('answers 404 with noindex for a path and for a thing that doesn\'t exist', async () => {
+    for (const path of ['/nothing', '/services/unknown.example.com', '/calls/pay_missing000']) {
+      const { response, body } = await get(full, path);
+
+      expect(response.status, path).toBe(404);
+      expect(body, path).toMatch(/<meta name="robots" content="noindex/);
+    }
+  });
+
+  it('answers 404 for the component gallery in production', async () => {
+    expect((await get(full, '/dev/components')).response.status).toBe(404);
+  });
+});
+
+describe('every link of the public pages and files', () => {
+  const textFiles = ['/llms.txt', '/llms-full.txt', '/skills/anyfare-buyer/SKILL.md', '/index.md', '/agents.md', '/services.md', '/calls.md'];
+
+  // An internal link maps to the running site; anything else is external
+  const internalPath = (value: string, base: string): string | undefined => {
+    let url: URL;
+    try {
+      url = new URL(value, base);
+    }
+    catch {
+      throw new Error(`not a URL: ${value} (in ${base})`);
+    }
+    if (url.origin === site)
+      return `${url.pathname}${url.search}`;
+    // The console host's links are checked against the console host's answers
+    if (url.origin === consoleUrl)
+      return `console:${url.pathname}${url.search}`;
+
+    return url.origin === new URL(base).origin ? `${url.pathname}${url.search}` : undefined;
+  };
+
+  it('answers 200 for every internal href and src, and no link is # or empty', async () => {
+    const external = new Set<string>();
+    const internal = new Set<string>();
+    const sources: { readonly from: string; readonly values: string[] }[] = [];
+    for (const path of publicPages) {
+      const { body } = await get(full, path);
+      sources.push({ from: path, values: [...body.matchAll(/\s(?:href|src)="([^"]*)"/g)].map(match => match[1]!.replace(/&amp;/g, '&')) });
+    }
+    for (const path of textFiles) {
+      const { response, body } = await get(full, path);
+      expect(response.status, path).toBe(200);
+      const values = [...body.matchAll(/https?:\/\/[^\s)>"'`\]|]+/g)].map(match => match[0].replace(/[.,;:]+$/, '')).filter(value => !/[<{]/.test(value) && !/^https?:\/\/$/.test(value));
+      sources.push({ from: path, values: [...values, ...[...body.matchAll(/\]\((\/[^)\s]*)\)/g)].map(match => match[1]!)] });
+    }
+
+    for (const { from, values } of sources) {
+      for (const value of values) {
+        expect(value.trim(), `${from} has an empty link`).not.toBe('');
+        expect(value, `${from} has a # link`).not.toBe('#');
+        if (/^(mailto:|tel:|data:|javascript:)/.test(value)) {
+          external.add(value);
+          continue;
+        }
+        if (value.startsWith('#'))
+          continue;
+        const path = internalPath(value, `${full.url}${from}`);
+        if (path === undefined)
+          external.add(value);
+        else
+          internal.add(path.split('#')[0]!);
+      }
+    }
+
+    const failures: string[] = [];
+    for (const path of [...internal].sort()) {
+      const onConsole = path.startsWith('console:');
+      const answer = await getAs(full, onConsole ? consoleHost : publicHost, onConsole ? path.slice('console:'.length) : path, { accept: 'text/html,*/*' });
+      if (answer.status !== 200)
+        failures.push(`${path} answered ${answer.status}`);
+    }
+    // The links into the console are among them, and each answers on the console host
+    expect([...internal].filter(path => path.startsWith('console:'))).toEqual(expect.arrayContaining(['console:/', 'console:/topup', 'console:/keys']));
+
+    // External links are listed, not fetched
+    console.info(`external links (${external.size}):\n${[...external].sort().join('\n')}`);
+    expect(internal.size).toBeGreaterThan(20);
+    expect(failures).toEqual([]);
+  }, 120_000);
+});
+
+describe('the two hosts of one app', () => {
+  const consolePaths = ['/', '/topup', '/keys', '/payments', '/settings', '/signin'];
+  const publicFiles = ['/llms.txt', '/llms-full.txt', '/skills/anyfare-buyer/SKILL.md', '/index.md', '/agents.md', '/services.md', '/calls.md', '/sitemap.xml', '/opengraph-image'];
+  const marker = 'The console is being built';
+
+  it.each([...publicPages.slice(1), ...publicFiles])('serves %s on the public host and answers 404 on the console host', async path => {
+    const onSite = await getAs(full, publicHost, path);
+    const onConsole = await getAs(full, consoleHost, path);
+
+    expect(onSite.status).toBe(200);
+    expect(onConsole.status).toBe(404);
+    expect(onConsole.body).not.toContain(marker);
+    expect(onConsole.body).not.toContain('Paid through Anyfare');
+    expect(onConsole.headers['x-robots-tag']).toBe('noindex, nofollow');
+  });
+
+  it.each(consolePaths)('serves the Console page at %s on the console host, and never on the public host', async path => {
+    const onConsole = await getAs(full, consoleHost, path);
+    const onSite = await getAs(full, publicHost, path);
+
+    expect(onConsole.status).toBe(200);
+    expect(onConsole.headers['content-type']).toContain('text/html');
+    expect(onConsole.body).toContain(marker);
+    expect(onSite.body).not.toContain(marker);
+    if (path !== '/')
+      expect(onSite.status).toBe(404);
+  });
+
+  it('serves the Console page for any query on a console path, and no console page under any other path', async () => {
+    expect((await getAs(full, consoleHost, '/keys?x=1&y=2')).status).toBe(200);
+    expect((await getAs(full, consoleHost, '/signin?next=/topup')).body).toContain(marker);
+    for (const path of ['/console', '/_/console', '/_/console?amount=5', '/topup/x', '/keys/1', '/Topup', '/index.md', '/services/']) {
+      for (const host of [consoleHost, publicHost])
+        expect((await getAs(full, host, path)).body, `${host}${path}`).not.toContain(marker);
+    }
+    expect((await getAs(full, consoleHost, '/console')).status).toBe(404);
+    expect((await getAs(full, consoleHost, '/_/console')).status).toBe(404);
+    expect((await getAs(full, publicHost, '/_/console')).status).toBe(404);
+  });
+
+  it('serves the home page, not the Console page, on the public host at /, and a Markdown request there is not a console request', async () => {
+    const home = await getAs(full, publicHost, '/');
+    const markdown = await getAs(full, consoleHost, '/', { accept: 'text/markdown' });
+
+    expect(home.body).toContain('Pay any paid API from the chain you are on.');
+    expect(markdown.status).toBe(200);
+    expect(String(markdown.headers['content-type'])).toContain('text/html');
+    expect(markdown.body).toContain(marker);
+  });
+
+  it('answers any other host, a forged name or an address, as the public host', async () => {
+    for (const host of ['203.0.113.7', 'evil.test', `127.0.0.1:${new URL(full.url).port}`, 'console.example.com.evil.test']) {
+      expect((await getAs(full, host, '/services')).status, host).toBe(200);
+      expect((await getAs(full, host, '/topup')).status, host).toBe(404);
+      expect((await getAs(full, host, '/')).body, host).not.toContain(marker);
+    }
+  });
+
+  it('reads the host from the Host header with a port, upper case or a trailing dot', async () => {
+    for (const host of [consoleHost.toUpperCase(), `${consoleHost}.`, `${consoleHost}:443`])
+      expect((await getAs(full, host, '/topup')).body, host).toContain(marker);
+    expect((await getAs(full, `${publicHost}:8443`, '/services')).status).toBe(200);
+  });
+
+  it('ignores X-Forwarded-Host, and a header or a value the visitor sends to choose a host', async () => {
+    const forged = await getAs(full, publicHost, '/topup', { 'x-forwarded-host': consoleHost, 'x-surface': 'console', 'x-surface-pass': 'guess', forwarded: `host=${consoleHost}` });
+    const reverse = await getAs(full, consoleHost, '/services', { 'x-forwarded-host': publicHost, 'x-surface': 'site' });
+    const pageHeaders = await getAs(full, consoleHost, '/', { 'x-surface': 'site', 'x-surface-pass': 'guess' });
+
+    expect(forged.status).toBe(404);
+    expect(forged.body).not.toContain(marker);
+    expect(reverse.status).toBe(404);
+    expect(pageHeaders.body).toContain(marker);
+    // The header and the footer lead to the public site, as the console host's page does
+    expect(pageHeaders.body).toContain(`href="${site}/services"`);
+  });
+
+  it.each([['/_/health'], ['/icon'], ['/apple-icon'], ['/logo.svg'], ['/robots.txt']])('serves %s on both hosts', async path => {
+    for (const host of [publicHost, consoleHost])
+      expect((await getAs(full, host, path)).status, `${host}${path}`).toBe(200);
+  });
+
+  it('answers the health check with the same body on both hosts', async () => {
+    for (const host of [publicHost, consoleHost])
+      expect(JSON.parse((await getAs(full, host, '/_/health')).body)).toEqual({ status: 'ok' });
+  });
+
+  it('serves the framework\'s static files on the console host', async () => {
+    const home = await getAs(full, consoleHost, '/');
+    const asset = /(?:href|src)="(\/_next\/static\/[^"]+)"/.exec(home.body)![1]!;
+
+    expect((await getAs(full, consoleHost, asset)).status).toBe(200);
+  });
+
+  it('sends the policy and the other headers on both hosts, with a nonce on every script', async () => {
+    for (const [host, path] of [[publicHost, '/'], [consoleHost, '/'], [consoleHost, '/topup'], [consoleHost, '/services']] as const) {
+      const reply = await getAs(full, host, path);
+      const policy = String(reply.headers['content-security-policy']);
+
+      expect(policy, `${host}${path}`).toContain('default-src \'self\'');
+      expect(policy, `${host}${path}`).toContain('frame-ancestors \'none\'');
+      expect(reply.headers['x-content-type-options']).toBe('nosniff');
+      expect(reply.headers['x-frame-options']).toBe('DENY');
+      expect(reply.headers['referrer-policy']).toBe('no-referrer');
+      expect(reply.headers['permissions-policy']).toContain('camera=()');
+      const nonce = /'nonce-([^']+)'/.exec(policy)![1]!;
+      if (reply.status === 200)
+        expect([...reply.body.matchAll(/<script\b[^>]*>/g)].every(script => script[0].includes(`nonce="${nonce}"`))).toBe(true);
+    }
+  });
+
+  it('lets the console host\'s browser talk only to the site and the API', async () => {
+    const onConsole = String((await getAs(full, consoleHost, '/')).headers['content-security-policy']);
+    const onSite = String((await getAs(full, publicHost, '/')).headers['content-security-policy']);
+
+    expect(onConsole).toContain('connect-src \'self\' https://api.example.com;');
+    expect(onConsole).not.toContain('pay.example.com');
+    expect(onSite).toContain('connect-src \'self\' https://api.example.com https://pay.example.com');
+  });
+
+  it('has a robots.txt for each host: the console\'s disallows everything', async () => {
+    const onConsole = await getAs(full, consoleHost, '/robots.txt');
+    const onSite = await getAs(full, publicHost, '/robots.txt');
+
+    expect(onConsole.body.trim()).toBe('User-Agent: *\nDisallow: /');
+    expect(onConsole.body).not.toContain('Sitemap');
+    expect(onSite.body).toContain('Allow: /');
+    expect(onSite.body).toContain(`Sitemap: ${site}/sitemap.xml`);
+  });
+
+  it('has noindex, a canonical URL on the console host, no Link header and no link to a twin on the Console page', async () => {
+    for (const path of ['/', '/topup?amount=5']) {
+      const { headers, body } = await getAs(full, consoleHost, path);
+
+      expect(body).toMatch(/<meta name="robots" content="noindex, nofollow"\/>/);
+      expect(body).toContain(`<link rel="canonical" href="${consoleUrl}"/>`);
+      expect(body).toContain('<title>The console is being built | Anyfare</title>');
+      expect(body).not.toContain('text/markdown');
+      expect(body).not.toContain('llms.txt: a guide for agents');
+      expect(body).not.toContain('og:image');
+      expect(headers['link'] ?? '').not.toContain('text/markdown');
+      expect(headers['link'] ?? '').not.toContain('llms.txt');
+      expect(headers['x-robots-tag']).toBe('noindex, nofollow');
+    }
+    expect((await getAs(full, publicHost, '/')).body).not.toContain('noindex');
+  });
+
+  it('shows the five plans, the three cards with real commands and copy buttons, and the two links', async () => {
+    const { body } = await getAs(full, consoleHost, '/');
+    const text = textOfHtml(body);
+
+    for (const line of ['See the balance', 'Make and limit payment keys', 'Top up with any token', 'See every payment', 'Rotate the master key'])
+      expect(text).toContain(line);
+    expect(text).toContain('What works today');
+    expect(text).toContain('curl -X POST https://api.example.com/v1/accounts');
+    expect(text).toContain('curl -X POST https://api.example.com/v1/keys');
+    expect(text).toContain('-d \'{"label":"research","dailyBudget":"5","maxPrice":"0.05"}\'');
+    expect(text).toContain('curl -X POST https://api.example.com/v1/topups');
+    expect([...body.matchAll(/>Copy</g)]).toHaveLength(3);
+    expect(body).toContain(`href="${site}/agents"`);
+    expect(body).toContain(`href="${site}/llms.txt"`);
+    expect(body).not.toMatch(/<form|<input|<textarea|type="password"/);
+    expect(body).not.toMatch(/afm_live_|af_live_/);
+  });
+
+  it('has a header and a footer that lead to the public site, and a Console button that is the current page', async () => {
+    const { body } = await getAs(full, consoleHost, '/');
+    const hrefs = [...body.matchAll(/\shref="([^"]*)"/g)].map(match => match[1]!);
+
+    for (const path of ['/services', '/calls', '/agents', '/agents#api', '/llms.txt', '/skills/anyfare-buyer/SKILL.md'])
+      expect(hrefs).toContain(`${site}${path}`);
+    expect(hrefs).toContain(`${site}/`);
+    expect(body).toMatch(new RegExp(`<a class="btn primary sm" href="${consoleUrl}" aria-current="page">Console</a>`));
+    expect(body).not.toContain('aria-pressed');
+    // No link of the page leads to a page of the console host that is not the Console page, and none is relative but the files
+    expect(hrefs.filter(href => href.startsWith('/') && !href.startsWith('/_next/') && !/^\/(icon|apple-icon)\?/.test(href))).toEqual([]);
+  });
+
+  it('shows the public header with a Console button that is not the current page on the public host', async () => {
+    const { body } = await getAs(full, publicHost, '/services');
+
+    expect(body).toContain(`<a class="btn primary sm" href="${consoleUrl}">Console</a>`);
+    expect(body).toContain('aria-pressed');
+  });
+
+  it('says the same on the 404 page of the console host, with its header on the public site', async () => {
+    const reply = await getAs(full, consoleHost, '/services');
+
+    expect(reply.status).toBe(404);
+    expect(reply.body).toMatch(/<meta name="robots" content="noindex/);
+    expect(reply.body).toContain(`href="${site}/services"`);
+  });
+
+  describe('the amount of a top-up link', () => {
+    const amountOf = async (query: string): Promise<string | undefined> => {
+      const { status, body } = await getAs(full, consoleHost, `/topup${query}`);
+      expect(status).toBe(200);
+
+      return /"amount":"([^"]*)"/.exec(textOfHtml(body))?.[1];
+    };
+
+    it.each([
+      ['?amount=5', '5'], ['?amount=5.50', '5.5'], ['?amount=1', '1'], ['?amount=10000', '10000'], ['?amount=5&amount=9', '5'],
+    ])('uses the amount in %s: %s', async (query, expected) => {
+      expect(await amountOf(query)).toBe(expected);
+    });
+
+    it.each(['?amount=0', '?amount=-1', '?amount=1e9', '?amount=%3Cscript%3E', '?amount=5abc', '?amount=10000.01', '?amount=', '?amount=5.555', '?amount=%205', '?other=5', ''])('ignores %s and shows the example\'s own amount', async query => {
+      expect(await amountOf(query)).toBe('20');
+    });
+
+    it('uses an amount on /topup only', async () => {
+      for (const path of ['/', '/keys', '/payments', '/settings', '/signin']) {
+        const { body } = await getAs(full, consoleHost, `${path}?amount=5`);
+
+        expect(/"amount":"([^"]*)"/.exec(textOfHtml(body))?.[1], path).toBe('20');
+      }
+    });
+
+    it('shows no text of the query anywhere in the page, and no unescaped markup', async () => {
+      const mark = 'ZZQ9marker';
+      const queries = [`?amount=5&note=${mark}`, `?${mark}=1`, `?amount=${mark}`, '?amount=%3Cscript%3Ealert(1)%3C/script%3E&x=%22%3E%3Cimg%20src=x%3E'];
+      for (const query of queries) {
+        const { body, headers } = await getAs(full, consoleHost, `/topup${query}`);
+
+        expect(body, query).not.toContain(mark);
+        expect(body, query).not.toContain('alert(1)');
+        expect(body, query).not.toContain('<img src=x');
+        expect(JSON.stringify(headers), query).not.toContain(mark);
+      }
+      expect((await getAs(full, consoleHost, `/keys/${mark}`)).body).not.toContain(mark);
+      expect((await getAs(full, consoleHost, `/services/${mark}`)).body).not.toContain(mark);
+    });
+  });
+
+  it('shows the example with the amount and keeps the others, whatever the query', async () => {
+    const { body } = await getAs(full, consoleHost, '/topup?amount=7.25');
+    const text = textOfHtml(body);
+
+    expect(text).toContain('"amount":"7.25"');
+    expect(text).toContain('"dailyBudget":"5"');
+    expect(text).not.toContain('"amount":"20"');
+  });
+});
+
+describe('one host for the site and the console', () => {
+  const sharedHost = new URL(site).host;
+  const marker = 'The console is being built';
+
+  it('serves every public page, and the Console page at /console and at the console paths', async () => {
+    for (const path of ['/', '/services', '/agents', '/llms.txt', '/sitemap.xml', '/robots.txt'])
+      expect((await getAs(shared, sharedHost, path)).status, path).toBe(200);
+    expect((await getAs(shared, sharedHost, '/')).body).not.toContain(marker);
+    for (const path of ['/console', '/console?x=1', '/topup', '/keys', '/payments', '/settings', '/signin'])
+      expect((await getAs(shared, sharedHost, path)).body, path).toContain(marker);
+    expect((await getAs(shared, sharedHost, '/_/console')).status).toBe(404);
+    expect((await getAs(shared, sharedHost, '/console/x')).status).toBe(404);
+  });
+
+  it('serves the same whatever the Host is', async () => {
+    expect((await getAs(shared, 'evil.test', '/services')).status).toBe(200);
+    expect((await getAs(shared, 'evil.test', '/topup')).body).toContain(marker);
+  });
+
+  it('leads its links into the console to /console and to the console paths, and each answers 200', async () => {
+    const home = await getAs(shared, sharedHost, '/');
+
+    expect(home.body).toContain(`href="${site}/console"`);
+    expect(home.body).toContain(`href="${site}/topup"`);
+    expect(home.body).toContain(`href="${site}/keys"`);
+    expect(home.body).not.toMatch(new RegExp(`<a [^>]*href="${site}"[^>]*>(Console|Open the console)`));
+  });
+
+  it('keeps the public pages\' header and footer, and the page\'s canonical URL at /console', async () => {
+    const reply = await getAs(shared, sharedHost, '/topup?amount=5');
+
+    expect(reply.body).toContain(`<link rel="canonical" href="${site}/console"/>`);
+    expect(reply.body).toContain('href="/services"');
+    expect(textOfHtml(reply.body)).toContain('"amount":"5"');
+    expect(reply.headers['x-robots-tag']).toBeUndefined();
+    expect(reply.body).toMatch(/<meta name="robots" content="noindex, nofollow"\/>/);
   });
 });
