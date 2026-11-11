@@ -4,7 +4,7 @@ import { createServer as createNetServer, type AddressInfo, type Server as NetSe
 import { decodePaymentSignatureHeader } from '@x402/core/http';
 import type { PaymentRequirements } from '@x402/core/types';
 import { createClientNearSigner, decodeSignedDelegateB64, NEAR_RPC_URLS, parseFtTransferArgs } from '@x402/near';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createLogger, Secret, type MicroUsd } from '@anyfare/common';
 import { RedisNotReadyError } from '@anyfare/db';
@@ -200,8 +200,12 @@ describe('the NEAR hot wallet\'s client signer', () => {
 
     expect(failure).toBeInstanceOf(NearRpcError);
     expect(failure.message).toBe('The NEAR RPC answered HTTP 503');
-    expect(rpc.calls.filter(call => call.method === 'block')).toHaveLength(2);
-    expect(rpc.calls.filter(call => call.method === 'query')).toHaveLength(2);
+    // The two reads run side by side, and the sign fails with the first to fail twice: on a loaded machine the
+    // other one's repeat goes out a moment after
+    await vi.waitFor(() => {
+      expect(rpc.calls.filter(call => call.method === 'block')).toHaveLength(2);
+      expect(rpc.calls.filter(call => call.method === 'query')).toHaveLength(2);
+    }, { timeout: 2_000, interval: 20 });
   });
 
   it('fails within its budget on an RPC that never answers, with no repeat that couldn\'t end in time, and on one that refuses connections', async () => {
