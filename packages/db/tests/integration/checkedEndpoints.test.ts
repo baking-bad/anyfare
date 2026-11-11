@@ -11,7 +11,8 @@ import { createFakeClock, createTestDatabase, type FakeClock, type TestDatabase 
 
 import {
   checkedHosts, checkedRegistrationTimeoutMs, createPostgres, createRoutingRepository, evictCheckedHost, maxCheckedEndpoints, maxCheckedEndpointsPerHost,
-  maxCheckedHosts, maxCheckedHostsPerParent, maxRoutedEndpointsPerHost, migrationsFolder, routedEndpoints, statsServices, type EndpointInput,
+  maxCheckedHostLabels, maxCheckedHosts, maxCheckedHostsPerParent, maxRoutedEndpointsPerHost, migrationsFolder, paidHosts, routedEndpoints, statsAnswers,
+  statsServices, type EndpointInput,
 } from '../../src/index.js';
 
 // Endpoints a payable check lists, beside those of paid calls: the checked pool of hosts the count doesn't
@@ -81,7 +82,7 @@ describe('a payable check\'s endpoint', () => {
 
     expect(await routing.registerEndpoint({ host, path: '/v1/pools', lastPrice: 1_100n, checked: checkedBy() })).toBe('created');
     clock.advance(61_000);
-    expect(await routing.registerEndpoint({ host, path: '/v1/pools', lastPrice: 1_200n, checked: checkedBy(false, 'POST') })).toBe('exists');
+    expect(await routing.registerEndpoint({ host, path: '/v1/pools', lastPrice: 1_200n, checked: checkedBy(true, 'POST') })).toBe('exists');
 
     expect(await rowsOf(host)).toEqual([{
       host, path: '/v1/pools', feeBps: null, lastPrice: 1_200n, createdAt: new Date(noon), status: 'checked', checkedAt: new Date(Date.parse(noon) + 61_000),
@@ -97,7 +98,7 @@ describe('a payable check\'s endpoint', () => {
     clock.set(noon);
   });
 
-  it('adds a host to the pool only when the check\'s client was counted for a new one', async () => {
+  it('lists or refreshes a host of the pool only when the check\'s client was counted for it, new to the pool or not', async () => {
     const routing = createRoutingRepository({ db: database.db, clock });
     const host = hostOf();
 
@@ -105,8 +106,10 @@ describe('a payable check\'s endpoint', () => {
     expect(await rowsOf(host)).toEqual([]);
     expect(await summaryOf(host)).toBeUndefined();
     expect(await routing.registerEndpoint({ host, path: '/v1/a', checked: checkedBy(true) })).toBe('created');
-    // A host in the pool already takes more without a count
-    expect(await routing.registerEndpoint({ host, path: '/v1/b', checked: checkedBy(false) })).toBe('created');
+    // In the pool already, it takes nothing more without a count: neither a new endpoint nor a refresh
+    expect(await routing.registerEndpoint({ host, path: '/v1/b', checked: checkedBy(false) })).toBe('limited');
+    expect(await routing.registerEndpoint({ host, path: '/v1/a', checked: checkedBy(false) })).toBe('limited');
+    expect(await routing.registerEndpoint({ host, path: '/v1/b', checked: checkedBy(true) })).toBe('created');
     expect((await summaryOf(host))?.checkedEndpoints).toBe(2);
   });
 
@@ -436,15 +439,146 @@ describe('the endpoint\'s listing as the proxy reads it', () => {
     const host = hostOf();
     const at = (pathname: string, of = host) => routing.endpointListing(of, pathname, { timeoutMs: 1_000 });
 
-    expect(await at('/v1/a')).toEqual({ status: undefined, hostListed: false, checkedEndpoints: 0, stored: false, checkedHost: false, blocked: false });
+    expect(await at('/v1/a')).toEqual({ status: undefined, hostListed: false, checkedEndpoints: 0, stored: false, checkedHost: false, blocked: false, paidCapped: false });
     await routing.registerEndpoint({ host, path: '/v1/a', checked: checkedBy() });
     await routing.registerEndpoint({ host, path: '/v1/paid' });
     await store(host);
 
-    expect(await at('/v1/a')).toEqual({ status: 'checked', hostListed: true, checkedEndpoints: 1, stored: true, checkedHost: true, blocked: false });
+    expect(await at('/v1/a')).toEqual({ status: 'checked', hostListed: true, checkedEndpoints: 1, stored: true, checkedHost: true, blocked: false, paidCapped: false });
     expect(await at('/v1/paid')).toMatchObject({ status: 'paid' });
     await routing.block({ host: host.split('.').slice(-2).join('.'), reason: 'abuse' });
     expect(await at('/v1/other')).toMatchObject({ status: undefined, hostListed: true, blocked: true });
+  });
+});
+
+describe('a host the count stored and dropped', () => {
+  it('holds the pool\'s caps and its client\'s charge at every check once it is in the pool: 100 hosts of one parent shrink to 20, and no honest host goes', async () => {
+    await empty();
+    const routing = createRoutingRepository({ db: database.db, clock });
+    // An honest pool of 900, each of a parent of its own, checked before the crowd
+    const honest = await fill('honest', 900);
+    // 100 hosts of one parent domain, each checked while the count stored it, as one ranked paid call each does: no cap, no charge then
+    const crowd = Array.from({ length: 100 }, (_, index) => `h${String(index).padStart(3, '0')}.crowd-parent.dev`);
+    clock.set(new Date(Date.parse(noon) + 3_600_000));
+    for (const host of crowd) {
+      await store(host);
+      clock.advance(1_000);
+      expect(await routing.registerEndpoint({ host, path: '/v1/x', lastPrice: 1_000n, checked: checkedBy(false) })).toBe('created');
+    }
+    // The count drops them: the pool holds 1,000, 100 of them of one parent
+    await database.db.delete(statsServices).where(sql`${statsServices.host} like '%.crowd-parent.dev'`);
+    expect(await pooled()).toBe(1_000);
+    const before = await summaryOf(crowd[99]!);
+
+    // A free refresh: none
+    clock.advance(1_000);
+    expect(await routing.registerEndpoint({ host: crowd[99]!, path: '/v1/x', checked: checkedBy(false) })).toBe('limited');
+    expect(await summaryOf(crowd[99]!)).toEqual(before);
+    // An honest newcomer at the pool's cap: one of the crowd past its parent's 20 leaves, no honest host
+    clock.advance(1_000);
+    expect(await routing.registerEndpoint({ host: 'api.newcomer.dev', path: '/v1/x', checked: checkedBy(true) })).toBe('created');
+    expect(await summaryOf(honest[0]!)).toBeDefined();
+    expect(await summaryOf(crowd[0]!)).toBeUndefined();
+    // The crowd refreshed, each check counted: its parent's cap holds it to 20, and every honest host stays
+    for (const host of crowd) {
+      clock.advance(1_000);
+      expect(await routing.registerEndpoint({ host, path: '/v1/x', checked: checkedBy(true) }), host).toMatch(/^(?:created|exists)$/);
+    }
+    const left = await database.db.$count(checkedHosts, eq(checkedHosts.parent, 'crowd-parent.dev'));
+    const kept = await database.db.$count(checkedHosts, sql`${checkedHosts.host} like 'api.honest-%'`);
+
+    expect([left, kept]).toEqual([maxCheckedHostsPerParent, 900]);
+    expect(await summaryOf('api.newcomer.dev')).toBeDefined();
+    clock.set(noon);
+  });
+});
+
+describe('the paid hosts\' rows', () => {
+  const paidRowOf = async (host: string) => (await database.db.select().from(paidHosts).where(eq(paidHosts.host, host)))[0];
+
+  it('count each listed endpoint once, paid or checked, with the lowest last quote among them, and follow every registration and eviction', async () => {
+    const routing = createRoutingRepository({ db: database.db, clock });
+    const host = hostOf();
+    const at = (seconds: number) => new Date(Date.parse(noon) + seconds * 1_000);
+
+    expect(await routing.registerEndpoint({ host, path: '/v1/a', lastPrice: 2_000n, checked: checkedBy() })).toBe('created');
+    // Listed only by checks: no row
+    expect(await paidRowOf(host)).toBeUndefined();
+    clock.set(at(10));
+    expect(await routing.registerEndpoint({ host, path: '/v1/paid', lastPrice: 3_000n })).toBe('created');
+    expect(await paidRowOf(host)).toEqual({ host, registeredAt: at(10), listedAt: new Date(noon), paidEndpoints: 1, endpoints: 2, priceFrom: 2_000n });
+    // A checked one becomes paid: counted once
+    clock.set(at(20));
+    expect(await routing.registerEndpoint({ host, path: '/v1/a', lastPrice: 1_500n })).toBe('exists');
+    expect(await paidRowOf(host)).toMatchObject({ registeredAt: at(20), paidEndpoints: 2, endpoints: 2, priceFrom: 1_500n });
+    // A check registers it too: the list shows the most recently registered first
+    clock.set(at(30));
+    expect(await routing.registerEndpoint({ host, path: '/v1/c', lastPrice: 900n, checked: checkedBy() })).toBe('created');
+    expect(await paidRowOf(host)).toMatchObject({ registeredAt: at(30), paidEndpoints: 2, endpoints: 3, priceFrom: 900n });
+    // Pushed out of the pool: its checked endpoint goes, its paid ones stay
+    expect(await database.db.transaction(async tx => evictCheckedHost(tx, host))).toBe(true);
+    expect(await paidRowOf(host)).toMatchObject({ registeredAt: at(30), paidEndpoints: 2, endpoints: 2, priceFrom: 1_500n });
+    clock.set(noon);
+  });
+
+  it('are made by the workers for hosts registered before the table, a batch at a time, never over a registration\'s', async () => {
+    const routing = createRoutingRepository({ db: database.db, clock });
+    const hosts = ['older-a.backfill.dev', 'older-b.backfill.dev', 'older-c.backfill.dev'];
+    await database.db.insert(routedEndpoints).values([
+      ...hosts.map((host, index) => ({ host, path: '/v1/paid', lastPrice: 1_000n + BigInt(index), createdAt: new Date(Date.parse(noon) - (index + 1) * 60_000), status: 'paid' as const })),
+      { host: hosts[0]!, path: '/v1/checked', lastPrice: 500n, createdAt: new Date(Date.parse(noon) - 3_600_000), status: 'checked' as const, checkedAt: new Date(noon) },
+      // Listed only by a check: no paid host
+      { host: 'checked-only.backfill.dev', path: '/v1/x', createdAt: new Date(noon), status: 'checked' as const, checkedAt: new Date(noon) },
+    ]);
+    await database.db.delete(paidHosts).where(sql`${paidHosts.host} like '%.backfill.dev'`);
+    await database.db.delete(statsAnswers).where(eq(statsAnswers.key, 'backfill:paid_hosts'));
+    // One a registration made a row for already keeps it
+    await database.db.insert(paidHosts).values({ host: hosts[2]!, registeredAt: new Date(noon), listedAt: new Date(noon), paidEndpoints: 1, endpoints: 1, priceFrom: 7n });
+    const made: number[] = [];
+    for (let run = 0; run < 1_000; run += 1) {
+      const result = await routing.backfillPaidHosts({ batch: 50, timeoutMs: 5_000 });
+      made.push(result.hosts);
+      if (result.done)
+        break;
+    }
+
+    expect(await paidRowOf(hosts[0]!)).toEqual({
+      host: hosts[0], registeredAt: new Date(Date.parse(noon) - 60_000), listedAt: new Date(Date.parse(noon) - 3_600_000), paidEndpoints: 1, endpoints: 2, priceFrom: 500n,
+    });
+    expect(await paidRowOf(hosts[1]!)).toMatchObject({ endpoints: 1, priceFrom: 1_001n });
+    expect(await paidRowOf(hosts[2]!)).toMatchObject({ priceFrom: 7n });
+    expect(await paidRowOf('checked-only.backfill.dev')).toBeUndefined();
+    // Done: a later run reads its mark alone
+    expect(await routing.backfillPaidHosts({ batch: 50, timeoutMs: 5_000 })).toEqual({ hosts: 0, done: true });
+    expect(made.at(-1)).toBeLessThan(50);
+  });
+});
+
+describe('what a check lists of a host', () => {
+  it('is no new endpoint of a host at its 1,000 paid ones, while one listed already still refreshes', async () => {
+    const routing = createRoutingRepository({ db: database.db, clock });
+    const host = 'paid-cap.capped-checks.dev';
+    await database.db.insert(routedEndpoints).values(Array.from({ length: maxRoutedEndpointsPerHost }, (_, index) => ({
+      host, path: `/v1/item/${index}`, lastPrice: 1_000n, createdAt: new Date(Date.parse(noon) - index * 1_000), status: 'paid' as const,
+    })));
+
+    expect((await routing.endpointListing(host, '/v1/new', { timeoutMs: 1_000 })).paidCapped).toBe(true);
+    expect(await routing.registerEndpoint({ host, path: '/v1/new', checked: checkedBy() })).toBe('capped');
+    expect(await routing.registerEndpoint({ host, path: '/v1/item/7', checked: checkedBy() })).toBe('exists');
+    expect(await database.db.$count(routedEndpoints, eq(routedEndpoints.host, host))).toBe(maxRoutedEndpointsPerHost);
+    await database.db.delete(routedEndpoints).where(eq(routedEndpoints.host, host));
+  });
+
+  it('is nothing of a name of more than 8 labels, while a paid call still registers one', async () => {
+    const routing = createRoutingRepository({ db: database.db, clock });
+    const named = (labels: number) => Array.from({ length: labels - 1 }, (_, index) => `l${index}`).concat('labels.dev').join('.');
+    const [eight, nine] = [named(maxCheckedHostLabels - 1), named(maxCheckedHostLabels)];
+
+    expect(eight.split('.')).toHaveLength(maxCheckedHostLabels);
+    expect(await routing.registerEndpoint({ host: `${eight}:8443`, path: '/v1/x', checked: checkedBy() })).toBe('created');
+    expect(await routing.registerEndpoint({ host: nine, path: '/v1/x', checked: checkedBy() })).toBe('capped');
+    expect(await rowsOf(nine)).toEqual([]);
+    expect(await routing.registerEndpoint({ host: nine, path: '/v1/x', lastPrice: 1_000n })).toBe('created');
   });
 });
 
@@ -467,14 +601,29 @@ describe('the routed endpoints\' key', () => {
   });
 });
 
-describe('the migration that lists checked endpoints', () => {
-  it('marks every endpoint registered before it paid', async () => {
+describe('the migrations that list checked endpoints and paid hosts', () => {
+  it('make a table of their own for the paid hosts, and the catalog\'s index of the whole key, taking no exclusive lock of another table', async () => {
+    const journal = JSON.parse(await readFile(path.join(migrationsFolder, 'meta', '_journal.json'), 'utf8')) as { entries: { tag: string }[] };
+    const last = journal.entries.at(-1)!.tag;
+    const text = await readFile(path.join(migrationsFolder, `${last}.sql`), 'utf8');
+    const statements = text.split('--> statement-breakpoint').map(part => part.trim()).filter(part => part !== '');
+
+    expect(last).toMatch(/^0011_paid_hosts$/);
+    // An index built takes a share lock of its table: writes wait for it, reads don't. The old index's drop, the one
+    // exclusive lock, comes last, so it is held only to the commit.
+    expect(statements.map(statement => statement.split('(', 1)[0]!.trim())).toEqual([
+      'CREATE TABLE "paid_hosts"', 'CREATE INDEX "paid_hosts_registered_idx" ON "paid_hosts" USING btree',
+      'CREATE INDEX "routed_endpoints_catalog_idx" ON "routed_endpoints" USING btree', 'DROP INDEX "routed_endpoints_created_idx";',
+    ]);
+  });
+
+  it('mark every endpoint registered before them paid', async () => {
     const fresh = await createTestDatabase({ migrate: false });
     try {
       const journal = JSON.parse(await readFile(path.join(migrationsFolder, 'meta', '_journal.json'), 'utf8')) as { entries: { tag: string }[] };
       const tags = journal.entries.map(entry => entry.tag);
       const at = tags.findIndex(tag => tag.endsWith('_checked_endpoints'));
-      expect(at).toBe(tags.length - 1);
+      expect(at).toBe(tags.length - 2);
       expect((await readdir(migrationsFolder)).filter(name => name.endsWith('.sql'))).toHaveLength(tags.length);
       const apply = async (tag: string): Promise<void> => {
         const text = await readFile(path.join(migrationsFolder, `${tag}.sql`), 'utf8');

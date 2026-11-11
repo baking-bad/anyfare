@@ -44,8 +44,10 @@ export const routedEndpoints = pgTable('routed_endpoints', {
   index('routed_endpoints_checked_order_idx').on(table.checkedAt).where(sql`status = 'checked'`),
   // The few endpoints an operator set a fee on: a host with one is never pushed out
   index('routed_endpoints_fee_idx').on(table.host).where(sql`fee_bps is not null`),
-  // The catalog's order, oldest first
-  index('routed_endpoints_created_idx').on(table.createdAt),
+  // The catalog's order, oldest first, by the whole key: a page goes on from the last endpoint of the one before, and
+  // reads only its own rows, however many share a time. An index of the time alone would take its place in the
+  // planner's choice and read every row of one time: there is none.
+  index('routed_endpoints_catalog_idx').on(table.createdAt, table.host, table.path),
   check('routed_endpoints_fee_check', sql`${table.feeBps} is null or (${table.feeBps} >= 0 and ${table.feeBps} <= 10000)`),
   check('routed_endpoints_key_check', sql`octet_length(${table.host}) <= 259 and octet_length(${table.path}) <= 2048`),
   check('routed_endpoints_status_check', sql`${table.status} in ('paid', 'checked')`),
@@ -79,6 +81,30 @@ export const checkedHosts = pgTable('checked_hosts', {
   index('checked_hosts_parent_idx').on(table.parent, table.checkedAt),
   check('checked_hosts_host_check', sql`octet_length(${table.host}) <= 259`),
   check('checked_hosts_endpoints_check', sql`${table.checkedEndpoints} >= 0`),
+]);
+
+/**
+ * Every host with an endpoint a paid call reached, one row each: when it was last registered, and its listed
+ * endpoints, paid or checked, each once, with the lowest last quote among them. The public list reads the hosts
+ * the count doesn't store from here, the most recently registered first, never the routed endpoints whole.
+ * Written only under the host's registration lock; a row is made at the host's next registration, by a paid call
+ * or a check, or by the workers for a host registered before this table.
+ */
+export const paidHosts = pgTable('paid_hosts', {
+  // A validated host name, with its port when it has one
+  host: text('host').primaryKey(),
+  // When a paid call or a check last registered one of its endpoints, and its first endpoint's time, paid or checked
+  registeredAt: timestamp('registered_at', { withTimezone: true, precision: 3 }).notNull(),
+  listedAt: timestamp('listed_at', { withTimezone: true, precision: 3 }).notNull(),
+  // Its paid endpoints, at most 1,000, and its listed ones in all, at most 1,020
+  paidEndpoints: integer('paid_endpoints').notNull(),
+  endpoints: integer('endpoints').notNull(),
+  // In micro-USD. Null: no listed endpoint has a quote.
+  priceFrom: bigint('price_from', { mode: 'bigint' }),
+}, table => [
+  // The most recently registered first
+  index('paid_hosts_registered_idx').on(table.registeredAt, table.host),
+  check('paid_hosts_host_check', sql`octet_length(${table.host}) <= 259`),
 ]);
 
 // Hosts the proxy refuses to route to

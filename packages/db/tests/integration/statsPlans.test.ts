@@ -253,12 +253,14 @@ describe('the plans of the public numbers', () => {
     await store.platform();
     await store.top('30d');
     await store.live();
-    await store.servicePage('api-1.example.com', '30d');
+    await store.servicePage('api-1.example.com', '30d', { timeoutMs: 2_000, maxPaid: 1_000 });
     await store.endpoint('api-1.example.com', '/v1/endpoint/1');
     const sent = statements();
 
     expect(sent).toHaveLength(5);
-    expect(queries.filter(query => /^\s*(begin|commit)/i.test(query.sql))).toEqual([]);
+    // Only the page's, a public read of what checks listed, in a transaction of its own for its timeout
+    expect(queries.filter(query => /^\s*(begin|commit)/i.test(query.sql)).map(query => query.sql.trim())).toEqual(['begin', 'commit']);
+    expect(queries.filter(query => /statement_timeout/.test(query.sql)).map(query => query.sql)).toEqual(['set local statement_timeout = 2000']);
     // The platform's answers are a table of at most 11 rows: a page and an endpoint go by their keys
     const [, , , page, endpoint] = await plans();
     expect(page, page).toContain('stats_service_pages_pkey');

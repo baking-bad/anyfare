@@ -1,14 +1,14 @@
 import { and, asc, count, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 
 import type { Clock } from '@anyfare/common';
-import { hostSuffixes, parentDomainOf, type PaymentStatus } from '@anyfare/core';
+import { hostLabels, hostSuffixes, parentDomainOf, type PaymentStatus } from '@anyfare/core';
 
 import { withTransaction, type DatabaseExecutor, type DatabaseTransaction } from './postgres.js';
 import { payments } from './schema/ledger.js';
 import {
-  checkedHosts, hostBlocklist, routedEndpoints, signatures, targetPayments, type CheckedMethod, type RoutedEndpointStatus, type TargetPaymentStatus,
+  checkedHosts, hostBlocklist, paidHosts, routedEndpoints, signatures, targetPayments, type CheckedMethod, type RoutedEndpointStatus, type TargetPaymentStatus,
 } from './schema/routing.js';
-import { statsServices } from './schema/stats.js';
+import { statsAnswers, statsServices } from './schema/stats.js';
 
 // At most this many endpoints reached by a paid call per host
 export const maxRoutedEndpointsPerHost = 1_000;
@@ -24,6 +24,8 @@ export const maxCheckedHosts = 1_000;
 export const maxCheckedHostsPerParent = 20;
 // The longest path a check lists: the longest the public reads list, of printable ASCII
 export const maxCheckedPathLength = 512;
+// The most labels a host name a check lists has: a longer one is checked, never listed
+export const maxCheckedHostLabels = 8;
 // Each statement of a check's registration gives up after this, waiting for a lock included
 export const checkedRegistrationTimeoutMs = 2_000;
 
@@ -71,6 +73,8 @@ export interface EndpointListing {
   readonly checkedHost: boolean;
   // The blocklist names the host or a parent domain of it
   readonly blocked: boolean;
+  // The host holds its 1,000 paid endpoints: a check lists no new one of it
+  readonly paidCapped: boolean;
 }
 
 export interface RoutingRepositoryOptions {
@@ -125,6 +129,11 @@ export interface RoutingRepository {
   registerEndpoint(input: EndpointInput): Promise<EndpointRegistration>;
   /** Whether an endpoint and its host are listed, in one statement giving up after `timeoutMs`. */
   endpointListing(host: string, path: string, options: { readonly timeoutMs: number }): Promise<EndpointListing>;
+  /**
+   * Makes the paid hosts' rows of up to `batch` hosts registered before that table, the next by name from where the
+   * last call stopped, and says when every host has one. Each call is one statement giving up after `timeoutMs`.
+   */
+  backfillPaidHosts(input: { readonly batch: number; readonly timeoutMs: number }): Promise<{ readonly hosts: number; readonly done: boolean }>;
   /** The endpoint's own fee in basis points, if it has one. */
   endpointFee(host: string, path: string): Promise<number | undefined>;
   /** Sets an endpoint's own fee, or back to the default with null. Returns whether the endpoint exists. */
@@ -204,6 +213,24 @@ const keepCheckedHost = async (tx: DatabaseTransaction, host: string, change: { 
 };
 
 /**
+ * The host's row of paid hosts, under its lock, from its routed endpoints, at most 1,020 by its key: its listed
+ * endpoints, paid or checked, each once, the lowest last quote among them, its first endpoint's time, and when a
+ * paid call or a check last registered one of them, `registeredAt` or its newest paid one's registration. None for a
+ * host with no paid endpoint.
+ */
+const keepPaidHost = async (tx: DatabaseTransaction, host: string, registeredAt?: Date): Promise<void> => {
+  // Fenced, so they come by the key: as bare aggregates the planner may walk another index of every endpoint
+  await tx.execute(sql`insert into ${paidHosts} (host, registered_at, listed_at, paid_endpoints, endpoints, price_from)
+    select ${host}, coalesce(${registeredAt ?? null}::timestamptz, max(rows.created_at) filter (where rows.status = 'paid')), min(rows.created_at),
+      (count(*) filter (where rows.status = 'paid'))::int, count(*)::int, min(rows.last_price)
+    from (select ${routedEndpoints.status} as status, ${routedEndpoints.createdAt} as created_at, ${routedEndpoints.lastPrice} as last_price from ${routedEndpoints}
+      where ${routedEndpoints.host} = ${host} offset 0) as rows
+    having count(*) filter (where rows.status = 'paid') > 0
+    on conflict (host) do update set registered_at = greatest(${paidHosts.registeredAt}, excluded.registered_at), listed_at = excluded.listed_at,
+      paid_endpoints = excluded.paid_endpoints, endpoints = excluded.endpoints, price_from = excluded.price_from`);
+};
+
+/**
  * Pushes a host out of the checked pool, once its lock is held: its row, only while it is still in the pool (the
  * count doesn't store it) and no endpoint of it has a fee, and only then its endpoints listed only by a check.
  * Returns whether it went. Exported for its test.
@@ -214,25 +241,36 @@ export const evictCheckedHost = async (tx: DatabaseTransaction, host: string): P
   if (rows.length === 0)
     return false;
   await tx.delete(routedEndpoints).where(and(ofHost(host, 'checked'), isNull(routedEndpoints.feeBps)));
+  await keepPaidHost(tx, host);
 
   return true;
 };
 
 /**
  * Pushes out of the checked pool the hosts checked longest ago, of one parent domain or of all, until it holds
- * fewer than `cap`, or `maxEvictionsPerRegistration` went: only hosts the count doesn't store, with no fee,
- * whose own lock is free. False: no room.
+ * fewer than `cap` besides `own`, or `maxEvictionsPerRegistration` went: only hosts the count doesn't store,
+ * with no fee, whose own lock is free. Of all, those past the 20 checked most recently of their parent domain go
+ * first: the list never shows them, and a pool the count left over its caps so sheds them before any other host.
+ * False: no room.
  */
-const makeRoomIn = async (tx: DatabaseTransaction, cap: number, parent: string | undefined): Promise<boolean> => {
+const makeRoomIn = async (tx: DatabaseTransaction, cap: number, parent: string | undefined, own: string): Promise<boolean> => {
   const ofParent = parent === undefined ? sql`true` : sql`${checkedHosts.parent} = ${parent}`;
-  const inPool = sql`${ofParent} and not ${storedSql(sql`${checkedHosts.host}`)}`;
+  const inPool = sql`${ofParent} and ${checkedHosts.host} <> ${own} and not ${storedSql(sql`${checkedHosts.host}`)}`;
   const { rows: [counted] } = await tx.execute<{ count: number }>(sql`select count(*)::int as count from ${checkedHosts} where ${inPool}`);
   let needed = Math.min((counted?.count ?? 0) - cap + 1, maxEvictionsPerRegistration);
   if (needed <= 0)
     return true;
-  const { rows: oldest } = await tx.execute<{ host: string }>(sql`select ${checkedHosts.host} as host from ${checkedHosts}
-    where ${inPool} and not ${feeSetSql(sql`${checkedHosts.host}`)}
-    order by ${checkedHosts.checkedAt}, ${checkedHosts.host} limit ${needed + evictionCandidates}`);
+  // The pool is at most its 1,000 and what the count left over them: one sort of it, by parent domain
+  const { rows: oldest } = await tx.execute<{ host: string }>(parent === undefined
+    ? sql`select pool.host from (
+        select ${checkedHosts.host} as host, ${checkedHosts.checkedAt} as checked_at,
+          row_number() over (partition by ${checkedHosts.parent} order by ${checkedHosts.checkedAt} desc, ${checkedHosts.host}) as rank
+        from ${checkedHosts} where ${inPool}
+      ) as pool where not ${feeSetSql(sql`pool.host`)}
+      order by (pool.rank > ${maxCheckedHostsPerParent}) desc, pool.checked_at, pool.host limit ${needed + evictionCandidates}`
+    : sql`select ${checkedHosts.host} as host from ${checkedHosts}
+      where ${inPool} and not ${feeSetSql(sql`${checkedHosts.host}`)}
+      order by ${checkedHosts.checkedAt}, ${checkedHosts.host} limit ${needed + evictionCandidates}`);
   for (const { host } of oldest) {
     if (needed <= 0)
       break;
@@ -267,6 +305,7 @@ const makeEndpointRoom = async (tx: DatabaseTransaction, own: string): Promise<b
       continue;
     excess -= 1;
     await keepCheckedHost(tx, host, {});
+    await keepPaidHost(tx, host);
     await tx.delete(checkedHosts).where(and(eq(checkedHosts.host, host), eq(checkedHosts.checkedEndpoints, 0), isNull(checkedHosts.paidAt)));
   }
 
@@ -274,40 +313,37 @@ const makeEndpointRoom = async (tx: DatabaseTransaction, own: string): Promise<b
 };
 
 /**
- * A billable call's endpoint: a new one up to the cap of paid ones, and a checked one becomes paid. At the paid
- * cap a checked one can't, so it leaves the routed endpoints, as any paid one past the cap is never in them:
- * its calls still count it once, as paid.
+ * A billable call's endpoint, under its host's lock: a new one up to the cap of paid ones, and a checked one
+ * becomes paid. At the paid cap a checked one can't, so it leaves the routed endpoints, as any paid one past the cap
+ * is never in them: its calls still count it once, as paid. The host's row of paid hosts follows.
  */
 const registerPaid = async (tx: DatabaseTransaction, { host, path, lastPrice }: EndpointInput, now: Date): Promise<EndpointRegistration> => {
   const priced = lastPrice === undefined ? {} : { lastPrice };
-  const [known] = await tx.select({ status: routedEndpoints.status }).from(routedEndpoints).where(endpointIs(host, path));
-  if (known?.status === 'paid') {
+  await lockHost(tx, host);
+  const [existing] = await tx.select({ status: routedEndpoints.status }).from(routedEndpoints).where(endpointIs(host, path));
+  if (existing?.status === 'paid') {
     if (lastPrice !== undefined)
       await tx.update(routedEndpoints).set(priced).where(endpointIs(host, path));
+    await keepPaidHost(tx, host);
 
     return 'exists';
   }
-  await lockHost(tx, host);
-  // Read again under the lock: a check may have listed it meanwhile
-  const [existing] = await tx.select({ status: routedEndpoints.status }).from(routedEndpoints).where(endpointIs(host, path));
   const [paid] = await tx.select({ count: count() }).from(routedEndpoints).where(ofHost(host, 'paid'));
   const room = (paid?.count ?? 0) < maxRoutedEndpointsPerHost;
   if (existing) {
-    if (existing.status === 'checked' && room) {
+    if (room) {
       // It becomes paid, and stops counting against the checked ones
       await tx.update(routedEndpoints).set({ ...priced, status: 'paid' }).where(endpointIs(host, path));
       await keepCheckedHost(tx, host, { paidAt: now });
-    }
-    else if (existing.status === 'checked') {
-      await tx.delete(routedEndpoints).where(and(endpointIs(host, path), eq(routedEndpoints.status, 'checked'), isNull(routedEndpoints.feeBps)));
-      await keepCheckedHost(tx, host, {});
+      await keepPaidHost(tx, host, now);
 
-      return 'capped';
+      return 'exists';
     }
-    else if (lastPrice !== undefined)
-      await tx.update(routedEndpoints).set(priced).where(endpointIs(host, path));
+    await tx.delete(routedEndpoints).where(and(endpointIs(host, path), eq(routedEndpoints.status, 'checked'), isNull(routedEndpoints.feeBps)));
+    await keepCheckedHost(tx, host, {});
+    await keepPaidHost(tx, host);
 
-    return 'exists';
+    return 'capped';
   }
   if (!room)
     return 'capped';
@@ -315,55 +351,65 @@ const registerPaid = async (tx: DatabaseTransaction, { host, path, lastPrice }: 
   if (created.length === 0)
     return 'exists';
   await tx.update(checkedHosts).set({ paidAt: sql`coalesce(${checkedHosts.paidAt}, ${now}::timestamptz)` }).where(eq(checkedHosts.host, host));
+  await keepPaidHost(tx, host, now);
 
   return 'created';
 };
 
+// Whether the host holds its 1,000 paid endpoints: in order, so routed_endpoints_listed_idx serves it
+const paidCappedSql = (host: string): SQL => sql`(select count(*) from (select 1 from ${routedEndpoints} where ${ofHost(host, 'paid')}
+  order by ${routedEndpoints.createdAt} limit ${maxRoutedEndpointsPerHost}) as paid) >= ${maxRoutedEndpointsPerHost}`;
+
 /**
  * A payable check's endpoint: its time, method and price for one listed, else a new one within the caps. A host
- * the count doesn't store and no check reached before joins the checked pool: only when its client was counted
- * for a new host, and within the pool's caps. Each statement, a wait for a lock included, gives up after
- * `checkedRegistrationTimeoutMs`: anyone can send one.
+ * the count doesn't store is in the checked pool whenever a check registers it, new or listed already: only when
+ * its client was counted for it, and within the pool's caps, all of them but it. A host at its paid cap takes no
+ * new checked endpoint, nor a host of more than `maxCheckedHostLabels` labels any. Each statement, a wait for a lock
+ * included, gives up after `checkedRegistrationTimeoutMs`: anyone can send one.
  */
 const registerChecked = async (
   tx: DatabaseTransaction, { host, path, lastPrice, checked }: EndpointInput & { readonly checked: NonNullable<EndpointInput['checked']> }, now: Date,
 ): Promise<EndpointRegistration> => {
+  // A name of more labels is checked, never listed: each public read of a listed host stays short
+  if (hostLabels(host) > maxCheckedHostLabels)
+    return 'capped';
   await tx.execute(sql.raw(`set local statement_timeout = ${checkedRegistrationTimeoutMs}`));
   await lockHost(tx, host);
-  const { rows: [state] } = await tx.execute<{ status: RoutedEndpointStatus | null; checked: number; stored: boolean; known: boolean; blocked: boolean }>(sql`select
+  const { rows: [state] } = await tx.execute<{ status: RoutedEndpointStatus | null; checked: number; stored: boolean; blocked: boolean; paid_capped: boolean }>(sql`select
     (select ${routedEndpoints.status} from ${routedEndpoints} where ${endpointIs(host, path)}) as status,
     (select count(*)::int from ${routedEndpoints} where ${ofHost(host, 'checked')}) as checked,
     ${storedSql(sql`${host}::text`)} as stored,
-    exists (select 1 from ${checkedHosts} where ${checkedHosts.host} = ${host}) as known,
-    ${blockedForListingSql(host)} as blocked`);
+    ${blockedForListingSql(host)} as blocked,
+    ${paidCappedSql(host)} as paid_capped`);
   if (state?.blocked)
     return 'blocked';
   const existing = state?.status ?? undefined;
-  const joinsPool = !state?.stored && !state?.known;
-  if (existing === undefined && (state?.checked ?? 0) >= maxCheckedEndpointsPerHost)
+  const pooled = !state?.stored;
+  if (existing === undefined && ((state?.checked ?? 0) >= maxCheckedEndpointsPerHost || state?.paid_capped))
     return 'capped';
-  if (joinsPool && !checked.mayAddHost)
+  if (pooled && !checked.mayAddHost)
     return 'limited';
-  if (joinsPool || existing === undefined) {
+  if (pooled || existing === undefined) {
     await lockCaps(tx);
-    if (joinsPool && !(await makeRoomIn(tx, maxCheckedHostsPerParent, parentDomainOf(host)) && await makeRoomIn(tx, maxCheckedHosts, undefined)))
+    if (pooled && !(await makeRoomIn(tx, maxCheckedHostsPerParent, parentDomainOf(host), host) && await makeRoomIn(tx, maxCheckedHosts, undefined, host)))
       return 'capped';
     if (existing === undefined && !await makeEndpointRoom(tx, host))
       return 'capped';
   }
-  if (existing !== undefined) {
+  if (existing !== undefined)
     await tx.update(routedEndpoints).set({ checkedAt: now, checkMethod: checked.method, ...lastPrice === undefined ? {} : { lastPrice } }).where(endpointIs(host, path));
-    await keepCheckedHost(tx, host, { checkedAt: now });
-
-    return 'exists';
-  }
-  const created = await tx.insert(routedEndpoints).values({
+  const created = existing !== undefined ? [] : await tx.insert(routedEndpoints).values({
     host, path, lastPrice: lastPrice ?? null, createdAt: now, status: 'checked', checkedAt: now, checkMethod: checked.method,
   }).onConflictDoNothing().returning();
   await keepCheckedHost(tx, host, { checkedAt: now });
+  // A check registers a paid host too: the list shows those the count doesn't store the most recently registered first
+  await keepPaidHost(tx, host, now);
 
   return created.length > 0 ? 'created' : 'exists';
 };
+
+// The workers' fill of the paid hosts, for hosts registered before the table: how far it went, under this key
+const backfillKey = 'backfill:paid_hosts';
 
 export const createRoutingRepository = ({ db, clock }: RoutingRepositoryOptions): RoutingRepository => ({
   isBlocked: async host => (await db.select({ host: hostBlocklist.host }).from(hostBlocklist).where(eq(hostBlocklist.host, host))).length > 0,
@@ -388,19 +434,61 @@ export const createRoutingRepository = ({ db, clock }: RoutingRepositoryOptions)
 
       // The endpoint and the host by the key, the host's checked endpoints by their index (at most 20), the
       // count's and the checked hosts' rows and the blocklist's names by their keys
-      return tx.execute<{ status: RoutedEndpointStatus | null; host_listed: boolean; checked: number; stored: boolean; known: boolean; blocked: boolean }>(sql`select
+      return tx.execute<{
+        status: RoutedEndpointStatus | null; host_listed: boolean; checked: number; stored: boolean; known: boolean; blocked: boolean; paid_capped: boolean;
+      }>(sql`select
         (select ${routedEndpoints.status} from ${routedEndpoints} where ${endpointIs(host, path)}) as status,
         ${hostListedSql(host)} as host_listed,
         (select count(*)::int from ${routedEndpoints} where ${ofHost(host, 'checked')}) as checked,
         ${storedSql(sql`${host}::text`)} as stored,
         exists (select 1 from ${checkedHosts} where ${checkedHosts.host} = ${host}) as known,
-        ${blockedForListingSql(host)} as blocked`);
+        ${blockedForListingSql(host)} as blocked,
+        ${paidCappedSql(host)} as paid_capped`);
     });
 
     return {
       status: row?.status ?? undefined, hostListed: row?.host_listed === true, checkedEndpoints: row?.checked ?? 0, stored: row?.stored === true,
-      checkedHost: row?.known === true, blocked: row?.blocked === true,
+      checkedHost: row?.known === true, blocked: row?.blocked === true, paidCapped: row?.paid_capped === true,
     };
+  },
+
+  backfillPaidHosts: async ({ batch, timeoutMs }) => {
+    const { rows: [mark] } = await db.execute<{ answer: { after?: string; done?: boolean } }>(sql`select ${statsAnswers.answer} as answer from ${statsAnswers}
+      where ${statsAnswers.key} = ${backfillKey}`);
+    if (mark?.answer.done)
+      return { hosts: 0, done: true };
+    const after = mark?.answer.after ?? '';
+    // The next hosts with a paid endpoint by routed_endpoints_listed_idx, one probe each, then each one's row from its
+    // endpoints by the key: a host a registration made a row for already keeps it
+    const { rows } = await withTransaction(db, async tx => {
+      await tx.execute(sql.raw(`set local statement_timeout = ${Math.max(1, Math.trunc(timeoutMs))}`));
+
+      return tx.execute<{ host: string }>(sql`with recursive hosts(host) as (
+          (select ${routedEndpoints.host} from ${routedEndpoints} where ${routedEndpoints.status} = 'paid' and ${routedEndpoints.host} > ${after}
+            order by ${routedEndpoints.host} limit 1)
+          union all
+          select (select ${routedEndpoints.host} from ${routedEndpoints} where ${routedEndpoints.status} = 'paid' and ${routedEndpoints.host} > hosts.host
+            order by ${routedEndpoints.host} limit 1) from hosts where hosts.host is not null
+        ),
+        chosen as (select host from hosts where host is not null limit ${batch}),
+        made as (
+          insert into ${paidHosts} (host, registered_at, listed_at, paid_endpoints, endpoints, price_from)
+          select chosen.host, every.registered_at, every.listed_at, every.paid_endpoints, every.endpoints, every.price_from from chosen cross join lateral (
+            select max(rows.created_at) filter (where rows.status = 'paid') as registered_at, min(rows.created_at) as listed_at,
+              (count(*) filter (where rows.status = 'paid'))::int as paid_endpoints, count(*)::int as endpoints, min(rows.last_price) as price_from
+            from (select ${routedEndpoints.status} as status, ${routedEndpoints.createdAt} as created_at, ${routedEndpoints.lastPrice} as last_price
+              from ${routedEndpoints} where ${routedEndpoints.host} = chosen.host offset 0) as rows
+          ) as every
+          on conflict (host) do nothing
+        )
+        select host from chosen order by host`);
+    });
+    const last = rows.at(-1)?.host;
+    const done = rows.length < batch;
+    await db.insert(statsAnswers).values({ key: backfillKey, answer: { after: last ?? after, done }, countedAt: clock.now() })
+      .onConflictDoUpdate({ target: statsAnswers.key, set: { answer: sql`excluded.answer`, countedAt: sql`excluded.counted_at` } });
+
+    return { hosts: rows.length, done };
   },
 
   endpointFee: async (host, path) => {

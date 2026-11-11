@@ -25,7 +25,7 @@ export { createLedger, ledgerAccountIds } from './ledgerRepository.js';
 export type { CreditResult, Ledger, LedgerOptions } from './ledgerRepository.js';
 export {
   checkedRegistrationTimeoutMs, createRoutingRepository, evictCheckedHost, maxCheckedEndpoints, maxCheckedEndpointsPerHost, maxCheckedHosts,
-  maxCheckedHostsPerParent, maxCheckedPathLength, maxEvictionsPerRegistration, maxRoutedEndpointsPerHost,
+  maxCheckedHostLabels, maxCheckedHostsPerParent, maxCheckedPathLength, maxEvictionsPerRegistration, maxRoutedEndpointsPerHost,
 } from './routingRepository.js';
 export type {
   EndpointInput, EndpointListing, EndpointRegistration, NewSignature, NewTargetPayment, RoutingRepository, RoutingRepositoryOptions, TargetPaymentRecord,
@@ -36,13 +36,13 @@ export type { CallFilter, CallLeg, CallPage, CallRecord, CallRepository, CallRep
 export { finalCallStatuses, finishedCallStatuses, freeCallStatuses, paidCallStatuses } from './schema/callStatuses.js';
 export { createStatsRepository } from './statsRepository.js';
 export type {
-  CheckedEndpointRow, CountKind, CountMarks, HostListing, ListedServiceRow, ListedTotals, ServicesSort, StatsCycle, StatsRepository, StatsRepositoryOptions, StoredAnswer,
+  CheckedEndpointRow, CountKind, CountMarks, HostListing, ListedServiceRow, ListedServices, PaidEndpointRow, ServicesSort, StatsCycle, StatsRepository, StatsRepositoryOptions, StoredAnswer,
   StoredEndpointRow,
 } from './statsRepository.js';
 export { createStatsCounter } from './statsCounts.js';
 export type { CallScope, CountedPeriod, StatsCounter, StatsCounterOptions } from './statsCounts.js';
-export { createCatalogRepository } from './catalogRepository.js';
-export type { CatalogRepository, CatalogRepositoryOptions, RoutedCatalogEntry } from './catalogRepository.js';
+export { catalogScanBudget, createCatalogRepository } from './catalogRepository.js';
+export type { CatalogCursor, CatalogRepository, CatalogRepositoryOptions, RoutedCatalogEntry } from './catalogRepository.js';
 export { createTreasuryRepository } from './treasuryRepository.js';
 export type { ReconciliationRunRecord, TreasuryFundingRecord, TreasuryRepository, TreasuryRepositoryOptions, TreasuryTransferRecord } from './treasuryRepository.js';
 export { createTopupRepository } from './topupRepository.js';

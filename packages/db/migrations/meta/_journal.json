@@ -78,6 +78,13 @@
       "when": 1794385556600,
       "tag": "0010_checked_endpoints",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794402282132,
+      "tag": "0011_paid_hosts",
+      "breakpoints": true
     }
   ]
 }

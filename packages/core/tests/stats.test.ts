@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import type { MicroUsd } from '@anyfare/common';
+
 import {
-  buildEndpointAnswer, buildLiveAnswer, buildServicePage, buildStoredEndpoint, composePlatformAnswer, createPaidWith, endpointListEntry, endpointNumbersOf,
-  lastUtcDays, periodBefore, periodStart, type LiveTail,
+  buildEndpointAnswer, buildLiveAnswer, buildServicePage, buildStoredEndpoint, buildTopAnswer, composePlatformAnswer, createBlocklistMatcher, createPaidWith,
+  endpointListEntry, endpointNumbersOf, hostLabels, lastUtcDays, parentDomainOf, periodBefore, periodStart, type LiveTail,
 } from '../src/index.js';
 import { examplePlatform } from './fixtures.js';
 
@@ -109,5 +111,58 @@ describe('how a payment was paid', () => {
       { rail: 'mpp', network: 'eip155:42431', paidWith: 'tempo' }, { rail: 'x402', network: 'eip155:42431', paidWith: 'eip155:42431' },
       { rail: 'mpp', network: 'eip155:84532', paidWith: 'eip155:84532' },
     ]));
+  });
+});
+
+describe('the top lists', () => {
+  it('keep the 5 services and endpoints the count ranked, every way to pay with a paid call, most calls first, and the 5 tokens most topped up', () => {
+    const services = Array.from({ length: 7 }, (_, index) => ({ host: `s${index}.example.com`, calls: 70 - index }));
+    const endpoints = Array.from({ length: 6 }, (_, index) => ({ host: 'e.example.com', path: `/v1/${index}`, calls: 60 - index }));
+    const way = (paidWith: string, calls: number) => ({ paidWith, calls, volume: 0n as MicroUsd, buyers: 0 });
+    const topup = (network: string, token: string, count: number) => ({ network, token, count, amount: 0n as MicroUsd });
+
+    const top = buildTopAnswer({ services, endpoints }, [way('near', 2), way('credits', 0), way('base', 9), way('tempo', 2)], [
+      topup('near:testnet', 'wNEAR', 3), topup('eip155:84532', 'USDC', 7), topup('near:testnet', 'USDC', 3), topup('a', 'x', 1), topup('b', 'y', 1), topup('c', 'z', 1),
+      topup('d', 'none', 0),
+    ]);
+
+    expect(top.services).toEqual(services.slice(0, 5));
+    expect(top.endpoints).toEqual(endpoints.slice(0, 5));
+    // A way with no paid call is left out; a tie goes by name
+    expect(top.paidWith).toEqual([{ paidWith: 'base', calls: 9 }, { paidWith: 'near', calls: 2 }, { paidWith: 'tempo', calls: 2 }]);
+    expect(top.topupTokens).toEqual([
+      { network: 'eip155:84532', token: 'USDC', count: 7 }, { network: 'near:testnet', token: 'USDC', count: 3 }, { network: 'near:testnet', token: 'wNEAR', count: 3 },
+      { network: 'a', token: 'x', count: 1 }, { network: 'b', token: 'y', count: 1 },
+    ]);
+    // A token never topped up isn't one
+    expect(buildTopAnswer({ services: [], endpoints: [] }, [], [topup('d', 'none', 0), topup('a', 'x', 1)]).topupTokens).toEqual([{ network: 'a', token: 'x', count: 1 }]);
+  });
+});
+
+describe('the blocklist as the public lists match it', () => {
+  it('names a host and every subdomain of it, by whole labels, without case and without the port', () => {
+    const isBlocked = createBlocklistMatcher(['evil.example', 'Bad.Example.COM', 'x.y.z.example.org']);
+
+    for (const host of ['evil.example', 'a.evil.example', 'a.b.c.evil.example:8443', 'BAD.example.com', 'deep.x.y.z.example.org'])
+      expect(isBlocked(host), host).toBe(true);
+    for (const host of ['notevil.example', 'evil.example.net', 'example', 'y.z.example.org', 'ad.example.com', 'z.example.org'])
+      expect(isBlocked(host), host).toBe(false);
+    expect(createBlocklistMatcher([])('evil.example')).toBe(false);
+  });
+
+  it('costs a host of 127 labels as few steps as the entries have lengths, whatever their number', () => {
+    const entries = Array.from({ length: 200 }, (_, index) => `blocked-${index}.example`);
+    const isBlocked = createBlocklistMatcher(entries);
+    const long = Array.from({ length: 127 }, () => 'a').join('.');
+    const started = performance.now();
+    for (let index = 0; index < 10_000; index += 1)
+      isBlocked(long);
+
+    expect(performance.now() - started).toBeLessThan(200);
+    expect(isBlocked(`${long.slice(0, 200)}.blocked-7.example`)).toBe(true);
+  });
+
+  it('gives a host\'s labels and its parent domain without the port', () => {
+    expect([hostLabels('a.b.example.com:8443'), hostLabels('example.com'), parentDomainOf('a.b.example.com:8443')]).toEqual([4, 2, 'example.com']);
   });
 });

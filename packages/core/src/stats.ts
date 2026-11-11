@@ -281,6 +281,33 @@ export const hostSuffixes = (host: string): string[] => {
   return labels.slice(0, -1).map((_, index) => labels.slice(index).join('.'));
 };
 
+/**
+ * Whether the blocklist names a host or a parent domain of it, as the public lists read it: for each distinct
+ * length of an entry, one look at the character before it and, at a label's start, one look-up. A host costs at
+ * most as many steps as the entries have lengths, whatever its labels; no name is built but the one looked up.
+ */
+export const createBlocklistMatcher = (entries: Iterable<string>): ((host: string) => boolean) => {
+  const names = new Set<string>();
+  for (const entry of entries)
+    names.add(entry.toLowerCase());
+  const lengths = [...new Set([...names].map(name => name.length))];
+
+  return host => {
+    const name = hostnameOf(host).toLowerCase();
+    for (const length of lengths) {
+      if (length > name.length || (length < name.length && name.charCodeAt(name.length - length - 1) !== 46))
+        continue;
+      if (names.has(length === name.length ? name : name.slice(name.length - length)))
+        return true;
+    }
+
+    return false;
+  };
+};
+
+/** The labels of a host's name, without its port. */
+export const hostLabels = (host: string): number => hostnameOf(host).split('.').length;
+
 /** The domain a host shares its checked-hosts cap with: its last two labels, `evil.example` for `a.evil.example:8443`. */
 export const parentDomainOf = (host: string): string => hostnameOf(host).split('.').slice(-2).join('.');
 

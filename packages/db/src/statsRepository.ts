@@ -1,13 +1,13 @@
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 
 import {
-  hostSuffixes, maxListedPathLength, type EndpointNumbers, type JsonObject, type ListedStatus, type LiveBase, type PlatformAllAnswer, type PlatformRecentAnswer,
+  endpointsPerService, hostSuffixes, maxListedPathLength, type EndpointNumbers, type JsonObject, type ListedStatus, type LiveBase, type PlatformAllAnswer, type PlatformRecentAnswer,
   type RecentPeriod, type ServicePage, type ServiceRow, type ServicesTotals, type StatsPeriod, type StoredEndpoint, type TopAnswer,
 } from '@anyfare/core';
 
 import { withTransaction, type Database, type DatabaseExecutor } from './postgres.js';
-import { maxCheckedEndpointsPerHost, maxCheckedHosts } from './routingRepository.js';
-import { checkedHosts, hostBlocklist, routedEndpoints } from './schema/routing.js';
+import { maxCheckedEndpointsPerHost, maxCheckedHosts, maxCheckedHostsPerParent } from './routingRepository.js';
+import { checkedHosts, hostBlocklist, paidHosts, routedEndpoints } from './schema/routing.js';
 import { statsAnswers, statsEndpoints, statsServicePages, statsServices } from './schema/stats.js';
 
 // The public numbers' own tables. A count writes a row only when its numbers changed, and deletes the
@@ -39,11 +39,12 @@ export interface CountMarks {
 export type ServicesSort = 'calls' | 'buyers' | 'volume' | 'endpoints' | 'price' | 'newest';
 
 /**
- * A service of the public list: a stored one, with what checks listed of it, or one read now from the checked
- * hosts: listed only by checks, or reached by a paid call since the last complete count. Its numbers are the
- * count's, zeros for one not stored.
+ * A service the public list may show: `stored` by the count, with what checks listed of it; `paid`, a host with a
+ * paid endpoint the count doesn't store; or `checked`, one of the checked pool listed only by checks. Its numbers
+ * are the count's, zeros for one not stored.
  */
 export interface ListedServiceRow extends ServiceRow {
+  readonly kind: 'stored' | 'paid' | 'checked';
   readonly status: ListedStatus;
   // Undefined: not stored, so no count vouches for it
   readonly countedAt: Date | undefined;
@@ -52,15 +53,13 @@ export interface ListedServiceRow extends ServiceRow {
   readonly checkedAt: Date | undefined;
 }
 
-/** What the public list adds to the count's totals, read now. */
-export interface ListedTotals {
-  // Paid services not stored yet: a paid call reached them after a check, since the last complete count
-  readonly paidNotStored: number;
-  readonly checked: number;
-  // Endpoints listed only by a check, of every service listed, and every endpoint of a paid one not stored
-  readonly addedEndpoints: number;
-  // The stored services on the blocklist, which the count still counted
-  readonly blocked: { readonly services: number; readonly paidEndpoints: number; readonly calls: number };
+/** Every service the public list may show, as one read gives them, before the blocklist takes any out. */
+export interface ListedServices {
+  readonly rows: readonly ListedServiceRow[];
+  // Every stored service
+  readonly stored: number;
+  readonly totals: StoredAnswer<ServicesTotals> | undefined;
+  readonly marks: CountMarks;
 }
 
 /** An endpoint listed only by a check. */
@@ -71,14 +70,28 @@ export interface CheckedEndpointRow {
   readonly checkedAt: Date | undefined;
 }
 
+/** A paid endpoint of a host, as routing keeps it: its method and time when a check confirmed it. */
+export interface PaidEndpointRow {
+  readonly path: string;
+  readonly method: string | null;
+  readonly price: bigint | undefined;
+  readonly checkedAt: Date | undefined;
+}
+
 /**
  * What checks listed of a host, read now: at most 20 of its endpoints listed only by a check, newest checked
- * first, with paths the public reads list, and when a check last confirmed each of some others.
+ * first, with paths the public reads list, and when a check last confirmed each of some others; and for a host
+ * with a paid endpoint, its row of paid hosts and its 100 newest paid endpoints.
  */
 export interface HostListing {
   readonly blocked: boolean;
   // A paid call reached one of its endpoints
   readonly paid: boolean;
+  // The count stores it
+  readonly stored: boolean;
+  // Its listed endpoints, paid or checked, each once, and the lowest price among them, from its row of paid hosts
+  readonly paidSummary: { readonly endpoints: number; readonly priceFrom: bigint | undefined } | undefined;
+  readonly paidRows: readonly PaidEndpointRow[];
   readonly listedAt: Date | undefined;
   readonly checkedAt: Date | undefined;
   // Every endpoint listed only by a check, counted up to their cap
@@ -86,6 +99,11 @@ export interface HostListing {
   readonly checked: readonly CheckedEndpointRow[];
   // By path
   readonly checkedTimes: ReadonlyMap<string, Date>;
+  // Listed only by checks, it is outside what the list shows of the checked pool: 20 hosts of its parent domain,
+  // or 1,000 in all, were checked more recently
+  readonly poolHidden: boolean;
+  // A paid host the count doesn't store, outside what the list shows of them: `maxPaid` such hosts were registered more recently
+  readonly paidHidden: boolean;
 }
 
 /** A cycle of the frequent count over its services: one or more runs, each going on from the last. */
@@ -152,30 +170,28 @@ export interface StatsRepository {
   top(period: StatsPeriod): Promise<StoredAnswer<TopAnswer> | undefined>;
   live(): Promise<StoredAnswer<LiveBase> | undefined>;
   /**
-   * A page of listed services, of both kinds and none on the blocklist, how many match `q`, a part of the host
-   * without case, the totals, what the list adds to them, and the marks.
+   * Every service the public list may show, in one statement giving up after `timeoutMs`: the stored ones, at
+   * most `maxPaid` paid hosts the count doesn't store, the most recently registered first, and the checked pool's
+   * 1,000 most recently checked. The blocklist is applied by the reader.
    */
-  services(input: { readonly q?: string; readonly sort: ServicesSort; readonly offset: number; readonly limit: number }): Promise<{
-    readonly rows: readonly ListedServiceRow[];
-    readonly total: number;
-    // Every stored service, whatever `q` says
-    readonly stored: number;
-    readonly totals: StoredAnswer<ServicesTotals> | undefined;
-    readonly listed: ListedTotals;
-    readonly marks: CountMarks;
-  }>;
+  listedServices(input: { readonly maxPaid: number; readonly timeoutMs: number }): Promise<ListedServices>;
+  /** Every host on the blocklist, in one statement giving up after `timeoutMs`. */
+  blocklist(input: { readonly timeoutMs: number }): Promise<string[]>;
   /**
    * A stored service's page of a period, with its stored endpoints, most paid calls of the period first, and
    * what checks listed of it. Undefined: not stored.
    */
-  servicePage(host: string, period: StatsPeriod): Promise<{
+  servicePage(host: string, period: StatsPeriod, options: { readonly timeoutMs: number; readonly maxPaid: number }): Promise<{
     readonly page: StoredAnswer<ServicePage>;
     readonly endpoints: readonly StoredEndpointRow[];
     readonly listing: HostListing;
     readonly marks: CountMarks;
   } | undefined>;
-  /** What checks listed of a host, with when a check last confirmed each of `paths`: at most 100 of them. */
-  hostListing(host: string, paths: readonly string[]): Promise<HostListing>;
+  /**
+   * What checks listed of a host, with when a check last confirmed each of `paths`: at most 100 of them. `maxPaid` is
+   * the list's: how many paid hosts the count doesn't store it shows.
+   */
+  hostListing(host: string, paths: readonly string[], options: { readonly timeoutMs: number; readonly maxPaid: number }): Promise<HostListing>;
   /** A stored endpoint. Undefined: not stored. With `timeoutMs`, the statement gives up after it, in a transaction of its own. */
   endpoint(host: string, path: string, options?: { readonly timeoutMs?: number }): Promise<{ readonly row: StoredEndpointRow; readonly marks: CountMarks } | undefined>;
 }
@@ -190,8 +206,6 @@ const keys = {
 const insertBatch = 200;
 
 const optional = <TValue>(value: TValue | null): TValue | undefined => value ?? undefined;
-// LIKE's own characters match themselves
-const containing = (text: string): string => `%${text.replace(/[%_\\]/g, '\\$&')}%`;
 const timeoutOf = (ms: number): SQL => sql.raw(`set local statement_timeout = ${Math.max(1, Math.trunc(ms))}`);
 const chunks = <TItem>(items: readonly TItem[], size: number): TItem[][] =>
   Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
@@ -216,15 +230,16 @@ const marksOf = (row: Readonly<Record<string, unknown>> | undefined): CountMarks
 const timeOf = (value: unknown): Date | undefined => (typeof value === 'string' ? new Date(value) : undefined);
 
 // A listed service as the list's statement gives it, as JSON
-const toListedRow = (each: Readonly<Record<string, unknown>>): ListedServiceRow => ({
+const toListedRow = (kind: ListedServiceRow['kind']) => (each: Readonly<Record<string, unknown>>): ListedServiceRow => ({
+  kind,
   hostHash: each['host_hash'] as string,
   host: each['host'] as string,
-  status: each['status'] === 'checked' ? 'checked' : 'paid',
+  status: kind === 'checked' ? 'checked' : 'paid',
   paidEndpoints: Number(each['paid_endpoints'] ?? 0),
-  priceFrom: each['price_from'] === null || each['price_from'] === undefined ? undefined : BigInt(each['price_from'] as string | number),
+  priceFrom: each['price_from'] === null || each['price_from'] === undefined ? undefined : BigInt(each['price_from'] as string),
   calls: Number(each['calls'] ?? 0),
   buyers: Number(each['buyers'] ?? 0),
-  volume: BigInt((each['volume'] ?? 0) as string | number),
+  volume: BigInt((each['volume'] ?? '0') as string),
   successRate: (each['success_rate'] ?? null) as number | null,
   p50Ms: (each['p50_ms'] ?? null) as number | null,
   trend: (each['trend'] ?? []) as number[],
@@ -236,16 +251,28 @@ const toListedRow = (each: Readonly<Record<string, unknown>>): ListedServiceRow 
 interface ListingJson {
   readonly blocked: boolean;
   readonly paid: boolean;
+  readonly stored: boolean;
+  readonly paid_summary: { readonly endpoints: number; readonly price_from: string | null } | null;
+  readonly paid_rows: readonly { readonly path: string; readonly method: string | null; readonly price: string | null; readonly checked_at: string | null }[];
   readonly listed_at: string | null;
   readonly checked_at: string | null;
   readonly checked_count: number;
   readonly checked: readonly { readonly path: string; readonly method: string | null; readonly price: string | null; readonly checked_at: string | null }[];
   readonly times: Readonly<Record<string, string>>;
+  readonly pool_hidden: boolean;
+  readonly paid_hidden: boolean;
 }
 
 const toListing = (listing: ListingJson): HostListing => ({
   blocked: listing.blocked,
   paid: listing.paid,
+  stored: listing.stored,
+  paidSummary: listing.paid_summary === null
+    ? undefined
+    : { endpoints: listing.paid_summary.endpoints, priceFrom: listing.paid_summary.price_from === null ? undefined : BigInt(listing.paid_summary.price_from) },
+  paidRows: listing.paid_rows.map(row => ({
+    path: row.path, method: row.method, price: row.price === null ? undefined : BigInt(row.price), checkedAt: timeOf(row.checked_at),
+  })),
   listedAt: timeOf(listing.listed_at),
   checkedAt: timeOf(listing.checked_at),
   checkedCount: listing.checked_count,
@@ -253,15 +280,14 @@ const toListing = (listing: ListingJson): HostListing => ({
     path: row.path, method: row.method, price: row.price === null ? undefined : BigInt(row.price), checkedAt: timeOf(row.checked_at),
   })),
   checkedTimes: new Map(Object.entries(listing.times).map(([path, at]) => [path, new Date(at)])),
+  poolHidden: listing.pool_hidden,
+  paidHidden: listing.paid_hidden,
 });
 
-// The blocklist names a host, or a parent domain of it, for the public reads: each name by the blocklist's key.
-// Routing a call refuses the exact name alone: that is the paid path, and it stays so.
+// The blocklist names a host, or a parent domain of it, for the public reads: each of its names, made here once, by
+// the blocklist's key. Routing a call refuses the exact name alone: that is the paid path, and it stays so.
 const isBlockedHost = (host: string): SQL => sql`exists (select 1 from ${hostBlocklist}
   where ${hostBlocklist.host} in (select jsonb_array_elements_text(${json(hostSuffixes(host))})))`;
-// A host's name and each parent of it with two labels or more, as `hostSuffixes` gives them, for a set of rows
-const suffixesOf = (host: SQL): SQL => sql`(select array_agg(array_to_string(labels[at:], '.')) from (select string_to_array(split_part(${host}, ':', 1), '.') as labels) as split,
-  generate_series(1, greatest(cardinality(labels) - 1, 1)) as at)`;
 
 /**
  * What checks listed of a host, as one JSON value: the blocklist and the checked hosts by their keys, its
@@ -269,8 +295,28 @@ const suffixesOf = (host: SQL): SQL => sql`(select array_agg(array_to_string(lab
  * list), and the check times of the paths `paths` gives, each by the routed endpoints' key. A checked endpoint
  * among `paths`, the paid ones the page lists, is left out and not counted: a page holds each endpoint once.
  */
-const listingSql = (host: string, paths: SQL): SQL => sql`jsonb_build_object(
+// The count stores the host, by its key
+const storedHost = (host: SQL): SQL => sql`exists (select 1 from ${statsServices} where ${statsServices.hostHash} = md5(${host}))`;
+// A host of the checked pool before `mine` in the list's order: listed only by checks, checked more recently
+const poolBefore = sql`other.checked_at >= mine.checked_at and (other.checked_at > mine.checked_at or other.host < mine.host)
+  and other.paid_at is null and other.checked_endpoints > 0 and not ${storedHost(sql`other.host`)}`;
+
+// A paid host the count doesn't store before `mine` in the list's order: registered more recently
+const paidBefore = sql`(other.registered_at, other.host) > (mine.registered_at, mine.host) and not ${storedHost(sql`other.host`)}`;
+
+const listingSql = (host: string, paths: SQL, maxPaid: number): SQL => sql`jsonb_build_object(
   'blocked', ${isBlockedHost(host)},
+  'stored', exists (select 1 from ${statsServices} where ${statsServices.hostHash} = md5(${host}::text)),
+  'paid_summary', (select jsonb_build_object('endpoints', ${paidHosts.endpoints}, 'price_from', ${paidHosts.priceFrom}::text) from ${paidHosts}
+    where ${paidHosts.host} = ${host}),
+  -- Its 100 newest paid endpoints, by routed_endpoints_listed_idx: as many as a page lists
+  'paid_rows', coalesce((select jsonb_agg(jsonb_build_object('path', newest.path, 'method', newest.method, 'price', newest.price::text, 'checked_at', newest.checked_at)
+      order by newest.created_at desc, newest.path) from (
+      select ${routedEndpoints.path} as path, ${routedEndpoints.checkMethod} as method, ${routedEndpoints.lastPrice} as price, ${routedEndpoints.checkedAt} as checked_at,
+        ${routedEndpoints.createdAt} as created_at from ${routedEndpoints}
+      where ${routedEndpoints.host} = ${host} and ${routedEndpoints.status} = 'paid' and length(${routedEndpoints.path}) <= ${maxListedPathLength}
+      order by ${routedEndpoints.createdAt} desc limit ${endpointsPerService}
+    ) as newest), '[]'::jsonb),
   -- Its earliest paid endpoint, as an aggregate the index serves: an unordered probe may be taken as a scan
   'paid', (select min(${routedEndpoints.createdAt}) from ${routedEndpoints} where ${routedEndpoints.host} = ${host} and ${routedEndpoints.status} = 'paid') is not null,
   'listed_at', coalesce((select ${checkedHosts.listedAt} from ${checkedHosts} where ${checkedHosts.host} = ${host}), least(
@@ -290,7 +336,19 @@ const listingSql = (host: string, paths: SQL): SQL => sql`jsonb_build_object(
       order by ${routedEndpoints.checkedAt} desc nulls last, ${routedEndpoints.path} limit ${maxCheckedEndpointsPerHost}
     ) as listed), '[]'::jsonb),
   'times', coalesce((select jsonb_object_agg(${routedEndpoints.path}, ${routedEndpoints.checkedAt}) from ${routedEndpoints}
-    where ${routedEndpoints.host} = ${host} and ${routedEndpoints.path} in (${paths}) and ${routedEndpoints.checkedAt} is not null), '{}'::jsonb))`;
+    where ${routedEndpoints.host} = ${host} and ${routedEndpoints.path} in (${paths}) and ${routedEndpoints.checkedAt} is not null), '{}'::jsonb),
+  -- As the list reads the pool: the hosts listed only by checks, the most recently checked first, 20 of a parent domain
+  -- and 1,000 in all. Those before it, by checked_hosts_parent_idx and checked_hosts_checked_idx, up to each cap.
+  'pool_hidden', coalesce((select
+      (select count(*) from (select 1 from ${checkedHosts} as other where other.parent = mine.parent and ${poolBefore}
+        order by other.checked_at desc limit ${maxCheckedHostsPerParent}) as before) >= ${maxCheckedHostsPerParent}
+      or (select count(*) from (select 1 from ${checkedHosts} as other where ${poolBefore} order by other.checked_at desc
+        limit ${maxCheckedHosts}) as before) >= ${maxCheckedHosts}
+    from ${checkedHosts} as mine where mine.host = ${host} and mine.paid_at is null and not ${storedHost(sql`mine.host`)}), false),
+  -- As the list reads the paid hosts the count doesn't store: \`maxPaid\`, the most recently registered first, by paid_hosts_registered_idx
+  'paid_hidden', coalesce((select (select count(*) from (select 1 from ${paidHosts} as other where ${paidBefore}
+      order by other.registered_at desc limit ${maxPaid}) as before) >= ${maxPaid}
+    from ${paidHosts} as mine where mine.host = ${host} and not ${storedHost(sql`mine.host`)}), false))`;
 
 interface EndpointJson {
   readonly host_hash: string;
@@ -323,18 +381,6 @@ const endpointJson = sql`jsonb_build_object('host_hash', ${statsEndpoints.hostHa
   'method', ${statsEndpoints.method}, 'price', ${statsEndpoints.price}::text, 'recent', ${statsEndpoints.recent}, 'daily', ${statsEndpoints.daily},
   'counted_at', ${statsEndpoints.countedAt}, 'all', ${statsEndpoints.all}, 'all_counted_at', ${statsEndpoints.allCountedAt})`;
 
-// Over the listed services, by the names of the list's statement. A checked service has no calls.
-const sorts: Readonly<Record<ServicesSort, SQL>> = {
-  // Paid services first, then checked ones, the newest first
-  calls: sql`(status = 'checked'), calls desc, case when status = 'checked' then listed_at end desc nulls last, host`,
-  buyers: sql`buyers desc, (status = 'checked'), host`,
-  volume: sql`volume desc, (status = 'checked'), host`,
-  endpoints: sql`paid_endpoints desc, host`,
-  // Cheapest first, and those without a quote last
-  price: sql`price_from asc nulls last, host`,
-  // The most recently listed first
-  newest: sql`listed_at desc nulls last, host`,
-};
 
 export const createStatsRepository = ({ db }: StatsRepositoryOptions): StatsRepository => {
   const stored = async <TAnswer>(key: string): Promise<StoredAnswer<TAnswer> | undefined> => {
@@ -509,84 +555,77 @@ export const createStatsRepository = ({ db }: StatsRepositoryOptions): StatsRepo
     top: period => stored<TopAnswer>(`top:${period}`),
     live: () => stored<LiveBase>('live'),
 
-    services: async ({ q, sort, offset, limit }) => {
-      const matching = q === undefined ? sql`true` : sql`host ilike ${containing(q)}`;
-      // The stored services, with what checks listed of them by a hash of the checked hosts; then the checked
-      // pool, the hosts a check reached that the count doesn't store, the 1,000 checked most recently. The
-      // blocklist matched by each host's names in a hash, each table read once: no step reads a row per row,
-      // so the statement grows with at most stats.maxServices and 1,000 rows, never with every host checked.
-      const { rows: [row] } = await db.execute<{
-        rows: unknown; total: number; stored: number; totals: ServicesTotals | null; totals_at: string | null; paid_not_stored: number; checked: number;
-        added_endpoints: number; blocked: { services: number; paid_endpoints: number; calls: number } | null;
-      } & Record<string, unknown>>(sql`
-        with pool as (
-          select ${checkedHosts.host} as host, ${checkedHosts.paidAt} as paid_at, ${checkedHosts.listedAt} as listed_at, ${checkedHosts.checkedAt} as checked_at,
-            ${checkedHosts.checkedEndpoints} as endpoints, ${checkedHosts.priceFrom} as price_from
+    listedServices: async ({ maxPaid, timeoutMs }) => {
+      // Each part by its own index or one read of a small table, joined by keys or hashes: the stored services with
+      // what checks listed of them; the paid hosts the count doesn't store, newest registered first by
+      // paid_hosts_registered_idx; and the checked pool, newest checked first by checked_hosts_checked_idx
+      const { rows: [row] } = await statement(db, timeoutMs, tx => tx.execute<{
+        stored_rows: Record<string, unknown>[]; paid_rows: Record<string, unknown>[]; pool_rows: Record<string, unknown>[]; stored: number;
+        totals: ServicesTotals | null; totals_at: string | null;
+      } & Record<string, unknown>>(sql`select
+        coalesce((select json_agg(stored) from (
+          -- Its listed endpoints and their lowest price from its row of paid hosts; before the workers made one, the count's and the checks'
+          select ${statsServices.hostHash} as host_hash, ${statsServices.host} as host,
+            coalesce(paid.endpoints, ${statsServices.paidEndpoints} + coalesce(${checkedHosts.checkedEndpoints}, 0)) as paid_endpoints,
+            (case when paid.host is null then least(${statsServices.priceFrom}, ${checkedHosts.priceFrom}) else paid.price_from end)::text as price_from,
+            ${statsServices.calls} as calls, ${statsServices.buyers} as buyers,
+            ${statsServices.volume}::text as volume, ${statsServices.successRate} as success_rate, ${statsServices.p50Ms} as p50_ms, ${statsServices.trend} as trend,
+            ${statsServices.countedAt} as counted_at, least(${statsServices.listedAt}, ${checkedHosts.listedAt}, paid.listed_at) as listed_at,
+            ${checkedHosts.checkedAt} as checked_at
+          from ${statsServices} left join ${checkedHosts} on ${checkedHosts.host} = ${statsServices.host}
+          -- By its key, fenced: every host a paid call ever reached is no table to hash for the stored ones
+          left join lateral (select ${paidHosts.host} as host, ${paidHosts.endpoints} as endpoints, ${paidHosts.priceFrom} as price_from, ${paidHosts.listedAt} as listed_at
+            from ${paidHosts} where ${paidHosts.host} = ${statsServices.host} offset 0) as paid on true
+        ) as stored), '[]') as stored_rows,
+        coalesce((select json_agg(paid) from (
+          select md5(${paidHosts.host}) as host_hash, ${paidHosts.host} as host, ${paidHosts.endpoints} as paid_endpoints, ${paidHosts.priceFrom}::text as price_from,
+            ${paidHosts.listedAt} as listed_at, ${checkedHosts.checkedAt} as checked_at
+          from ${paidHosts} left join ${checkedHosts} on ${checkedHosts.host} = ${paidHosts.host}
+          where not exists (select 1 from ${statsServices} where ${statsServices.hostHash} = md5(${paidHosts.host}))
+            -- Still with a paid endpoint, by routed_endpoints_listed_idx: a row whose endpoints were deleted by hand is none
+            and (select ${routedEndpoints.createdAt} from ${routedEndpoints} where ${routedEndpoints.host} = ${paidHosts.host} and ${routedEndpoints.status} = 'paid'
+              order by ${routedEndpoints.createdAt} limit 1) is not null
+          order by ${paidHosts.registeredAt} desc, ${paidHosts.host} desc limit ${maxPaid}
+        ) as paid), '[]') as paid_rows,
+        coalesce((select json_agg(pool) from (
+          select md5(${checkedHosts.host}) as host_hash, ${checkedHosts.host} as host, ${checkedHosts.checkedEndpoints} as paid_endpoints,
+            ${checkedHosts.priceFrom}::text as price_from, ${checkedHosts.listedAt} as listed_at, ${checkedHosts.checkedAt} as checked_at
           from ${checkedHosts}
-          where (${checkedHosts.checkedEndpoints} > 0 or ${checkedHosts.paidAt} is not null)
+          where ${checkedHosts.paidAt} is null and ${checkedHosts.checkedEndpoints} > 0
             and not exists (select 1 from ${statsServices} where ${statsServices.hostHash} = md5(${checkedHosts.host}))
           order by ${checkedHosts.checkedAt} desc, ${checkedHosts.host} limit ${maxCheckedHosts}
-        ),
-        listed as (
-          select ${statsServices.hostHash} as host_hash, ${statsServices.host} as host, 'paid'::text as status, true as stored,
-            ${statsServices.paidEndpoints} + coalesce(${checkedHosts.checkedEndpoints}, 0) as paid_endpoints, coalesce(${checkedHosts.checkedEndpoints}, 0) as added_endpoints,
-            least(${statsServices.priceFrom}, ${checkedHosts.priceFrom}) as price_from, ${statsServices.calls} as calls, ${statsServices.buyers} as buyers,
-            ${statsServices.volume} as volume, ${statsServices.successRate} as success_rate, ${statsServices.p50Ms} as p50_ms, ${statsServices.trend} as trend,
-            ${statsServices.countedAt} as counted_at, least(${statsServices.listedAt}, ${checkedHosts.listedAt}) as listed_at, ${checkedHosts.checkedAt} as checked_at
-          from ${statsServices} left join ${checkedHosts} on ${checkedHosts.host} = ${statsServices.host}
-          union all
-          -- Its 30 days are the count's, and it has none: no calls, and its endpoints listed by checks
-          select md5(pool.host), pool.host, case when pool.paid_at is null then 'checked' else 'paid' end, false, pool.endpoints, pool.endpoints, pool.price_from,
-            0, 0, 0::bigint, null::double precision, null::integer, null::jsonb, null::timestamptz, pool.listed_at, pool.checked_at
-          from pool
-        ),
-        blocked as (
-          select distinct listed.host from listed cross join lateral unnest(${suffixesOf(sql`listed.host`)}) as name
-          join ${hostBlocklist} on ${hostBlocklist.host} = name
-        ),
-        visible as (select * from listed where host not in (select host from blocked))
-        select coalesce((select json_agg(page) from (select * from visible where ${matching} order by ${sorts[sort]} offset ${offset} limit ${limit}) as page), '[]') as rows,
-          (select count(*)::int from visible where ${matching}) as total,
-          (select count(*)::int from ${statsServices}) as stored,
-          (select count(*)::int from visible where not stored and status = 'paid') as paid_not_stored,
-          (select count(*)::int from visible where status = 'checked') as checked,
-          (select coalesce(sum(added_endpoints), 0)::int from visible) as added_endpoints,
-          (select json_build_object('services', count(*), 'paid_endpoints', coalesce(sum(paid_endpoints - added_endpoints), 0), 'calls', coalesce(sum(calls), 0))
-            from listed where stored and host in (select host from blocked)) as blocked,
-          (select ${statsAnswers.answer} from ${statsAnswers} where ${statsAnswers.key} = 'services') as totals,
-          (select ${statsAnswers.countedAt} from ${statsAnswers} where ${statsAnswers.key} = 'services') as totals_at,
-          ${marksSql}`);
-      const listed = (row?.rows ?? []) as Record<string, unknown>[];
+        ) as pool), '[]') as pool_rows,
+        (select count(*)::int from ${statsServices}) as stored,
+        (select ${statsAnswers.answer} from ${statsAnswers} where ${statsAnswers.key} = 'services') as totals,
+        (select ${statsAnswers.countedAt} from ${statsAnswers} where ${statsAnswers.key} = 'services') as totals_at,
+        ${marksSql}`));
 
       return {
-        rows: listed.map(toListedRow),
-        total: row?.total ?? 0,
+        rows: [
+          ...(row?.stored_rows ?? []).map(toListedRow('stored')), ...(row?.paid_rows ?? []).map(toListedRow('paid')), ...(row?.pool_rows ?? []).map(toListedRow('checked')),
+        ],
         stored: Number(row?.stored ?? 0),
         totals: row?.totals && row.totals_at ? { answer: row.totals, countedAt: new Date(row.totals_at) } : undefined,
-        listed: {
-          paidNotStored: row?.paid_not_stored ?? 0,
-          checked: row?.checked ?? 0,
-          addedEndpoints: row?.added_endpoints ?? 0,
-          blocked: { services: Number(row?.blocked?.services ?? 0), paidEndpoints: Number(row?.blocked?.paid_endpoints ?? 0), calls: Number(row?.blocked?.calls ?? 0) },
-        },
         marks: marksOf(row),
       };
     },
 
-    servicePage: async (host, period) => {
+    blocklist: async ({ timeoutMs }) => (await statement(db, timeoutMs, tx => tx.select({ host: hostBlocklist.host }).from(hostBlocklist))).map(entry => entry.host),
+
+    servicePage: async (host, period, { timeoutMs, maxPaid }) => {
       // The period's own numbers order the endpoints; all time's are there once the all-time count reached them
       const order = period === 'all'
         ? sql`(${statsEndpoints.all}->>'calls')::int desc nulls last`
         : sql`(${statsEndpoints.recent}->${period}::text->>'calls')::int desc`;
-      const { rows: [row] } = await db.execute<{ answer: ServicePage | null; counted_at: string | null; endpoints: EndpointJson[]; listing: ListingJson } & Record<string, unknown>>(sql`
+      const { rows: [row] } = await statement(db, timeoutMs, tx => tx.execute<{ answer: ServicePage | null; counted_at: string | null; endpoints: EndpointJson[]; listing: ListingJson } & Record<string, unknown>>(sql`
         select page.answer, page.counted_at,
           coalesce((select jsonb_agg(endpoint order by rank) from (
             select ${endpointJson} as endpoint, row_number() over (order by ${order}, ${statsEndpoints.path}) as rank
             from ${statsEndpoints} where ${statsEndpoints.hostHash} = md5(${host}::text)${period === 'all' ? sql` and ${statsEndpoints.all} is not null` : sql``}
           ) as listed), '[]'::jsonb) as endpoints,
-          ${listingSql(host, sql`select ${statsEndpoints.path} from ${statsEndpoints} where ${statsEndpoints.hostHash} = md5(${host}::text)`)} as listing,
+          ${listingSql(host, sql`select ${statsEndpoints.path} from ${statsEndpoints} where ${statsEndpoints.hostHash} = md5(${host}::text)`, maxPaid)} as listing,
           ${marksSql}
-        from (select 1) as one left join ${statsServicePages} as page on page.host_hash = md5(${host}::text) and page.period = ${period}::text`);
+        from (select 1) as one left join ${statsServicePages} as page on page.host_hash = md5(${host}::text) and page.period = ${period}::text`));
       if (!row?.answer || !row.counted_at)
         return undefined;
 
@@ -595,8 +634,9 @@ export const createStatsRepository = ({ db }: StatsRepositoryOptions): StatsRepo
       };
     },
 
-    hostListing: async (host, paths) => {
-      const { rows: [row] } = await db.execute<{ listing: ListingJson }>(sql`select ${listingSql(host, sql`select jsonb_array_elements_text(${json(paths.slice(0, 100))})`)} as listing`);
+    hostListing: async (host, paths, { timeoutMs, maxPaid }) => {
+      const { rows: [row] } = await statement(db, timeoutMs, tx => tx.execute<{ listing: ListingJson }>(
+        sql`select ${listingSql(host, sql`select jsonb_array_elements_text(${json(paths.slice(0, endpointsPerService))})`, maxPaid)} as listing`));
 
       return toListing(row!.listing);
     },
