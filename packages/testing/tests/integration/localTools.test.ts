@@ -133,18 +133,25 @@ describe('the paid service and the paid endpoint with no call in 30 days', () =>
     await seedLocal({ postgres: database.postgres, config, calls: 300 });
 
     // Only calls 40 days old: the service is in the list, paid, with zero numbers for the 30 days
-    const listed = (await read(`/v1/services?q=${quietService.host}`)).body.services as { host: string; status: string; calls: number; buyers: number; volume: string; paidEndpoints: number; trend: number[] }[];
+    // The API keeps the services it read for a few seconds, whatever the query: the read before the seed may still be held
+    const readListed = async () => (await read(`/v1/services?q=${quietService.host}`)).body.services as { host: string; status: string; calls: number; buyers: number; volume: string; paidEndpoints: number; trend: number[] }[];
+    await expect.poll(async () => (await readListed()).map(item => item.host), { timeout: 15_000, interval: 500 }).toEqual([quietService.host]);
+    const listed = await readListed();
     expect(listed).toEqual([expect.objectContaining({ host: quietService.host, status: 'paid', calls: 0, buyers: 0, volume: '0', paidEndpoints: quietService.endpoints.length })]);
     expect(listed[0]!.trend.every(value => value === 0)).toBe(true);
+    // Each page is held by its own key too: wait for the seeded rows, not for time
+    await expect.poll(async () => (await read(`/v1/services/${quietService.host}`)).status, { timeout: 15_000, interval: 500 }).toBe(200);
     const page = (await read(`/v1/services/${quietService.host}`)).body;
     expect(page).toMatchObject({ status: 'paid', stats: { calls: 0, buyers: 0 }, paidEndpoints: quietService.endpoints.length });
     expect(page.endpoints.map((endpoint: { path: string }) => endpoint.path).sort()).toEqual(quietService.endpoints.map(endpoint => endpoint.path).sort());
     for (const endpoint of page.endpoints)
       expect(endpoint).toMatchObject({ status: 'paid', calls: 0, volume: '0', link: expect.stringContaining(quietService.host) });
     // Its calls are there, in all time
-    expect((await read(`/v1/services/${quietService.host}?period=all`)).body.stats.calls).toBe(quietService.endpoints.length);
+    await expect.poll(async () => (await read(`/v1/services/${quietService.host}?period=all`)).body.stats?.calls, { timeout: 15_000, interval: 500 }).toBe(quietService.endpoints.length);
 
     // A busy service with one paid endpoint that has no call in the 30 days: listed with zeros after those with calls
+    await expect.poll(async () => ((await read(`/v1/services/${quietEndpoint.host}`)).body.endpoints ?? []).map((endpoint: { path: string }) => endpoint.path), { timeout: 15_000, interval: 500 })
+      .toContain(quietEndpoint.endpoint.path);
     const busy = (await read(`/v1/services/${quietEndpoint.host}`)).body;
     const paths = busy.endpoints.map((endpoint: { path: string }) => endpoint.path);
     const quiet = busy.endpoints.find((endpoint: { path: string }) => endpoint.path === quietEndpoint.endpoint.path);
