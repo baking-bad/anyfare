@@ -1,0 +1,13 @@
+# The context of the website image: only the website and what npm ci needs.
+# Every other package stays out, so the backend's sources never reach this build.
+*
+!package.json
+!package-lock.json
+!tsconfig.base.json
+!packages/
+packages/*
+!packages/web/
+packages/web/node_modules/
+packages/web/.next/
+packages/web/tests/
+**/.DS_Store

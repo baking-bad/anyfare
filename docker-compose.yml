@@ -96,3 +96,32 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # The website, built from packages/web/Dockerfile. It reads only the public API and the pay host, so it
+  # runs next to apps started on this machine: the API on 8081 and the proxy on 8080. The browser reaches
+  # them at API_URL and PAY_URL, the container at API_INTERNAL_URL and PAY_INTERNAL_URL through the host.
+  # It starts only with its profile: docker compose --profile web up --build web.
+  web:
+    profiles: [ web ]
+    build:
+      context: .
+      dockerfile: packages/web/Dockerfile
+    image: anyfare-web:local
+    environment:
+      SITE_URL: ${SITE_URL:-http://localhost:3000}
+      CONSOLE_URL: ${CONSOLE_URL:-http://console.localhost:3000}
+      API_URL: ${API_URL:-http://127.0.0.1:8081}
+      PAY_URL: ${PAY_URL:-http://127.0.0.1:8080}
+      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://host.docker.internal:8081}
+      PAY_INTERNAL_URL: ${PAY_INTERNAL_URL:-http://host.docker.internal:8080}
+      LOG_LEVEL: ${LOG_LEVEL:-}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - 127.0.0.1:3000:3000
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -qO- http://127.0.0.1:3000/_/health > /dev/null" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5

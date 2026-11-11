@@ -128,7 +128,7 @@ jobs:
   functional:
     name: Functional tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     env: *test-env
 
@@ -197,6 +197,60 @@ jobs:
           cache-from: type=gha,scope=runtime
           cache-to: type=gha,scope=runtime,mode=max
           # Every app's startup line names the commit
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # The website builds into its own image: it holds Next.js, and the backend image does not
+  publish-web:
+    name: Build and push website image
+    needs:
+      - build
+      - unit
+      - integration
+      - functional
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}-web
+          tags: |
+            type=ref,event=branch
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: packages/web/Dockerfile
+          target: runtime
+          push: true
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+          # The startup line names the commit
           build-args: |
             GIT_SHA=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
