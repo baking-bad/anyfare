@@ -14,12 +14,13 @@ import { EmptyState } from '../../../src/components/EmptyState';
 import { ErrorState } from '../../../src/components/ErrorState';
 import { Icon, iconNames } from '../../../src/components/Icon';
 import { LiveDot } from '../../../src/components/LiveDot';
-import { Rail, type RailId } from '../../../src/components/Rail';
+import { Rail, RailIcon, railToken, type RailId } from '../../../src/components/Rail';
 import { Skeleton } from '../../../src/components/Skeleton';
 import { Sparkline } from '../../../src/components/Sparkline';
 import { Spinner } from '../../../src/components/Spinner';
 import { Stat } from '../../../src/components/Stat';
 import { Tabs } from '../../../src/components/Tabs';
+import { paidWithName } from '../../../src/content/home';
 import { ago, count, ms, pct, usd } from '../../../src/format';
 import { InteractiveDemo } from './Interactive';
 
@@ -151,9 +152,11 @@ const Components = () => {
         <Section title="Badge, Rail, LiveDot, Spinner">
           <div className="row">{tones.map(tone => <Badge key={tone} tone={tone}>{tone}</Badge>)}</div>
           <div className="row">{tones.map(tone => <Badge key={tone} tone={tone} large>{tone}</Badge>)}<Badge tone="success" icon="check">With an icon</Badge></div>
-          <div className="row">{rails.map(rail => <Rail key={rail} rail={rail} />)}<Rail rail="base" label="USDC on Base" /></div>
+          <div className="row">{rails.map(rail => <Rail key={rail} rail={rail} />)}</div>
+          <div className="row">{rails.map(rail => <Rail key={rail} rail={rail} token={railToken(rail)} label={paidWithName(rail)} />)}<Rail rail="solana" token="SOL" label="SOL on Solana" /></div>
+          <div className="row">{rails.map(rail => <RailIcon key={rail} rail={rail} token={railToken(rail)} size={24} />)}{rails.map(rail => <RailIcon key={rail} rail={rail} token={railToken(rail)} size={32} />)}</div>
           <div className="row"><span className="route"><Rail rail="near" /><Icon name="arrow" className="arrow" /><Rail rail="base" /></span></div>
-          <div className="inverse-band dark-panel"><div className="row">{rails.map(rail => <Rail key={rail} rail={rail} />)}</div></div>
+          <div className="inverse-band dark-panel"><div className="row">{rails.map(rail => <Rail key={rail} rail={rail} />)}</div><div className="row mt-8">{rails.map(rail => <Rail key={rail} rail={rail} token={railToken(rail)} label={paidWithName(rail)} />)}</div></div>
           <div className="row"><LiveDot /><span className="small">Live</span><LiveDot paused /><span className="small muted">Paused</span><Spinner /><span className="small muted">Spinner</span><span className="pill-value up">▲ 12.4%</span><span className="pill-value info">8.4%</span></div>
         </Section>
 

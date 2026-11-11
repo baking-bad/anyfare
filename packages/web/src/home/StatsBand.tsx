@@ -8,7 +8,7 @@ import { BarChart } from '../components/BarChart';
 import { BarList } from '../components/BarList';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
-import { Rail } from '../components/Rail';
+import { Rail, railToken } from '../components/Rail';
 import { Segmented } from '../components/Segmented';
 import { Stat } from '../components/Stat';
 import { paidWithName, statsText } from '../content/home';
@@ -72,7 +72,7 @@ export const StatsBand = ({ stats: counted }: { readonly stats: Stats | null }) 
                 <div className="mt-16">
                   {paidWith.length === 0
                     ? <EmptyState icon="activity" title="No paid calls yet">How buyers paid shows here once calls are paid.</EmptyState>
-                    : <BarList items={paidWith.map(share => ({ label: <Rail rail={share.paidWith} label={paidWithName(share.paidWith)} />, value: share.calls, tone: share.paidWith === 'near' ? 'near' : 'dim' }))} />}
+                    : <BarList items={paidWith.map(share => ({ label: <Rail rail={share.paidWith} token={railToken(share.paidWith)} label={paidWithName(share.paidWith)} />, value: share.calls, tone: share.paidWith === 'near' ? 'near' : 'dim' }))} />}
                 </div>
               </div>
             </div>

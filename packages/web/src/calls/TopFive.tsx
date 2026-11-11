@@ -10,7 +10,7 @@ import { BarList } from '../components/BarList';
 import { Card, CardHead } from '../components/Card';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
-import { Rail } from '../components/Rail';
+import { Rail, railToken } from '../components/Rail';
 import { Segmented } from '../components/Segmented';
 import { useSettings } from '../components/Settings';
 import { Skeleton } from '../components/Skeleton';
@@ -61,13 +61,13 @@ const Lists = ({ top }: { readonly top: TopStats }) => {
         <CardHead title="How buyers paid"><span className="xs muted">Paid calls</span></CardHead>
         {paid.length === 0
           ? <Empty>No paid calls yet</Empty>
-          : <BarList items={paid.map(share => ({ label: <Rail rail={share.paidWith} label={paidWithName(share.paidWith)} />, value: share.calls, tone: share.paidWith === 'near' ? 'near' : 'dim' }))} />}
+          : <BarList items={paid.map(share => ({ label: <Rail rail={share.paidWith} token={railToken(share.paidWith)} label={paidWithName(share.paidWith)} />, value: share.calls, tone: share.paidWith === 'near' ? 'near' : 'dim' }))} />}
       </Card>
       <Card>
         <CardHead title="Top-up tokens"><span className="xs muted">Through NEAR Intents</span></CardHead>
         {top.topupTokens.length === 0
           ? <Empty>No top-ups yet</Empty>
-          : <BarList items={top.topupTokens.map(token => ({ label: <Rail rail={token.network} label={tokenName(token.token, token.network)} />, value: token.count, tone: token.network === 'near' ? 'near' : 'dim' }))} />}
+          : <BarList items={top.topupTokens.map(token => ({ label: <Rail rail={token.network} token={token.token} label={tokenName(token.token, token.network)} />, value: token.count, tone: token.network === 'near' ? 'near' : 'dim' }))} />}
       </Card>
     </>
   );

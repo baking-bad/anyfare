@@ -7,12 +7,12 @@ import { CodeBlock } from '../components/CodeBlock';
 import { CopyButton } from '../components/CopyButton';
 import { Icon } from '../components/Icon';
 import { highlightJson, jsonText } from '../components/Json';
-import { Rail } from '../components/Rail';
+import { RailIcon } from '../components/Rail';
 import { Tabs } from '../components/Tabs';
 import { ms, usdOf } from '../format';
 import { servicePath } from '../services/content';
 import {
-  callLine, creditsLine, explorerName, noApiLine, paidAmount, receiptEyebrow, safeExplorerUrl, seconds, shortHash, sideLine, statusWords, stepTime, stepWords, utcMoment, wouldHavePaid,
+  callLine, chainName, creditsLine, explorerName, noApiLine, paidAmount, receiptEyebrow, safeExplorerUrl, seconds, shortHash, sideLine, statusWords, stepTime, stepWords, utcMoment, wouldHavePaid,
 } from './content';
 
 const dash = '-';
@@ -45,12 +45,17 @@ const BuyerBox = ({ receipt }: { readonly receipt: Receipt }) => {
   );
 };
 
-const Leg = ({ paidWith, asset }: { readonly paidWith: string; readonly asset: string | null }) => (
-  <span className="leg">
-    <Rail rail={paidWith} />
-    {paidWith === 'credits' || asset === null ? null : <b>{asset}</b>}
-  </span>
-);
+// The token with its network at its corner, and its name: "USDC on NEAR", or "Credits"
+const Leg = ({ paidWith, asset }: { readonly paidWith: string; readonly asset: string | null }) => {
+  const token = paidWith === 'credits' ? null : asset ?? 'USDC';
+
+  return (
+    <span className="leg">
+      <RailIcon rail={paidWith} token={token} size={24} />
+      <b>{token === null ? 'Credits' : `${token} on ${chainName(paidWith)}`}</b>
+    </span>
+  );
+};
 
 const RouteBox = ({ receipt }: { readonly receipt: Receipt }) => {
   const { buyer, api, fee } = receipt;

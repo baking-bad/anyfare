@@ -10,7 +10,7 @@ import { CopyButton } from '../components/CopyButton';
 import { ErrorState } from '../components/ErrorState';
 import { Icon } from '../components/Icon';
 import { highlightJson, jsonText } from '../components/Json';
-import { Rail } from '../components/Rail';
+import { RailIcon } from '../components/Rail';
 import { Tabs } from '../components/Tabs';
 import { tryHref, tryLinks } from '../content/home';
 import { ago, ms, usdOf } from '../format';
@@ -181,7 +181,7 @@ const PayWays = ({ check, payHost }: { readonly check: PayableCheck; readonly pa
           return (
             <div key={way.paidWith} className="pay-row">
               <div className="row pay-way">
-                <Rail rail={way.paidWith} />
+                <RailIcon rail={way.paidWith} token={way.asset === '' ? 'USDC' : way.asset} size={32} />
                 <div className="ellipsis"><div className="small semi">{words.name}</div><div className="xs muted">{words.note}</div></div>
               </div>
               <span className="r semi">{usdOf(way.amount)}</span>

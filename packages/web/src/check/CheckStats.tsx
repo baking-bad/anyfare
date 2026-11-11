@@ -8,7 +8,7 @@ import type { EndpointStats, Period } from '../api/types';
 import { BarChart } from '../components/BarChart';
 import { BarList } from '../components/BarList';
 import { ErrorState } from '../components/ErrorState';
-import { Rail } from '../components/Rail';
+import { Rail, railToken } from '../components/Rail';
 import { useSettings } from '../components/Settings';
 import { Skeleton } from '../components/Skeleton';
 import { paidWithName } from '../content/home';
@@ -147,7 +147,7 @@ const StatsBody = ({ stats, period }: { readonly stats: EndpointStats; readonly 
           <div className="mt-12">
             {ways.length === 0
               ? <p className="small muted">No paid calls in this period.</p>
-              : <BarList items={ways.map(way => ({ label: <Rail rail={way.paidWith} label={paidWithName(way.paidWith)} />, value: way.calls, tone: way.paidWith === 'near' ? 'near' : 'dim' }))} />}
+              : <BarList items={ways.map(way => ({ label: <Rail rail={way.paidWith} token={railToken(way.paidWith)} label={paidWithName(way.paidWith)} />, value: way.calls, tone: way.paidWith === 'near' ? 'near' : 'dim' }))} />}
           </div>
         </div>
       </div>

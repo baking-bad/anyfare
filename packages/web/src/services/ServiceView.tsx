@@ -11,7 +11,7 @@ import { DataTable } from '../components/DataTable';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import { Icon } from '../components/Icon';
-import { Rail } from '../components/Rail';
+import { Rail, railToken } from '../components/Rail';
 import { paidWithName } from '../content/home';
 import { count, ms, pct, usd, usdOf } from '../format';
 import { formatChange } from '../home/change';
@@ -179,7 +179,7 @@ export const PaidWithTable = ({ service }: { readonly service: ServiceDetail }) 
 
             return (
               <tr key={way.paidWith}>
-                <td><Rail rail={way.paidWith} label={paidWithName(way.paidWith)} /></td>
+                <td><Rail rail={way.paidWith} token={railToken(way.paidWith)} label={paidWithName(way.paidWith)} /></td>
                 <td className="r">{count(way.calls)}</td>
                 <td>
                   <span className="meter" aria-hidden="true">

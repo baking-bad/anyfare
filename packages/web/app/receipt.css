@@ -21,13 +21,12 @@
 }
 /* The route wraps inside its box, at the arrow, for the longest names; each leg stays on one line */
 .route-big { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.route-big .leg { display: inline-flex; white-space: nowrap; max-width: 100%; align-items: center; gap: 6px; font-size: var(--text-base); }
+.route-big .leg { display: inline-flex; white-space: nowrap; max-width: 100%; align-items: center; gap: 10px; font-size: var(--text-base); }
 .route-big .leg b { font-weight: 500; letter-spacing: var(--tracking-tight); }
 .route-big svg { width: 18px; height: 18px; color: var(--inverse-text-secondary); flex: none; }
-.route-big .rail { background: rgb(255 255 255 / 0.1); color: var(--gray-300); }
-.route-big .rail i { background: rgb(255 255 255 / 0.1); color: var(--white); outline: 0; }
-.route-big .rail.near { background: rgb(0 236 151 / 0.15); color: var(--green-500); }
-.route-big .rail.near i { background: var(--green-500); color: var(--black); }
+.route-big .coin > i { background: rgb(255 255 255 / 0.1); color: var(--white); outline: 0; }
+.route-big .coin > i.net { background: var(--gray-500); }
+.route-big .coin.near:not(.pair) > i, .route-big .coin.near > i.net { background: var(--green-500); color: var(--black); }
 
 .detail-grid { display: grid; gap: 16px 24px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 .detail-grid .wide { grid-column: span 2; }
