@@ -34,7 +34,7 @@ const refusalOf = (error: ReadFailure): Refusal | undefined => {
 };
 
 /**
- * Checks a link on the pay host, as the visitor typed it, probed with `method`. No link is `empty`. A link that is too long makes
+ * Checks a link on the pay host, as the visitor typed it, asked with `method` ("any" sends none). No link is `empty`. A link that is too long makes
  * no request: it is "not a link". The server never requests the link itself: the pay host does, under its own rules.
  */
 export const loadCheck = async (read: Reader, url: string, method: CheckMethod = defaultMethod, payHost?: string): Promise<CheckState> => {
@@ -46,7 +46,8 @@ export const loadCheck = async (read: Reader, url: string, method: CheckMethod =
     return { kind: 'own', inner, raw: { payable: false, reason: 'own_pay_link', message: ownPayTitle } };
   if (isTooLong(url))
     return { kind: 'refused', refusal: tooLongRefusal, status: 200, raw: { payable: false, reason: tooLongRefusal.reason, message: tooLongRefusal.message } };
-  const result = await read(paths.check(url, method), isCheckBody, method === 'POST' ? { headers: checkHeader } : undefined);
+  // Every check carries the header: the pay host needs it for any method but GET, and for the POST try of a check with no method
+  const result = await read(paths.check(url, method), isCheckBody, { headers: checkHeader });
   if (!result.ok) {
     const refusal = refusalOf(result.error);
 
@@ -89,8 +90,8 @@ export const checkRequests = ({ apiUrl, payUrl }: Pick<SiteSettings, 'apiUrl' | 
     {
       method: 'GET',
       url: `${payUrl}${data.params.url === '' ? '/_/check?url=<link>' : paths.check(data.params.url, data.params.method)}`,
-      note: 'The check: our quote, the link to pay, what the API asks, and its decoded 402. method: GET (the default) or POST, the one the probe is sent with. POST needs the header X-Anyfare-Check: 1',
-      ...data.params.method === 'POST' ? { headers: checkHeader } : {},
+      note: 'The check: our quote, the link to pay, what the API asks, and its decoded 402. method: GET, POST, PUT, PATCH or DELETE; left out, it tries GET, then POST. The header X-Anyfare-Check: 1 is needed for every method but GET',
+      headers: checkHeader,
     },
   ];
   if (data.state.kind === 'payable') {

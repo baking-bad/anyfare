@@ -9,7 +9,6 @@ import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import { Icon } from '../components/Icon';
 import { LinkPending } from '../check/LinkPending';
-import { MethodSelect } from '../check/MethodSelect';
 import { agentPrompt, agentsText, hero, nearIntentsUrl, questions, topText, tryHref, tryLinks, ways } from '../content/home';
 import { count, usdOf } from '../format';
 import { servicePath } from '../services/content';
@@ -26,7 +25,6 @@ export const Hero = ({ consoleUrl }: { readonly consoleUrl: string }) => (
           <div className="check-row">
             <div className="check-box">
               <span className="lead-icon"><Icon name="link" /></span>
-              <MethodSelect value="GET" />
               <input name="url" autoComplete="off" spellCheck={false} placeholder={hero.placeholder} aria-label="A paid API link" />
               <Button size="xl" type="submit">Check link</Button>
             </div>

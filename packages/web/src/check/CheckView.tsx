@@ -19,24 +19,24 @@ import type { PayableCheck, Refusal } from './answer';
 import { CheckCalls } from './CheckCalls';
 import { CheckStats } from './CheckStats';
 import {
-  askRows, asksSentence, byHandNote, checkAddress, checkTabs, codeSamples, cut, defaultMethod, describedAs, emptyLine, linkParts, methodFlag, offersPost, refusalWords, shellWord,
-  tryPostLabel, tryPostLine, ownPayButton, ownPayLine, ownPayTitle, unlistedLine, wayWords,
-  type CheckMethod, type CheckParams, type CheckTab,
+  askRows, asksSentence, bodyFlags, knownMethod, byHandNote, checkAddress, checkTabs, codeSamples, cut, defaultMethod, describedAs, emptyLine, linkParts, methodFlag, offersPost, refusalWords, shellWord,
+  pathLines, tryPostLabel, tryPostLine, ownPayButton, ownPayLine, ownPayTitle, unlistedLine, wayWords,
+  type CheckMethod, type CheckParams, type CheckTab, type HttpMethod,
 } from './content';
 import { LinkPending } from './LinkPending';
 import { LinkTabs } from './LinkTabs';
 
 // The pieces of the Check page. Every value that comes from the pay host's answer is rendered as text.
 
-const methodTone = (method: CheckMethod): string => ({ GET: 'get', POST: 'post' } as Record<CheckMethod, string>)[method];
+const methodTone = (method: HttpMethod): string => ({ GET: 'get', POST: 'post', PUT: 'post', PATCH: 'sse', DELETE: 'del' } as Record<HttpMethod, string>)[method];
 
 /**
  * The host and the path of a link, in the mono font: the host in full color, the path a little lighter. A
  * method that is not GET shows as a chip before the link.
  */
-const LinkTitle = ({ host, path, method = defaultMethod }: { readonly host: string; readonly path: string; readonly method?: CheckMethod }) => (
+const LinkTitle = ({ host, path, method }: { readonly host: string; readonly path: string; readonly method?: HttpMethod }) => (
   <div className="url-title">
-    {method === defaultMethod ? null : <span className={['method', methodTone(method), 'url-method'].filter(Boolean).join(' ')}>{method}</span>}
+    {method === undefined || method === 'GET' ? null : <span className={['method', methodTone(method), 'url-method'].filter(Boolean).join(' ')}>{method}</span>}
     <span className="host">{host}</span><span className="path">{path}</span>
   </div>
 );
@@ -64,7 +64,8 @@ export const CheckRefused = ({ refusal, url, method }: { readonly refusal: Refus
   const { title, text } = refusalWords(refusal, method);
   const post = offersPost(refusal, method);
   const { host, path } = linkParts(url);
-  const shown = host !== '' && url.length <= 600 ? <LinkTitle host={host} path={path} method={method} /> : url === '' ? null : <div className="url-title"><span className="host">{cut(url, 120)}</span></div>;
+  const lines = pathLines(refusal, true);
+  const shown = host !== '' && url.length <= 600 ? <LinkTitle host={host} path={path} method={refusal.method ?? knownMethod(method)} /> : url === '' ? null : <div className="url-title"><span className="host">{cut(url, 120)}</span></div>;
 
   return (
     <div className="card pad-lg check-refused">
@@ -73,6 +74,7 @@ export const CheckRefused = ({ refusal, url, method }: { readonly refusal: Refus
         <h1 className="h3">{title}</h1>
         {shown}
         <p className="muted check-refused-text">{text}</p>
+        {lines.length === 0 ? null : <p className="xs muted check-refused-text">{lines.join(' ')}</p>}
         {post ? <p className="small muted check-refused-text">{tryPostLine}</p> : null}
         <div className="row check-refused-actions">
           {post ? <Button href={checkAddress({ url, method: 'POST', tab: 'overview', period: '30d', page: 1 })}>{tryPostLabel}</Button> : null}
@@ -108,12 +110,12 @@ const checkedLine = (check: PayableCheck, now: number): string => {
   return ['Checked', when === undefined ? undefined : when === 'now' ? 'just now' : when, check.ms === undefined ? undefined : `· ${ms(check.ms)}`].filter(Boolean).join(' ');
 };
 
-const CheckHead = ({ check, method, now }: { readonly check: PayableCheck; readonly method: CheckMethod; readonly now: number }) => (
+const CheckHead = ({ check, now }: { readonly check: PayableCheck; readonly now: number }) => (
   <div className="row-between check-head">
     <div className="verdict">
       <span className="tile brand"><Icon name="zap" /></span>
       <div className="stack verdict-body">
-        <LinkTitle host={check.host} path={check.path} method={method} />
+        <LinkTitle host={check.host} path={check.path} method={check.method} />
         <div className="row">
           <Badge tone="success" icon="check">Payable through Anyfare</Badge>
           <span className="xs muted">{checkedLine(check, now)}</span>
@@ -134,6 +136,7 @@ const Asks = ({ check }: { readonly check: PayableCheck }) => {
   const sentence = asksSentence(check);
   const rows = askRows(check);
   const description = describedAs(check.asks);
+  const lines = pathLines(check);
 
   return (
     <div className="card pad-lg stack">
@@ -143,6 +146,7 @@ const Asks = ({ check }: { readonly check: PayableCheck }) => {
           ? <code key={index}>{part.text}</code>
           : part.strong ? <b key={index}>{part.text}</b> : part.text)}
       </p>
+      {lines.length === 0 ? null : <div className="stack check-path">{lines.map(line => <p key={line} className="xs muted">{line}</p>)}</div>}
       {rows.length === 0 && description === undefined ? null : (
         <dl className="kv ask-kv mt-8">
           {rows.map(row => (
@@ -197,8 +201,8 @@ const PayWays = ({ check, payHost }: { readonly check: PayableCheck; readonly pa
   </>
 );
 
-const FromYourAgent = ({ link, method, consoleUrl }: { readonly link: string; readonly method: CheckMethod; readonly consoleUrl: string }) => {
-  const { prompt } = codeSamples(link, method);
+const FromYourAgent = ({ check, consoleUrl }: { readonly check: PayableCheck; readonly consoleUrl: string }) => {
+  const { prompt } = codeSamples(check.link, check.method, check.exampleBody);
 
   return (
     <div className="card stack">
@@ -230,7 +234,7 @@ const Overview = ({ check, stats, calls, params, now, payHost, consoleUrl }: {
       </div>
       <div className="stack-lg side">
         <PayWays check={check} payHost={payHost} />
-        <FromYourAgent link={check.link} method={params.method} consoleUrl={consoleUrl} />
+        <FromYourAgent check={check} consoleUrl={consoleUrl} />
       </div>
     </div>
     <div className="mt-32"><CheckCalls host={check.host} path={check.path} params={params} calls={calls} page={params.page} now={now} /></div>
@@ -255,9 +259,9 @@ const JsonTab = ({ raw, payHost, method }: { readonly raw: unknown; readonly pay
 
 const statusPhrases: Readonly<Record<number, string>> = { 200: 'OK', 402: 'Payment Required' };
 
-const HeadersTab = ({ check, method }: { readonly check: PayableCheck; readonly method: CheckMethod }) => {
+const HeadersTab = ({ check }: { readonly check: PayableCheck }) => {
   const { upstream } = check;
-  const request = `curl -i${methodFlag(method)} ${shellWord(check.target)}`;
+  const request = `curl -i${methodFlag(check.method)} ${shellWord(check.target)}${bodyFlags(check.exampleBody)}`;
   const status = upstream.status === undefined ? undefined : `HTTP/1.1 ${upstream.status}${statusPhrases[upstream.status] === undefined ? '' : ` ${statusPhrases[upstream.status]}`}`;
   const plain = [`$ ${request}`, '', ...status === undefined ? [] : [status], ...upstream.headers.map(([name, value]) => `${name}: ${value}`)].join('\n');
   const decoded = upstream.decoded === undefined ? undefined : jsonText(upstream.decoded);
@@ -279,8 +283,8 @@ const HeadersTab = ({ check, method }: { readonly check: PayableCheck; readonly 
   );
 };
 
-const CodeTab = ({ link, method }: { readonly link: string; readonly method: CheckMethod }) => {
-  const samples = codeSamples(link, method);
+const CodeTab = ({ check }: { readonly check: PayableCheck }) => {
+  const samples = codeSamples(check.link, check.method, check.exampleBody);
 
   return (
     <Tabs
@@ -321,13 +325,13 @@ export const CheckPayable = ({ check, raw, stats, calls, params, now, payHost, c
   const content: Readonly<Record<CheckTab, ReactNode>> = {
     overview: <Overview check={check} stats={stats} calls={calls} params={params} now={now} payHost={payHost} consoleUrl={consoleUrl} />,
     json: <JsonTab raw={raw} payHost={payHost} method={params.method} />,
-    headers: <HeadersTab check={check} method={params.method} />,
-    code: <CodeTab link={check.link} method={params.method} />,
+    headers: <HeadersTab check={check} />,
+    code: <CodeTab check={check} />,
   };
 
   return (
     <div className="check-result">
-      <CheckHead check={check} method={params.method} now={now} />
+      <CheckHead check={check} now={now} />
       <div className="mt-32">
         <LinkTabs
           label="The check"

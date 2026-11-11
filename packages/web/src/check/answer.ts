@@ -2,6 +2,8 @@
 // outside host (descriptions, header values, a decoded challenge, addresses), so every value is read as a
 // string or a number and cut to a length, and nothing is kept that the page doesn't show.
 
+import { knownMethod, type HttpMethod } from './method';
+
 /** The longest link the page sends for a check. A longer one is "not a link" without a request. */
 export const maxLinkLength = 2_048;
 
@@ -63,9 +65,31 @@ export interface CheckNumbers {
   readonly p50Ms: number | null;
 }
 
-export interface PayableCheck {
-  // The method the check probed with
-  readonly method: string;  // The link as the pay host normalized it, and the pay link
+/** One try of the check: the method sent, whether with the API's own example body, and what the API answered. */
+export interface CheckTry {
+  readonly method: HttpMethod;
+  readonly body: 'none' | 'example';
+  // Null when the API didn't answer
+  readonly status: number | null;
+  // The answer came from the pay host's memory: nothing was sent
+  readonly cached: boolean;
+  // Why the try wasn't made, such as `header`
+  readonly skipped?: string;
+}
+
+/** What a check says of how it got its answer, payable or not. Old answers have none of it. */
+export interface CheckPath {
+  // The method that gave the price, or the last one tried. Nothing when the answer names none we know.
+  readonly method: HttpMethod | undefined;
+  // The API's own example body as compact JSON, when it has one
+  readonly exampleBody: string | undefined;
+  readonly tried: readonly CheckTry[];
+}
+
+export interface PayableCheck extends Omit<CheckPath, 'method'> {
+  // The method that gave the price: GET for an old answer that names none
+  readonly method: HttpMethod;
+  // The link as the pay host normalized it, and the pay link
   readonly target: string;
   readonly link: string;
   // From the target: the host, and the path without its query
@@ -85,7 +109,7 @@ export interface PayableCheck {
   readonly ms: number | undefined;
 }
 
-export interface Refusal {
+export interface Refusal extends Partial<CheckPath> {
   readonly reason: string;
   readonly message: string;
   // Finer than the reason: `no_payment_asked`, `opted_out`, `dns`...
@@ -116,10 +140,21 @@ export interface AsksAnswer {
   readonly expires: string | undefined;
 }
 
+/** One try, on the wire. */
+export interface TryAnswer {
+  readonly method: string;
+  readonly body: 'none' | 'example';
+  readonly status: number | null;
+  readonly cached: true | undefined;
+  readonly skipped: string | undefined;
+}
+
 /** A payable link, on the wire. */
 export interface PayableAnswer {
   readonly payable: true;
   readonly method: string;
+  readonly exampleBody: unknown;
+  readonly tried: readonly TryAnswer[];
   readonly target: string;
   readonly price: { readonly amount: string; readonly currency: string; readonly asset: string; readonly network: string | null };
   readonly quote: { readonly amount: string; readonly fee: string; readonly currency: string };
@@ -138,6 +173,8 @@ export interface PayableAnswer {
 export interface RefusedAnswer {
   readonly payable: false;
   readonly method: string;
+  readonly exampleBody: unknown;
+  readonly tried: readonly TryAnswer[];
   readonly reason: string;
   readonly message: string;
   readonly detail: string | undefined;
@@ -229,6 +266,37 @@ const readPrice = (value: unknown): PayableCheck['price'] => {
   return amount === undefined ? undefined : { amount, currency: text(value['currency'], 20) ?? 'USD' };
 };
 
+/** The longest example body the page keeps, as compact JSON. */
+const maxExampleBody = 4_000;
+
+const readExampleBody = (value: unknown): string | undefined => {
+  if (value === null || value === undefined)
+    return undefined;
+  const json = JSON.stringify(value);
+
+  return json === undefined || json.length > maxExampleBody ? undefined : json;
+};
+
+const readTries = (value: unknown): readonly CheckTry[] => Array.isArray(value)
+  ? value.slice(0, 10).flatMap((entry): CheckTry[] => {
+    if (!isRecord(entry))
+      return [];
+    const method = knownMethod(text(entry['method'], 10));
+    if (method === undefined)
+      return [];
+    const skipped = text(entry['skipped'], 40);
+
+    return [{ method, body: entry['body'] === 'example' ? 'example' : 'none', status: whole(entry['status']) ?? null, cached: entry['cached'] === true, ...skipped === undefined ? {} : { skipped } }];
+  })
+  : [];
+
+// What the answer says of its tries, the same for a payable link and a refusal. An old answer has none.
+const readPath = (value: Record<string, unknown>): CheckPath => ({
+  method: knownMethod(text(value['method'], 10)),
+  exampleBody: readExampleBody(value['exampleBody']),
+  tried: readTries(value['tried']),
+});
+
 /**
  * The answer of the check, or `undefined` when it isn't one: no `payable` flag, a payable answer with no
  * target or link, or a refusal with no reason. Other fields are optional: a missing one is left out of the page.
@@ -243,7 +311,7 @@ export const readCheckAnswer = (value: unknown): CheckAnswer | undefined => {
     const detail = text(value['detail'], 300);
     const status = isRecord(value['upstream']) ? whole(value['upstream']['status']) : undefined;
 
-    return { payable: false, refusal: { reason, message: text(value['message'], 600) ?? '', ...detail === undefined ? {} : { detail }, ...status === undefined ? {} : { status } } };
+    return { payable: false, refusal: { reason, message: text(value['message'], 600) ?? '', ...readPath(value), ...detail === undefined ? {} : { detail }, ...status === undefined ? {} : { status } } };
   }
   const target = text(value['target'], 4_096);
   const link = text(value['link'], 4_096);
@@ -264,7 +332,8 @@ export const readCheckAnswer = (value: unknown): CheckAnswer | undefined => {
   return {
     payable: true,
     check: {
-      method: text(value['method'], 10) ?? 'GET',
+      ...readPath(value),
+      method: knownMethod(text(value['method'], 10)) ?? 'GET',
       target,
       link,
       host: url.host,

@@ -32,7 +32,7 @@ export const platformGuide = (hosts: Hosts): string => {
 
 ## Steps
 
-1. Check a link. Free, no key. "payable": true comes with the price and our quote. A paid link you check joins the list of services, as checked, until someone pays it. A link that asks for payment only on POST is "not_payable" to this GET check: add \`&method=POST\` and the header \`X-Anyfare-Check: 1\` to the check:
+1. Check a link. Free, no key. "payable": true comes with the price and our quote. A paid link you check joins the list of services, as checked, until someone pays it. The check takes \`method\` (GET, POST, PUT, PATCH or DELETE; left out, it tries GET, then POST). Send the header \`X-Anyfare-Check: 1\` for every method but GET, and for the POST try. The answer's \`exampleBody\` is the API's own example body, or null, and \`tried\` lists the tries. For a link that asks only on POST:
 
 \`\`\`sh
 ${curl('check-post')}

@@ -103,7 +103,7 @@ ${fence(curl('check'), 'sh')}
 
 A paid link you check joins the list of services, as checked, until someone pays it. "listed" in the answer says whether the link is in the list now: it can be false for a payable link when a cap or a limit kept it out, or it was not known in time.
 
-Some APIs ask for payment only on POST. A GET check of such a link answers "payable": false with the reason "not_payable": check it again with \`&method=POST\` and the header \`X-Anyfare-Check: 1\`. The header is there so that a plain link can't make Anyfare send a POST to an API: without it the answer is 400. For example, an API that asks only on POST:
+Some APIs ask for payment only on POST. The check takes "method": GET, POST, PUT, PATCH or DELETE. Left out, it tries GET, then POST. Send the header \`X-Anyfare-Check: 1\` for every method but GET, and for that POST try: it is there so that a plain link can't make Anyfare send a POST to an API, and an explicit method without it answers 400. The answer has "exampleBody" (the API's own example JSON body, or null; the price is then that of the example request) and "tried" (each try's method, body and status). For example, an API that asks only on POST:
 
 ${fence(curl('check-post'), 'sh')}
 

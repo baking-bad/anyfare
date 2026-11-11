@@ -1,5 +1,5 @@
 import type { ListedStatus, Period, ServiceDetail, ServiceRow } from '../api/types';
-import { defaultMethod, knownMethod } from '../check/method';
+import { knownMethod } from '../check/method';
 import { ago, count, pct } from '../format';
 
 // The words and small rules of the Services page and the Service page. The pages and their Markdown
@@ -121,7 +121,7 @@ export const serviceHref = (host: string, period: Period = defaultPeriod, base =
 export const checkHref = (host: string, path = '', method?: string | null): string => {
   const probe = knownMethod(method?.toUpperCase());
 
-  return `/check?url=${host}${path.split('/').map(part => encodeURIComponent(part)).join('/')}${probe === undefined || probe === defaultMethod ? '' : `&method=${probe}`}`;
+  return `/check?url=${host}${path.split('/').map(part => encodeURIComponent(part)).join('/')}${probe === undefined || probe === 'GET' ? '' : `&method=${probe}`}`;
 };
 
 /**

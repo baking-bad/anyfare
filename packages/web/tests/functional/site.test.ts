@@ -166,7 +166,8 @@ const sectionTexts = [
 
 const noBrokenValues = (html: string): void => {
   // The page's own text, without the scripts' data
-  const text = html.replace(/<script[\s\S]*?<\/script>/g, '');
+  // and without the JSON tab, which shows the answer as it came: its `null`s are real
+  const text = html.replace(/<script[\s\S]*?<\/script>/g, '').replace(/<pre class="code tall"[\s\S]*?<\/pre>/g, '');
   expect(text).not.toMatch(/undefined|NaN|\bnull\b/);
 };
 
@@ -1047,28 +1048,32 @@ describe('the method of the check', () => {
   const postOnly = 'post.example.com/v1/sample/quotes/latest';
   const checks = (before: number): string[] => full.api!.requests.slice(before).filter(request => request.path.startsWith('/_/check')).map(request => request.path);
 
-  it('has a method select before the link field, on the check page and on Home, that works without scripts', async () => {
+  it('has a method menu before the link field on the check page, that works without scripts, and none on Home', async () => {
     const check = await get(full, checkPath(postOnly, '&method=POST'));
     const home = await get(full, '/');
     const select = /<select [^>]*class="method-select"[^>]*>([\s\S]*?)<\/select>/;
+    const found = select.exec(check.body);
 
-    for (const { body } of [check, home]) {
-      const found = select.exec(body);
-      expect(found, 'a method select').not.toBeNull();
-      expect(found![0]).toContain('name="method"');
-      expect(found![0]).toContain('aria-label="HTTP method"');
-      expect(found![1]).not.toMatch(/PUT|PATCH|DELETE/);
-      for (const method of ['GET', 'POST'])
-        expect(found![1]).toContain(`<option value="${method}"`);
-      expect(body.indexOf('class="method-select"')).toBeLessThan(body.indexOf('name="url"'));
-    }
-    expect(/<option value="POST" selected=""/.test(select.exec(check.body)![1]!)).toBe(true);
-    expect(/<option value="GET" selected=""/.test(select.exec(home.body)![1]!)).toBe(true);
+    expect(found, 'a method select').not.toBeNull();
+    expect(found![0]).toContain('name="method"');
+    expect(found![0]).toContain('aria-label="HTTP method"');
+    expect([...found![1]!.matchAll(/<option value="(\w+)"[^>]*>([^<]*)</g)].map(option => [option[1], option[2]])).toEqual([
+      ['ANY', 'Any method'], ['GET', 'GET'], ['POST', 'POST'], ['PUT', 'PUT'], ['PATCH', 'PATCH'], ['DELETE', 'DELETE'],
+    ]);
+    expect(check.body.indexOf('class="method-select"')).toBeLessThan(check.body.indexOf('name="url"'));
+    expect(/<option value="POST" selected=""/.test(found![1]!)).toBe(true);
+    // "Any method" is the default
+    expect(/<option value="ANY" selected=""/.test(select.exec((await get(full, checkPath(postOnly))).body)![1]!)).toBe(true);
+    for (const method of ['PUT', 'PATCH', 'DELETE'])
+      expect(/<option value="(\w+)" selected=""/.exec(select.exec((await get(full, checkPath(postOnly, `&method=${method}`))).body)![1]!)![1]).toBe(method);
+    // Home's field has no menu, and checks with any method
+    expect(home.body).not.toContain('method-select');
+    expect(home.body).toMatch(/<form class="hero-check stack" action="\/check" method="get">/);
   });
 
   it('shows "Check it as POST" under a GET check that is not payable, and the button leads to the same check as POST', async () => {
     const before = full.api!.requests.length;
-    const { response, body } = await get(full, checkPath(postOnly));
+    const { response, body } = await get(full, checkPath(postOnly, '&method=GET'));
     const text = textOf(body);
 
     expect(response.status).toBe(200);
@@ -1076,7 +1081,52 @@ describe('the method of the check', () => {
     expect(text).toContain('Some APIs ask for payment only on POST.');
     expect(body).toContain(`href="/check?url=${encodeURIComponent(postOnly)}&amp;method=POST"`);
     expect(text).toContain('Check it as POST');
+    expect(checks(before)).toEqual([`/_/check?url=${encodeURIComponent(postOnly)}&method=GET`]);
+  });
+
+  it('finds a POST-only link with "Any method" in one check, says how, and has no POST to offer', async () => {
+    const before = full.api!.requests.length;
+    const { response, body } = await get(full, checkPath(postOnly));
+    const text = textOf(body);
+
+    expect(response.status).toBe(200);
     expect(checks(before)).toEqual([`/_/check?url=${encodeURIComponent(postOnly)}`]);
+    expect(text).toContain('Payable through Anyfare');
+    expect(text).toContain('Call it with POST.');
+    expect(text).toContain('Tried GET: 404. POST: 402.');
+    expect(text).not.toContain('own example request');
+    expect(text).not.toContain('Check it as POST');
+    expect(body).toMatch(/<span class="method post url-method">POST<\/span>/);
+    expect(body).toContain(`curl -X POST https://pay.example.com/${postOnly}`);
+  });
+
+  it('prices a link by the API\'s own example body, and puts the body in the Code tab, quoted', async () => {
+    const link = 'body.example.com/v1/extract';
+    const { body } = await get(full, checkPath(link));
+    const text = textOf(body);
+    const code = textOf((await get(full, checkPath(link, '&tab=code'))).body).replaceAll('&#x27;', '\'').replaceAll('&quot;', '"');
+
+    expect(text).toContain('Call it with POST.');
+    expect(text).toContain('Tried GET: 404. POST: 402. POST with the example body: 402.');
+    expect(text).toContain('own example request. Your request body can change it.');
+    expect(text).toContain('$0.001');
+    expect(code).toContain('curl -X POST https://pay.example.com/body.example.com/v1/extract');
+    expect(code).toContain('-H \'Content-Type: application/json\'');
+    expect(code).toContain('--data \'{"urls":["https://example.com"],"text":true}\'');
+    // The JSON tab is the answer as it came
+    expect((await get(full, checkPath(link, '&tab=json'))).body).toContain('exampleBody');
+    const twin = (await get(full, `/check.md?url=${encodeURIComponent(link)}`)).body;
+
+    expect(twin).toContain('Call it with POST. Tried GET: 404. POST: 402. POST with the example body: 402. This is the price of the API\'s own example request.');
+  });
+
+  it('says every try of a link that is a 404 to both, and offers no POST', async () => {
+    const { body } = await get(full, checkPath('gone.example.com/v1/x'));
+    const text = textOf(body);
+
+    expect(text).toContain('Not a paid link');
+    expect(text).toContain('Tried GET: 404. POST: 404.');
+    expect(text).not.toContain('Check it as POST');
   });
 
   it('asks the pay host with the method, and shows a payable POST with its chip, curl lines, prompt, title and twin', async () => {
@@ -1087,11 +1137,11 @@ describe('the method of the check', () => {
 
     expect(response.status).toBe(200);
     expect(checks(before)).toEqual([`/_/check?url=${encodeURIComponent(postOnly)}&method=POST`]);
-    // The header goes with a POST check, and only with it
+    // The header goes with every check
     const sent = full.api!.requests.slice(before).filter(request => request.path.startsWith('/_/check'));
     expect(sent.map(request => request.headers['x-anyfare-check'])).toEqual(['1']);
     await get(full, checkPath(postOnly));
-    expect(full.api!.requests.filter(request => request.path.startsWith('/_/check') && !request.path.includes('method=')).every(request => request.headers['x-anyfare-check'] === undefined)).toBe(true);
+    expect(full.api!.requests.filter(request => request.path.startsWith('/_/check')).every(request => request.headers['x-anyfare-check'] === '1')).toBe(true);
     expect(text).toContain('Payable through Anyfare');
     expect(body).toMatch(/<span class="method post url-method">POST<\/span><span class="host">post\.example\.com<\/span>/);
     expect(body).toContain('<title>Check: POST post.example.com/v1/sample/quotes/latest | Anyfare</title>');
@@ -1104,7 +1154,7 @@ describe('the method of the check', () => {
     expect(body).not.toContain('Check it as POST');
     const twin = await get(full, `/check.md?url=${encodeURIComponent(postOnly)}&method=POST`);
     expect(twin.response.status).toBe(200);
-    expect(twin.body).toMatch(/^# POST post\.example\.com\/v1\/sample\/quotes\/latest\n\nPayable through Anyfare\. Checked with POST\./);
+    expect(twin.body).toMatch(/^# POST post\.example\.com\/v1\/sample\/quotes\/latest\n\nPayable through Anyfare\. Call it with POST\./);
   });
 
   it('says which method was tried when a POST check is not payable, with no POST button', async () => {
@@ -1118,16 +1168,28 @@ describe('the method of the check', () => {
     expect(body).toMatch(/<span class="method post url-method">POST<\/span>/);
   });
 
-  it('takes a method that is not one of the five as GET, in the request and in the page', async () => {
+  it('takes a method that is not one of the five as "any method", in the request and in the page', async () => {
     const before = full.api!.requests.length;
-    for (const method of ['post', 'HEAD', 'PUT', 'DELETE', 'nope']) {
+    for (const method of ['post', 'HEAD', 'ANY', 'nope']) {
       const { response, body } = await get(full, checkPath(postOnly, `&method=${method}`));
 
       expect(response.status).toBe(200);
-      expect(textOf(body)).toContain('Check it as POST');
+      expect(textOf(body)).toContain('Tried GET: 404. POST: 402.');
       expect(body).toContain('<title>Check: post.example.com/v1/sample/quotes/latest | Anyfare</title>');
     }
-    expect(checks(before)).toEqual(Array.from({ length: 5 }, () => `/_/check?url=${encodeURIComponent(postOnly)}`));
+    expect(checks(before)).toEqual(Array.from({ length: 4 }, () => `/_/check?url=${encodeURIComponent(postOnly)}`));
+  });
+
+  it('asks the pay host with PUT, PATCH and DELETE, and shows the method', async () => {
+    const before = full.api!.requests.length;
+    for (const method of ['PUT', 'PATCH', 'DELETE']) {
+      const { response, body } = await get(full, checkPath('api.example.com/v1/sample/quotes/latest', `&method=${method}`));
+
+      expect(response.status).toBe(200);
+      expect(textOf(body)).toContain(`Call it with ${method}.`);
+      expect(body).toContain(`curl -X ${method} https://pay.example.com/api.example.com/v1/sample/quotes/latest`);
+    }
+    expect(checks(before).map(path => /method=(\w+)/.exec(path)![1])).toEqual(['PUT', 'PATCH', 'DELETE']);
   });
 
   it('keeps plain GET curl lines and prompt for a GET check', async () => {
@@ -2696,7 +2758,7 @@ describe('the Markdown twin of a page with state in its address', () => {
 
     expect(response.status).toBe(200);
     expect(body).toContain('# POST api.example.com/v1/sample/quotes/latest');
-    expect(body).toContain('Checked with POST');
+    expect(body).toContain('Call it with POST.');
     expect(body).toContain('## Through Anyfare, 7 days');
   });
 

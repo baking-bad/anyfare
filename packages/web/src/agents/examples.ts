@@ -44,10 +44,10 @@ const titleCase = (name: string): string => name.split('-').map(part => part.cha
 
 /** Every example, with the hosts of this deployment. */
 export const curlExamples = ({ apiUrl, payUrl }: Hosts): readonly CurlExample[] => [
-  { id: 'check', method: 'GET', url: `${payUrl}/_/check?url=${exampleLink}`, headers: {}, expect: { status: 200, fields: ['payable', 'target', 'price', 'quote', 'link'] }, needs: [] },
+  { id: 'check', method: 'GET', url: `${payUrl}/_/check?url=${exampleLink}`, headers: {}, expect: { status: 200, fields: ['payable', 'target', 'price', 'quote', 'link', 'method', 'exampleBody', 'tried'] }, needs: [] },
   {
     id: 'check-post', method: 'GET', url: `${payUrl}/_/check?url=${exampleLinkPost}&method=POST`, headers: { 'x-anyfare-check': '1' },
-    expect: { status: 200, fields: ['payable', 'target', 'price', 'quote', 'link', 'method'] }, needs: [],
+    expect: { status: 200, fields: ['payable', 'target', 'price', 'quote', 'link', 'method', 'exampleBody', 'tried'] }, needs: [],
   },
   {
     id: 'unpaid', method: 'GET', url: `${payUrl}/${exampleCall}`, headers: {}, flags: ['-i'],

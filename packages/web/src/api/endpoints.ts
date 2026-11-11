@@ -27,8 +27,8 @@ export const paths = {
   call: (id: string): string => `/v1/calls/${encodeURIComponent(id)}`,
   endpointStats: (host: string, path: string, period?: Period): string => `/v1/endpoints/stats${query({ host, path, period })}`,
   // The pay host's check of a link. The link goes as the visitor typed it.
-  // The method goes only when it isn't GET, the pay host's default
-  check: (url: string, method?: string): string => `/_/check${query({ url, method: method === 'GET' ? undefined : method })}`,
+  // The method goes when one is picked; "any" leaves it out, and the pay host tries GET, then POST
+  check: (url: string, method?: string): string => `/_/check${query({ url, method: method === undefined || method === 'ANY' ? undefined : method })}`,
   // The stream takes the list's filters, and no page or size
   callStream: (q: Omit<CallsQuery, 'page' | 'size'> = {}): string => `/v1/calls/stream${query({ paidWith: q.paidWith, service: q.service, host: q.host, endpoint: q.endpoint, status: q.status })}`,
 } as const;

@@ -363,10 +363,11 @@ describe('the errors the files list', () => {
   });
 
   it('answers a bad method and a bad check as the files say', async () => {
-    // The check of a POST needs its header: without it the answer is a 400
-    const refused = await pay(`/_/check?url=${running.paidLink}&method=POST`);
-    expectError(refused, 400, 'invalid_request');
-    const other = await pay(`/_/check?url=${running.paidLink}&method=DELETE`, { headers: { 'x-anyfare-check': '1' } });
+    // The check of any method but GET needs its header: without it the answer is a 400
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE'])
+      expectError(await pay(`/_/check?url=${running.paidLink}&method=${method}`), 400, 'invalid_request');
+    // A method that is not one of the five is a 400, with the header or without
+    const other = await pay(`/_/check?url=${running.paidLink}&method=HEAD`, { headers: { 'x-anyfare-check': '1' } });
     expectError(other, 400, 'invalid_request');
     // A route that takes one method: another is refused
     const wrong = await api('/v1/accounts', { method: 'DELETE' });

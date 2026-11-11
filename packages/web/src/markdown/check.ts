@@ -5,7 +5,7 @@ import { paidWithName } from '../content/home';
 import { count, ms, pct, usdOf } from '../format';
 import type { CheckNumbers, PayableCheck } from '../check/answer';
 import {
-  askRows, asksSentence, checkAddress, checkDescription, cut, defaultMethod, offersPost, tryPostLine, describedAs, emptyLine, linkParts, noCallsLine, periodName, refusalWords, titleFor, unavailableLine, unlistedLine, wayWords, ownPayLine, ownPayTitle,
+  askRows, asksSentence, checkAddress, checkDescription, cut, defaultMethod, knownMethod, offersPost, pathLines, tryPostLine, describedAs, emptyLine, linkParts, noCallsLine, periodName, refusalWords, titleFor, unavailableLine, unlistedLine, wayWords, ownPayLine, ownPayTitle,
 } from '../check/content';
 import type { CheckData } from '../check/data';
 import { inexactLine, isHost, servicePath } from '../services/content';
@@ -76,13 +76,14 @@ const serviceLine = (siteUrl: string, check: PayableCheck): string =>
 const payable = (settings: SiteSettings, check: PayableCheck, data: CheckData): string => {
   const { params } = data;
   const fallen = data.stats !== undefined && !data.stats.ok && check.stats !== null;
-  const probed = params.method === defaultMethod ? '' : `${params.method} `;
+  const probed = check.method === 'GET' ? '' : `${check.method} `;
+  const lines = pathLines(check);
   const description = describedAs(check.asks);
   const rows = askRows(check);
 
   return `# ${probed}${check.host}${check.path}
 
-Payable through Anyfare.${probed === '' ? '' : ` Checked with ${params.method}.`}${check.checkedAt === undefined ? '' : ` Checked at ${check.checkedAt}${check.ms === undefined ? '' : `, ${ms(check.ms)}`}.`}
+Payable through Anyfare.${lines.length === 0 ? '' : ` ${lines.join(' ')}`}${check.checkedAt === undefined ? '' : ` Checked at ${check.checkedAt}${check.ms === undefined ? '' : `, ${ms(check.ms)}`}.`}
 
 ${serviceLine(settings.siteUrl, check)}
 
@@ -134,10 +135,12 @@ export const checkMarkdown = (settings: SiteSettings, data: CheckData): { readon
     const { title, text } = refusalWords(state.refusal, params.method);
     const { host, path } = linkParts(params.url);
     const shown = host === '' ? cut(oneLine(params.url), 120) : `${host}${path}`;
+    const method = state.refusal.method ?? knownMethod(params.method);
+    const lines = pathLines(state.refusal, true);
 
     return {
       status: state.status,
-      body: `# ${shown === '' ? titleFor('') : `${params.method === defaultMethod ? '' : `${params.method} `}${shown}`}\n\nNot payable: ${title}. ${text}${offersPost(state.refusal, params.method) ? ` ${tryPostLine} Ask as ${settings.siteUrl}${checkAddress({ ...params, method: 'POST' }, '/check.md')}` : ''}\n\nReason: \`${state.refusal.reason}\`\n\nAnyfare checks paid links only. Send the link of one paid endpoint, the one that answers 402.\n`,
+      body: `# ${shown === '' ? titleFor('') : `${method === undefined || method === 'GET' ? '' : `${method} `}${shown}`}\n\nNot payable: ${title}. ${text}${lines.length === 0 ? '' : ` ${lines.join(' ')}`}${offersPost(state.refusal, params.method) ? ` ${tryPostLine} Ask as ${settings.siteUrl}${checkAddress({ ...params, method: 'POST' }, '/check.md')}` : ''}\n\nReason: \`${state.refusal.reason}\`\n\nAnyfare checks paid links only. Send the link of one paid endpoint, the one that answers 402.\n`,
     };
   }
 

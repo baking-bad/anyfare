@@ -37,7 +37,7 @@ Free, no key, and it pays nothing. Do it before the first call to any API.
 ${curl('check')}
 \`\`\`
 
-"payable": true comes with "price" (what the API asks) and "quote" (what you pay). A paid link you check joins the list of services, as checked, until someone pays it. If the quote is above what the user allowed, ask. "payable": false has a "reason" and a "message". When the reason is "not_payable" for a link the user says is paid, it may ask only on another method: check it again with &method=POST and the header X-Anyfare-Check: 1 Otherwise use another API.
+"payable": true comes with "price" (what the API asks) and "quote" (what you pay). A paid link you check joins the list of services, as checked, until someone pays it. If the quote is above what the user allowed, ask. "payable": false has a "reason" and a "message". When the reason is "not_payable" for a link the user says is paid, it may ask only on another method: the check takes method (GET, POST, PUT, PATCH or DELETE; left out, it tries GET, then POST), and every method but GET needs the header X-Anyfare-Check: 1. "exampleBody" is the API's own example body, or null, and "tried" lists the tries. Otherwise use another API.
 
 A check with POST:
 

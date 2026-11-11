@@ -2,10 +2,10 @@ import type { Period } from '../api/types';
 import { chainName } from '../receipt/content';
 import { usdOf } from '../format';
 import { defaultPeriod, parsePeriod } from '../services/content';
-import { checkHeader, checkMethods, defaultMethod, knownMethod, parseMethod, type CheckMethod } from './method';
-import { maxLinkLength, type Asks, type PayableCheck, type PayWay, type Refusal } from './answer';
+import { checkHeader, checkMethods, defaultMethod, httpMethods, knownMethod, parseMethod, type CheckMethod, type HttpMethod } from './method';
+import { maxLinkLength, type Asks, type CheckPath, type CheckTry, type PayableCheck, type PayWay, type Refusal } from './answer';
 
-export { checkHeader, checkMethods, defaultMethod, knownMethod, parseMethod, type CheckMethod };
+export { checkHeader, checkMethods, defaultMethod, httpMethods, knownMethod, parseMethod, type CheckMethod, type HttpMethod };
 
 // The words and small rules of the Check page. The page and its Markdown twin both read them, so they say
 // the same. Everything that comes from the pay host's answer is plain text: a function here returns text,
@@ -87,7 +87,7 @@ const valueOf = (source: Source, name: string): string => {
 
 const isTab = (value: string): value is CheckTab => checkTabs.some(tab => tab.id === value);
 
-/** The state a URL's query holds. Anything the page doesn't know is dropped: the method is GET, the tab is Overview, the period 30 days, the page 1. */
+/** The state a URL's query holds. Anything the page doesn't know is dropped: the method is any, the tab is Overview, the period 30 days, the page 1. */
 export const parseCheckParams = (source: Source): CheckParams => {
   const tab = valueOf(source, 'tab');
   const page = Number(valueOf(source, 'page'));
@@ -101,7 +101,7 @@ export const parseCheckParams = (source: Source): CheckParams => {
   };
 };
 
-/** The query string of the state, in a fixed order, without what is default (the method GET included). The link goes as typed. */
+/** The query string of the state, in a fixed order, without what is default ("any" method included). The link goes as typed. */
 export const checkQuery = (params: CheckParams): string => {
   const search = new URLSearchParams();
   if (params.url !== '')
@@ -165,7 +165,7 @@ export const ownPayLine = (payHost: string): string => `Paste the API's own link
 
 export const ownPayButton = 'Check that link';
 
-/** The page's title for a link: "Check: <host><path>", with the method before the link when it is not GET, cut at 80 characters. Without a link it is "Check a link". */
+/** The page's title for a link: "Check: <host><path>", with the method before the link when one was picked, cut at 80 characters. Without a link it is "Check a link". */
 export const titleFor = (link: string, method: CheckMethod = defaultMethod): string => {
   const { host, path } = linkParts(link);
   const shown = `${host}${path}`;
@@ -174,7 +174,13 @@ export const titleFor = (link: string, method: CheckMethod = defaultMethod): str
 };
 
 /** The flag of a call by hand: ` -X POST` for a method that is not GET, nothing for GET (curl's own default). */
-export const methodFlag = (method: CheckMethod): string => method === defaultMethod ? '' : ` -X ${method}`;
+export const methodFlag = (method: string): string => method === 'GET' || method === defaultMethod ? '' : ` -X ${method}`;
+
+/** A word for a shell, always in single quotes, with a quote inside closed and reopened. */
+const quoted = (value: string): string => `'${value.replaceAll('\'', '\'\\\'\'')}'`;
+
+/** The flags that send the API's example body: its type, and the body as compact JSON. Nothing without a body. */
+export const bodyFlags = (body: string | undefined): string => body === undefined ? '' : ` -H 'Content-Type: application/json' --data ${quoted(body)}`;
 
 /** A word for a shell: left as it is when it holds only safe characters, otherwise in single quotes with a quote inside closed and reopened. */
 export const shellWord = (value: string): string =>
@@ -337,7 +343,7 @@ export const wayWords = (way: PayWay): { readonly name: string; readonly note: s
 };
 
 /** The prompt to give an agent, with the pay link. A method that is not GET is named in the first line. */
-export const agentPrompt = (link: string, method: CheckMethod = defaultMethod): string => `Call ${link}${method === defaultMethod ? '' : ` with ${method}`} through Anyfare.
+export const agentPrompt = (link: string, method: string = 'GET'): string => `Call ${link}${method === 'GET' || method === defaultMethod ? '' : ` with ${method}`} through Anyfare.
 Pay with my payment key from $ANYFARE_PAYMENT_KEY.
 Don't pay more than $0.05 for one call.`;
 
@@ -402,7 +408,7 @@ export const refusalWords = (refusal: Refusal, method: CheckMethod = defaultMeth
     return { title: 'We don\'t route to this host', text: detail !== undefined && detailsOf[reason]!.includes(detail) ? detailText[detail]! : 'Anyfare doesn\'t send calls to this host.' };
   if (reason === 'not_payable') {
     const answered = refusal.status === undefined ? 'answered' : `answered ${refusal.status}`;
-    const sent = method === defaultMethod ? 'This link' : `We sent ${method} to this link and it`;
+    const sent = method === defaultMethod || method === 'GET' ? 'This link' : `We sent ${method} to this link and it`;
 
     return { title: 'Not a paid link', text: `${sent} ${answered} without asking for a payment. Anyfare checks paid links only: paste the link of one paid endpoint, the one that answers 402.` };
   }
@@ -418,8 +424,45 @@ export const tryPostLine = 'Some APIs ask for payment only on POST.';
 
 export const tryPostLabel = 'Check it as POST';
 
-/** Whether the refusal is the one that offers the POST check: the link answered a GET without asking for a payment. */
-export const offersPost = (refusal: Refusal, method: CheckMethod): boolean => refusal.reason === 'not_payable' && method === defaultMethod;
+/** Whether a POST was sent, or answered from memory, among the tries. A skipped try wasn't made. */
+export const triedPost = (tried: readonly CheckTry[] | undefined): boolean => tried?.some(entry => entry.method === 'POST' && entry.skipped === undefined) ?? false;
+
+/**
+ * Whether the refusal offers the POST check: the link answered a GET, or the check of any method, without asking for
+ * a payment, and no POST was tried. A try that already ran is never offered again. A skipped try, or an answer that
+ * lists none, still offers it.
+ */
+export const offersPost = (refusal: Refusal, method: CheckMethod): boolean =>
+  refusal.reason === 'not_payable' && (method === defaultMethod || method === 'GET') && !triedPost(refusal.tried);
+
+// ---------- How the check got its answer ----------
+
+/** "Call it with POST.": the method that gave the price, when it is not GET. */
+export const methodLine = (path: Pick<CheckPath, 'method'>): string | undefined =>
+  path.method === undefined || path.method === 'GET' ? undefined : `Call it with ${path.method}.`;
+
+/** "Tried GET: 404. POST: 402.": the tries when there is more than one. A skipped try is left out. */
+export const triesLine = (path: Partial<Pick<CheckPath, 'tried'>> | undefined): string | undefined => {
+  const made = (path?.tried ?? []).filter(entry => entry.skipped === undefined);
+  if (made.length < 2)
+    return undefined;
+  const words = made.map(entry => `${entry.method}${entry.body === 'example' ? ' with the example body' : ''}: ${entry.status === null ? 'no answer' : entry.status}`);
+
+  return `Tried ${words.join('. ')}.`;
+};
+
+/** Under a price that came from the API's own example request. */
+export const exampleLine = 'This is the price of the API\'s own example request. Your request body can change it.';
+
+/**
+ * The quiet lines of the Overview and the twin: the method, the tries, and the example note.
+ * A refusal shows only its tries: there is no price to call for.
+ */
+export const pathLines = (path: Partial<CheckPath> | undefined, refused = false): readonly string[] => [
+  refused ? undefined : methodLine({ method: path?.method }),
+  triesLine(path),
+  refused || path?.exampleBody === undefined ? undefined : exampleLine,
+].filter((line): line is string => line !== undefined);
 
 /** The refusal for a link that is too long, or not a link at all, before any request. */
 export const tooLongRefusal: Refusal = { reason: 'invalid_target', detail: 'not_a_url', message: 'The link is too long' };
@@ -427,11 +470,18 @@ export const tooLongRefusal: Refusal = { reason: 'invalid_target', detail: 'not_
 // ---------- Code ----------
 
 /** The calls of the Code tab, each with the pay link. */
-export const codeSamples = (link: string, method: CheckMethod = defaultMethod): { readonly key: string; readonly byHand: string; readonly prompt: string } => ({
-  key: `curl${methodFlag(method)} ${shellWord(link)} \\\n  -H "Authorization: Bearer $ANYFARE_PAYMENT_KEY"`,
-  byHand: `# 1. Call the pay link. It answers 402 and says what to pay.\ncurl -i${methodFlag(method)} ${shellWord(link)}\n\n# 2. Call it again with the payment your x402 client signed.\ncurl${methodFlag(method)} ${shellWord(link)} \\\n  -H "PAYMENT-SIGNATURE: <the payment your x402 client made>"`,
-  prompt: agentPrompt(link, method),
-});
+export const codeSamples = (link: string, method: string = 'GET', exampleBody?: string): { readonly key: string; readonly byHand: string; readonly prompt: string } => {
+  const call = `${methodFlag(method)} ${shellWord(link)}${bodyFlags(exampleBody)}`;
+  const calling = `${methodFlag(method)} ${shellWord(link)}`;
+  // The example body goes on its own line after the headers, so the command stays readable
+  const body = exampleBody === undefined ? '' : ` \\\n  -H 'Content-Type: application/json' \\\n  --data ${quoted(exampleBody)}`;
+
+  return {
+    key: `curl${calling} \\\n  -H "Authorization: Bearer $ANYFARE_PAYMENT_KEY"${body}`,
+    byHand: `# 1. Call the pay link. It answers 402 and says what to pay.\ncurl -i${call}\n\n# 2. Call it again with the payment your x402 client signed.\ncurl${calling} \\\n  -H "PAYMENT-SIGNATURE: <the payment your x402 client made>"${body}`,
+    prompt: agentPrompt(link, method),
+  };
+};
 
 /** The one line under the by-hand calls. */
 export const byHandNote = 'Any x402 client does both steps for you: give it the pay link and it reads the 402, pays, and repeats the call.';

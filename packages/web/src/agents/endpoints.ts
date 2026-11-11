@@ -125,12 +125,14 @@ const share = { paidWith: 'base', calls: 12, volume: '0.12' };
 export const endpoints: readonly Endpoint[] = [
   {
     id: 'check', group: 'pay', method: 'GET', host: 'pay', path: '/_/check?url=<link>', summary: 'Is a link payable, at what price, and what we quote. Free, and pays nothing', who: 'No key', example: 'check', alsoExamples: ['check-post'],
-    request: ['`url`: the API\'s link, with or without `https://`. A query string in it stays.', '`method`: how the probe is sent, `GET` (the default) or `POST`. No body is sent. `POST` is honoured only with the header `X-Anyfare-Check: 1`; without it, and for any other value, the answer is a `400`.'],
+    request: ['`url`: the API\'s link, with or without `https://`. A query string in it stays.', '`method`: `GET`, `POST`, `PUT`, `PATCH` or `DELETE`. Left out, the check tries `GET`, then `POST`. Every method but `GET` needs the header `X-Anyfare-Check: 1`, and so does the `POST` try of a check with no method. An explicit method without the header, and any other value, answer a `400`.'],
     answer: {
       status: 200,
       json: {
         payable: true,
         method: 'GET',
+        exampleBody: null,
+        tried: [{ method: 'GET', body: 'none', status: 402 }],
         target: `https://${exampleLink}`,
         price: { amount: '0.01', currency: 'USD', asset: 'base-usdc', network: 'eip155:8453' },
         quote: { amount: '0.01', fee: '0', currency: 'USD' },
@@ -151,7 +153,9 @@ export const endpoints: readonly Endpoint[] = [
       'In a payable answer `upstream.x402` is the decoded `PAYMENT-REQUIRED`, and `upstream.mpp` is a list of the decoded MPP challenges. `stats` is the endpoint\'s numbers over 30 days, or `null` when they can\'t be read.',
       '`price` is what the API asks. `quote` is what you pay through Anyfare, in USD. `link` is the link to call.',
       '`listed` says whether the link is among the services now. A paid link you check joins the list of services, as checked, until someone pays it. `listed` can be `false` for a payable link: a cap on the checked list or a limit on checks kept it out, its host name is very long, or it was not known in time. It then has no page under `/v1/services` yet, and a later check may list it.',
-      'Some APIs ask for payment only on a method other than `GET`. A `GET` check of such a link answers `not_payable`: check it again with `&method=POST` and the header `X-Anyfare-Check: 1`. The answer returns the `method` it probed with. The second example is one that asks only on `POST`.',
+      '`method` in the answer is the one that gave the price, or the last one tried. `tried` lists the tries: `{ "method", "body": "none" or "example", "status" }`, with `"cached": true` for one served from memory, and `"skipped": "header"` (and a `null` status) for a try not sent because the header was missing. `status` is `null` when the API didn\'t answer.',
+      '`exampleBody` is the API\'s own example JSON body, or `null`. An API whose price depends on the body asks 0 for a `POST`, `PUT` or `PATCH` with none: the check then sends the example body once, and the price is that of the example request. Your own body can change it.',
+      'Some APIs ask for payment only on a method other than `GET`: the check with no `method` finds it when it carries the header. The second example is one that asks only on `POST`.',
     ],
     source: { package: 'proxy', method: 'GET', path: '/_/check' },
   },

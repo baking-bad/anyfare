@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ApiResult, ReadOptions, Reader } from '../src/api/reader';
 import { maxLinkLength, readCheckAnswer, type PayableCheck } from '../src/check/answer';
 import {
-  agentPrompt, askRows, asksSentence, checkAddress, checkQuery, codeSamples, cut, describedAs, knownMethod, linkParts, maxDescriptionLength, offersPost, parseCheckParams, parseMethod, refusalWords, shellWord, titleFor, wayWords,
+  agentPrompt, askRows, asksSentence, checkAddress, checkQuery, codeSamples, cut, describedAs, exampleLine, knownMethod, linkParts, maxDescriptionLength, methodLine, offersPost, parseCheckParams, parseMethod, pathLines, refusalWords, shellWord, titleFor, triesLine, wayWords,
 } from '../src/check/content';
 import { checkRequests, loadCheck, loadCheckData } from '../src/check/data';
 import { readSettings } from '../src/config';
@@ -47,45 +47,50 @@ const fakeReader = (): { readonly read: Reader; readonly asked: string[]; readon
 
 describe('the Check URL and its state', () => {
   it('reads url, tab, period and page, and drops what it does not know', () => {
-    expect(parseCheckParams(new URLSearchParams('url=%20api.example.com%2Fv1%20&tab=headers&period=7d&page=3'))).toEqual({ url: 'api.example.com/v1', method: 'GET', tab: 'headers', period: '7d', page: 3 });
-    expect(parseCheckParams({ tab: 'nope', period: 'nope', page: '0' })).toEqual({ url: '', method: 'GET', tab: 'overview', period: '30d', page: 1 });
-    expect(parseCheckParams({ url: ['a.example.com', 'b.example.com'], page: ['2', '5'] })).toEqual({ url: 'a.example.com', method: 'GET', tab: 'overview', period: '30d', page: 2 });
+    expect(parseCheckParams(new URLSearchParams('url=%20api.example.com%2Fv1%20&tab=headers&period=7d&page=3'))).toEqual({ url: 'api.example.com/v1', method: 'ANY', tab: 'headers', period: '7d', page: 3 });
+    expect(parseCheckParams({ tab: 'nope', period: 'nope', page: '0' })).toEqual({ url: '', method: 'ANY', tab: 'overview', period: '30d', page: 1 });
+    expect(parseCheckParams({ url: ['a.example.com', 'b.example.com'], page: ['2', '5'] })).toEqual({ url: 'a.example.com', method: 'ANY', tab: 'overview', period: '30d', page: 2 });
     expect(parseCheckParams(new URLSearchParams('page=1.5&page=2')).page).toBe(1);
     expect(parseCheckParams(new URLSearchParams('page=99999')).page).toBe(1_000);
   });
 
   it('writes the URL in a fixed order without defaults, and the same state gives the same URL', () => {
-    expect(checkAddress({ url: '', method: 'GET', tab: 'overview', period: '30d', page: 1 })).toBe('/check');
-    expect(checkAddress({ url: 'api.example.com/v1', method: 'GET', tab: 'json', period: '7d', page: 2 })).toBe('/check?url=api.example.com%2Fv1&tab=json&period=7d&page=2');
-    expect(checkAddress({ url: 'a.example.com', method: 'GET', tab: 'overview', period: 'all', page: 1 }, '/check.md')).toBe('/check.md?url=a.example.com&period=all');
+    expect(checkAddress({ url: '', method: 'ANY', tab: 'overview', period: '30d', page: 1 })).toBe('/check');
+    expect(checkAddress({ url: 'api.example.com/v1', method: 'ANY', tab: 'json', period: '7d', page: 2 })).toBe('/check?url=api.example.com%2Fv1&tab=json&period=7d&page=2');
+    expect(checkAddress({ url: 'a.example.com', method: 'ANY', tab: 'overview', period: 'all', page: 1 }, '/check.md')).toBe('/check.md?url=a.example.com&period=all');
+    expect(checkAddress({ url: 'a.example.com', method: 'GET', tab: 'overview', period: '30d', page: 1 })).toBe('/check?url=a.example.com&method=GET');
+    expect(checkAddress({ url: 'a.example.com', method: 'PATCH', tab: 'overview', period: '30d', page: 1 }, '/check.md')).toBe('/check.md?url=a.example.com&method=PATCH');
     expect(checkAddress({ url: 'a.example.com', method: 'POST', tab: 'json', period: '30d', page: 1 })).toBe('/check?url=a.example.com&method=POST&tab=json');
     const state = parseCheckParams(new URLSearchParams('page=2&tab=code&url=a.example.com&period=today'));
     expect(parseCheckParams(new URLSearchParams(checkQuery(state).slice(1)))).toEqual(state);
   });
 
-  it('reads the method, GET or POST in upper case, and takes GET for anything else', () => {
-    for (const method of ['GET', 'POST'])
+  it('reads the method, one of the five in upper case, and takes "any method" for anything else', () => {
+    for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
       expect(parseCheckParams({ method }).method).toBe(method);
-    for (const method of ['post', 'Post', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'TRACE', '', 'POST ', 'GET,POST'])
-      expect(parseCheckParams({ method }).method).toBe('GET');
-    expect(parseCheckParams({}).method).toBe('GET');
+    for (const method of ['post', 'Post', 'HEAD', 'OPTIONS', 'TRACE', '', 'ANY', 'any', 'POST ', 'GET,POST'])
+      expect(parseCheckParams({ method }).method).toBe('ANY');
+    expect(parseCheckParams({}).method).toBe('ANY');
     expect(parseCheckParams({ method: ['POST', 'GET'] }).method).toBe('POST');
-    expect(parseMethod(undefined)).toBe('GET');
+    expect(parseMethod(undefined)).toBe('ANY');
     expect(knownMethod('POST')).toBe('POST');
     expect(knownMethod('post')).toBeUndefined();
-    expect(knownMethod('DELETE')).toBeUndefined();
+    expect(knownMethod('DELETE')).toBe('DELETE');
+    expect(knownMethod('ANY')).toBeUndefined();
   });
 
-  it('keeps the method in the URL only when it is not GET, and reads it back', () => {
+  it('keeps the method in the URL only when one is picked, and reads it back', () => {
     const state = parseCheckParams(new URLSearchParams('url=a.example.com&method=POST&tab=code'));
 
     expect(checkQuery(state)).toBe('?url=a.example.com&method=POST&tab=code');
     expect(parseCheckParams(new URLSearchParams(checkQuery(state).slice(1)))).toEqual(state);
-    expect(checkQuery({ ...state, method: 'GET' })).toBe('?url=a.example.com&tab=code');
+    expect(checkQuery({ ...state, method: 'ANY' })).toBe('?url=a.example.com&tab=code');
+    expect(checkQuery({ ...state, method: 'DELETE' })).toBe('?url=a.example.com&method=DELETE&tab=code');
   });
 
   it('puts the method in the title, the prompt and the curl lines only when it is not GET', () => {
     expect(titleFor('api.example.com/v1')).toBe('Check: api.example.com/v1');
+    expect(titleFor('api.example.com/v1', 'ANY')).toBe('Check: api.example.com/v1');
     expect(titleFor('api.example.com/v1', 'POST')).toBe('Check: POST api.example.com/v1');
     expect(agentPrompt('pay.example.com/a.example.com/v1', 'POST')).toMatch(/^Call pay\.example\.com\/a\.example\.com\/v1 with POST through Anyfare\./);
     expect(agentPrompt('pay.example.com/a.example.com/v1')).toMatch(/^Call pay\.example\.com\/a\.example\.com\/v1 through Anyfare\./);
@@ -97,6 +102,22 @@ describe('the Check URL and its state', () => {
     const get = codeSamples('pay.example.com/a.example.com/v1');
     expect(get.key).not.toContain('-X');
     expect(get.byHand).not.toContain('-X');
+    expect(codeSamples('pay.example.com/a.example.com/v1', 'DELETE').key).toMatch(/^curl -X DELETE /);
+    expect(codeSamples('pay.example.com/a.example.com/v1', 'ANY').key).not.toContain('-X');
+  });
+
+  it('sends the API\'s own example body in the curl lines, quoted for a shell, and only when there is one', () => {
+    const body = JSON.stringify({ urls: ['https://example.com'], text: true });
+    const post = codeSamples('https://pay.example.com/a.example.com/v1', 'POST', body);
+
+    expect(post.key).toBe(`curl -X POST https://pay.example.com/a.example.com/v1 \\\n  -H "Authorization: Bearer $ANYFARE_PAYMENT_KEY" \\\n  -H 'Content-Type: application/json' \\\n  --data '${body}'`);
+    expect(post.byHand).toContain(`curl -i -X POST https://pay.example.com/a.example.com/v1 -H 'Content-Type: application/json' --data '${body}'\n`);
+    expect(post.byHand).toContain(`\ncurl -X POST https://pay.example.com/a.example.com/v1 \\\n  -H "PAYMENT-SIGNATURE: <the payment your x402 client made>" \\\n  -H 'Content-Type: application/json' \\\n  --data '${body}'`);
+    // A quote inside the body is closed and reopened, so the command can't be broken out of
+    const quoted = codeSamples('https://pay.example.com/a.example.com/v1', 'POST', '{"q":"it\'s $(rm -rf /)"}');
+
+    expect(quoted.key).toContain('--data \'{"q":"it\'\\\'\'s $(rm -rf /)"}\'');
+    expect(codeSamples('https://pay.example.com/a.example.com/v1', 'POST').key).not.toContain('--data');
   });
 
   it('says which method was tried when a link that is not GET is not paid, and offers POST only after a GET', () => {
@@ -106,8 +127,47 @@ describe('the Check URL and its state', () => {
     expect(refusalWords({ ...refusal, status: 200 }).text).toContain('This link answered 200 without asking');
     expect(refusalWords(refusal, 'POST').text).toContain('We sent POST to this link and it answered without asking');
     expect(offersPost(refusal, 'GET')).toBe(true);
+    expect(offersPost(refusal, 'ANY')).toBe(true);
     expect(offersPost(refusal, 'POST')).toBe(false);
+    expect(offersPost(refusal, 'PUT')).toBe(false);
     expect(offersPost({ reason: 'invalid_target', message: '' }, 'GET')).toBe(false);
+  });
+
+  it('never offers a POST that already ran, and keeps offering it when the try was skipped or not listed', () => {
+    const refusal = { reason: 'not_payable', message: '' };
+    const get = { method: 'GET', body: 'none', status: 404, cached: false } as const;
+
+    expect(offersPost({ ...refusal, tried: [get, { method: 'POST', body: 'none', status: 200, cached: false }] }, 'ANY')).toBe(false);
+    expect(offersPost({ ...refusal, tried: [get, { method: 'POST', body: 'none', status: 200, cached: true }] }, 'ANY')).toBe(false);
+    expect(offersPost({ ...refusal, tried: [get, { method: 'POST', body: 'none', status: null, cached: false }] }, 'GET')).toBe(false);
+    expect(offersPost({ ...refusal, tried: [get, { method: 'POST', body: 'none', status: null, cached: false, skipped: 'header' }] }, 'ANY')).toBe(true);
+    expect(offersPost({ ...refusal, tried: [get] }, 'GET')).toBe(true);
+    expect(offersPost({ ...refusal, tried: [] }, 'ANY')).toBe(true);
+  });
+
+  it('says the method, the tries and the example note, quietly', () => {
+    const get = { method: 'GET', body: 'none', status: 404, cached: false } as const;
+    const post = { method: 'POST', body: 'none', status: 402, cached: false } as const;
+    const example = { method: 'POST', body: 'example', status: 402, cached: false } as const;
+
+    expect(methodLine({ method: 'POST' })).toBe('Call it with POST.');
+    expect(methodLine({ method: 'GET' })).toBeUndefined();
+    expect(methodLine({ method: undefined })).toBeUndefined();
+    expect(triesLine({ tried: [get, post] })).toBe('Tried GET: 404. POST: 402.');
+    expect(triesLine({ tried: [get, post, example] })).toBe('Tried GET: 404. POST: 402. POST with the example body: 402.');
+    expect(triesLine({ tried: [get, { ...post, status: null }] })).toBe('Tried GET: 404. POST: no answer.');
+    // One try says nothing more; a skipped try is left out, and does not count
+    expect(triesLine({ tried: [get] })).toBeUndefined();
+    expect(triesLine({ tried: [get, { method: 'POST', body: 'none', status: null, cached: false, skipped: 'header' }] })).toBeUndefined();
+    expect(triesLine({ tried: [get, { method: 'POST', body: 'none', status: null, cached: false, skipped: 'header' }, { ...get, method: 'PUT' }] })).toBe('Tried GET: 404. PUT: 404.');
+    expect(triesLine({})).toBeUndefined();
+    expect(pathLines({ method: 'POST', exampleBody: '{}', tried: [get, post, example] })).toEqual([
+      'Call it with POST.', 'Tried GET: 404. POST: 402. POST with the example body: 402.', exampleLine,
+    ]);
+    expect(exampleLine).toBe('This is the price of the API\'s own example request. Your request body can change it.');
+    expect(pathLines({ method: 'GET', tried: [] })).toEqual([]);
+    expect(pathLines(undefined)).toEqual([]);
+    expect(pathLines({ method: 'POST', tried: [get, post] }, true)).toEqual(['Tried GET: 404. POST: 402.']);
   });
 
   it('keeps the link as the visitor typed it, query string and all', () => {
@@ -278,14 +338,45 @@ describe('reading the answer of the check', () => {
     expect(readCheckAnswer({ payable: true, link: 'x' })).toBeUndefined();
     expect(readCheckAnswer({ payable: true, target: 'not a url', link: 'x' })).toBeUndefined();
     expect(readCheckAnswer({ payable: false })).toBeUndefined();
-    expect(readCheckAnswer({ payable: false, reason: 'not_payable', message: 'm', detail: 'd' })).toEqual({ payable: false, refusal: { reason: 'not_payable', message: 'm', detail: 'd' } });
-    expect(readCheckAnswer({ payable: false, method: 'GET', reason: 'not_payable', message: 'm', detail: 'no_payment_asked', upstream: { status: 200 } })).toEqual({ payable: false, refusal: { reason: 'not_payable', message: 'm', detail: 'no_payment_asked', status: 200 } });
+    expect(readCheckAnswer({ payable: false, reason: 'not_payable', message: 'm', detail: 'd' })).toEqual({ payable: false, refusal: { reason: 'not_payable', message: 'm', detail: 'd', tried: [] } });
+    expect(readCheckAnswer({ payable: false, method: 'GET', reason: 'not_payable', message: 'm', detail: 'no_payment_asked', upstream: { status: 200 } })).toEqual({ payable: false, refusal: { reason: 'not_payable', method: 'GET', message: 'm', detail: 'no_payment_asked', status: 200, tried: [] } });
   });
 
   it('reads a payable answer with no extra fields, as the pay host answers today', () => {
     const read = readCheckAnswer({ payable: true, target: 'https://api.example.com/v1/q?a=b', link: 'https://pay.example.com/api.example.com/v1/q?a=b', price: { amount: '0.01', currency: 'USD' }, quote: { amount: '0.01', fee: '0', currency: 'USD' } });
 
-    expect(read?.payable && read.check).toMatchObject({ host: 'api.example.com', path: '/v1/q', protocol: 'x402', asks: {}, payWith: [], upstream: { headers: [] } });
+    expect(read?.payable && read.check).toMatchObject({ host: 'api.example.com', path: '/v1/q', protocol: 'x402', asks: {}, payWith: [], upstream: { headers: [] }, method: 'GET', tried: [] });
+    expect(read?.payable && read.check.exampleBody).toBeUndefined();
+  });
+
+  it('reads the method, the example body and the tries, and nothing it can\'t trust', () => {
+    const tried = [
+      { method: 'GET', body: 'none', status: 404 },
+      { method: 'POST', body: 'none', status: 402, cached: true },
+      { method: 'POST', body: 'example', status: null },
+      { method: 'PUT', body: 'none', status: null, skipped: 'header' },
+      { method: 'TRACE', body: 'none', status: 200 },
+      { method: 'GET', body: 'surprise', status: 'x' },
+      'nothing',
+    ];
+    const read = readCheckAnswer({ payable: true, method: 'POST', exampleBody: { urls: ['https://example.com'], text: true }, tried, target: 'https://api.example.com/v1', link: 'https://pay.example.com/api.example.com/v1' });
+    const check = read?.payable ? read.check : undefined;
+
+    expect(check?.method).toBe('POST');
+    expect(check?.exampleBody).toBe('{"urls":["https://example.com"],"text":true}');
+    expect(check?.tried).toEqual([
+      { method: 'GET', body: 'none', status: 404, cached: false },
+      { method: 'POST', body: 'none', status: 402, cached: true },
+      { method: 'POST', body: 'example', status: null, cached: false },
+      { method: 'PUT', body: 'none', status: null, cached: false, skipped: 'header' },
+      { method: 'GET', body: 'none', status: null, cached: false },
+    ]);
+    // A method that is not one of the five can't reach a shell; a body that is too long is dropped; a refusal reads the same fields
+    expect((readCheckAnswer({ payable: true, method: 'GET; rm -rf /', target: 'https://a.example.com/', link: 'x' }) as { check: PayableCheck }).check.method).toBe('GET');
+    expect((readCheckAnswer({ payable: true, exampleBody: { text: 'x'.repeat(5_000) }, target: 'https://a.example.com/', link: 'x' }) as { check: PayableCheck }).check.exampleBody).toBeUndefined();
+    const refused = readCheckAnswer({ payable: false, method: 'POST', reason: 'not_payable', message: 'm', exampleBody: null, tried: [{ method: 'GET', body: 'none', status: 404 }, { method: 'POST', body: 'none', status: 404 }] });
+
+    expect(refused).toMatchObject({ payable: false, refusal: { method: 'POST', tried: [{ method: 'GET', status: 404 }, { method: 'POST', status: 404 }] } });
   });
 
   it('keeps only text and numbers, cut, so nothing from an outside host can be markup', () => {
@@ -359,9 +450,15 @@ describe('the Markdown twin of the Check page', () => {
     const tried = await twin('free.example.com/v1/x', '&method=POST');
 
     expect(post.asked[0]).toBe('/_/check?url=post.example.com%2Fv1%2Fx&method=POST');
-    expect(post.body).toMatch(/^# POST post\.example\.com\/v1\/x\n\nPayable through Anyfare\. Checked with POST\./);
-    expect(get.asked).toEqual(['/_/check?url=post.example.com%2Fv1%2Fx']);
-    expect(get.body).toContain('Some APIs ask for payment only on POST. Ask as https://site.example.com/check.md?url=post.example.com%2Fv1%2Fx&method=POST');
+    expect(post.body).toMatch(/^# POST post\.example\.com\/v1\/x\n\nPayable through Anyfare\. Call it with POST\./);
+    expect(post.body).not.toContain('Tried');
+    expect(get.asked[0]).toBe('/_/check?url=post.example.com%2Fv1%2Fx');
+    // With no method the check tries GET, then POST, and finds the price itself: there is no POST to offer
+    expect(get.body).toMatch(/^# POST post\.example\.com\/v1\/x\n\nPayable through Anyfare\. Call it with POST\. Tried GET: 404\. POST: 402\./);
+    expect(get.body).not.toContain('Check it as POST');
+    const onlyGet = await twin('post.example.com/v1/x', '&method=GET');
+
+    expect(onlyGet.body).toContain('Some APIs ask for payment only on POST. Ask as https://site.example.com/check.md?url=post.example.com%2Fv1%2Fx&method=POST');
     expect(tried.body).toContain('We sent POST to this link and it answered 200 without asking');
     expect(tried.body).not.toContain('Some APIs ask for payment only on POST.');
   });
@@ -378,14 +475,14 @@ describe('the Markdown twin of the Check page', () => {
     expect(unread.stats).toBeNull();
   });
 
-  it('sends the check header with a POST check and only then, and a 400 is the generic card, not a crash', async () => {
+  it('sends the check header with every check, and a 400 is the generic card, not a crash', async () => {
     const post = fakeReader();
     const get = fakeReader();
     await loadCheckData(post.read, post.read, parseCheckParams({ url: 'post.example.com/v1/x', method: 'POST' }));
     await loadCheckData(get.read, get.read, parseCheckParams({ url: 'post.example.com/v1/x' }));
 
     expect(post.sentHeaders[0]).toEqual({ 'X-Anyfare-Check': '1' });
-    expect(get.sentHeaders[0]).toBeUndefined();
+    expect(get.sentHeaders[0]).toEqual({ 'X-Anyfare-Check': '1' });
     // Without the header the fake answers 400, as the pay host does
     const inner = fakeReader().read;
     const bare = ((path: string, guard?: (value: unknown) => boolean) => inner(path, guard as never)) as Reader;
@@ -396,13 +493,13 @@ describe('the Markdown twin of the Check page', () => {
     expect(answer(new URL('https://fake.example.com/_/check?url=post.example.com&method=POST'), 'full', now, { 'x-anyfare-check': '1' })!.status).toBe(200);
   });
 
-  it('lists the check header in the Agent view\'s request and in the examples, for a POST check only', async () => {
+  it('lists the check header in the Agent view\'s request, for every check', async () => {
     const { read } = fakeReader();
     const post = await loadCheckData(read, read, parseCheckParams({ url: 'post.example.com/v1/x', method: 'POST' }));
     const get = await loadCheckData(read, read, parseCheckParams({ url: 'post.example.com/v1/x' }));
 
     expect(checkRequests(settings, post)[0]!.headers).toEqual({ 'X-Anyfare-Check': '1' });
-    expect(checkRequests(settings, get)[0]!.headers).toBeUndefined();
+    expect(checkRequests(settings, get)[0]!.headers).toEqual({ 'X-Anyfare-Check': '1' });
   });
 
   it('shows the check\'s own 30-day numbers when the API\'s read of them failed', async () => {
@@ -454,7 +551,8 @@ describe('the Markdown twin of the Check page', () => {
     const { status, body, asked } = await twin('free.example.com/v1/free');
 
     expect(status).toBe(200);
-    expect(body).toContain('# free.example.com/v1/free');
+    expect(body).toContain('# POST free.example.com/v1/free');
+    expect(body).toContain('Tried GET: 200. POST: 200.');
     expect(body).toContain('Not payable: Not a paid link.');
     expect(body).toContain('Reason: `not_payable`');
     expect(asked).toHaveLength(1);

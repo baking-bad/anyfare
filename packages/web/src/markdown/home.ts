@@ -95,7 +95,7 @@ ${hero.lead}
 
 Answers whether the link can be paid through Anyfare, what it asks, and what it costs. No payment is made and no sign-up is needed. On the website: ${siteUrl}/check?url=<link>
 
-Some APIs ask for payment only on POST. Add \`&method=POST\` (GET is the default) to the check, on the website and on the pay host. On the pay host a POST check also needs the header \`X-Anyfare-Check: 1\`.
+Some APIs ask for payment only on POST. The check takes \`&method=\` (GET, POST, PUT, PATCH or DELETE), on the website and on the pay host. Left out, it tries GET, then POST. On the pay host every method but GET needs the header \`X-Anyfare-Check: 1\`, and so does the POST try.
 
 Try: ${tryLinks.map(link => `[${link.label}, ${link.note}](${siteUrl}${tryHref(link)})`).join(', ')}.
 

@@ -38,7 +38,9 @@ describe('the address of a page\'s Markdown twin', () => {
     ['/check', '?url=api.example.com%2Fv1', '/check.md?url=api.example.com%2Fv1'],
     ['/check', '?url=api.example.com%2Fv1&method=POST&period=7d&page=2', '/check.md?url=api.example.com%2Fv1&method=POST&period=7d&page=2'],
     ['/check', '?url=api.example.com%2Fv1&tab=json', '/check.md?url=api.example.com%2Fv1'],
-    ['/check', '?page=2&period=today&url=a.example.com&method=GET', '/check.md?url=a.example.com&period=today&page=2'],
+    ['/check', '?url=a.example.com&method=ANY&tab=code', '/check.md?url=a.example.com'],
+    ['/check', '?url=a.example.com&method=PUT', '/check.md?url=a.example.com&method=PUT'],
+    ['/check', '?page=2&period=today&url=a.example.com&method=GET', '/check.md?url=a.example.com&method=GET&period=today&page=2'],
   ])('for %s%s is %s', (path, query, twin) => {
     expect(twinHref(path, query)).toBe(twin);
     expect(twinHref(path, new URLSearchParams(query))).toBe(twin);

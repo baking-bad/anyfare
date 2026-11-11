@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { endpoints as agentEndpoints } from '../src/agents/endpoints';
 import { errorDocs } from '../src/agents/errors';
-import { checkMethods, refusalDetails } from '../src/check/content';
+import { httpMethods, refusalDetails } from '../src/check/content';
 
 // The website's types against the API's response schemas, both read as text: nothing of another package is
 // imported. For each response schema a page reads, the website's type for that endpoint must know every
@@ -393,11 +393,11 @@ describe('the website\'s types against the pay host\'s check', () => {
 
   it('reads the check\'s schema well: the fields and the nulls it is known to have', () => {
     const payable = schemaFacts(checkSource, 'payableSchema');
-    expect(payable.top).toEqual(['payable', 'method', 'target', 'price', 'quote', 'link', 'protocol', 'asks', 'upstream', 'payWith', 'stats', 'listed', 'checkedAt', 'ms']);
-    expect([...payable.nullable].sort()).toEqual(['network', 'p50Ms', 'stats', 'successRate']);
+    expect([...payable.top].sort()).toEqual(['payable', 'method', 'exampleBody', 'tried', 'target', 'price', 'quote', 'link', 'protocol', 'asks', 'upstream', 'payWith', 'stats', 'listed', 'checkedAt', 'ms'].sort());
+    expect([...payable.nullable].sort()).toEqual(['network', 'p50Ms', 'stats', 'status', 'successRate']);
     expect(payable.names).toContain('mpp');
     const refused = schemaFacts(checkSource, 'refusedSchema');
-    expect(refused.top).toEqual(['payable', 'method', 'reason', 'message', 'detail', 'upstream']);
+    expect([...refused.top].sort()).toEqual(['payable', 'method', 'exampleBody', 'tried', 'reason', 'message', 'detail', 'upstream'].sort());
   });
 
   it('knows every detail the check can give, and takes only methods the check takes', () => {
@@ -409,9 +409,11 @@ describe('the website\'s types against the pay host\'s check', () => {
     // Every detail the pay host gives is worded; the website may word one the pay host doesn't give yet
     for (const detail of details)
       expect(worded, detail).toContain(detail);
-    for (const method of checkMethods)
+    // The five methods of the menu are the five the pay host takes; "any" is no `method` at all
+    for (const method of httpMethods)
       expect(methods, method).toContain(method);
-    expect(checkSource).toMatch(/method: \{ type: 'string', enum: \[\.\.\.checkMethods\], default: 'GET' \}/);
+    expect(methods).toHaveLength(httpMethods.length);
+    expect(checkSource).toMatch(/methodSchema = \{ type: 'string', enum: \[\.\.\.checkMethods\] \}/);
   });
 });
 

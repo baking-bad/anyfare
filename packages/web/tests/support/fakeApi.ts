@@ -24,9 +24,11 @@ import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, P
 // `pay_settling` is a receipt whose fee is not booked yet.
 //
 // The same server also answers the pay host's `GET /_/check?url=&method=`: the host of the link picks the case (see
-// `sampleCheck`). The method is GET or POST, and any other value is a 400 `invalid_request`. A POST is honoured only with the
-// header `X-Anyfare-Check: 1`, and is that 400 without it. `post.example.com` is
-// payable only with POST: a GET check of it is `not_payable`. Every case answers 200 with `payable`, except `limited.example.com`, which is a 429.
+// `sampleCheck`). The method is GET, POST, PUT, PATCH or DELETE, or left out (GET, then POST), and any other value is a 400
+// `invalid_request`. Every method but GET is honoured only with the header `X-Anyfare-Check: 1`, and is that 400 without it; with
+// no method and no header the POST try is skipped. `post.example.com` is payable only with POST: a GET check of it is `not_payable`.
+// `body.example.com` asks 0 for a POST with no body, and $0.001 for the example body its check sends. `gone.example.com` is a 404 to every method.
+// The answer holds `exampleBody` and `tried`, as the pay host's does. Every case answers 200 with `payable`, except `limited.example.com`, which is a 429.
 //
 // A page that reads a new endpoint adds its answer to `answer` below, built from `sample`.
 //
@@ -36,7 +38,7 @@ import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, P
 export type FakeApiMode = 'full' | 'empty' | 'down' | 'capped' | 'edge' | 'checked';
 
 const day = 86_400_000;
-const checkMethods: readonly string[] = ['GET', 'POST'];
+const checkMethods: readonly string[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 const periods: readonly Period[] = ['today', '7d', '30d', 'all'];
 
 /** In edge mode: a host with a port, and one of 200 characters. */
@@ -507,6 +509,10 @@ const checkHosts = {
   fallback: 'fallback.example.com',
   // Payable only when checked with POST
   postOnly: 'post.example.com',
+  // Payable only with POST and the API's own example body: a POST with no body asks 0
+  bodyPriced: 'body.example.com',
+  // A 404 to every method: not payable, and no try answered a price
+  gone: 'gone.example.com',
   // Refused: each host is one detail of the pay host's. A link with an IP address is `ip_address`, one with no
   // dot in its host `invalid_host`, and one that is no URL `not_a_url`.
   notPayable: 'free.example.com',
@@ -534,8 +540,36 @@ const checkHosts = {
   unlisted: 'unlisted.example.com',
 } as const;
 
+/** The body `body.example.com` gives as its own example. */
+export const exampleBody = { urls: ['https://example.com'], text: true };
+
+interface Try {
+  readonly method: string;
+  readonly body: 'none' | 'example';
+  readonly status: number | null;
+  readonly skipped?: string;
+}
+
+// What a sample link answers to a method with or without the example body: its status, and whether the 402 has a price
+const behaviour = (host: string, method: string, body: 'none' | 'example'): { readonly status: number; readonly priced: boolean } => {
+  if (host === checkHosts.gone)
+    return { status: 404, priced: false };
+  // A link that answers 200 to everything, and one the fake doesn't know
+  if (host === checkHosts.notPayable || !knownHosts.includes(host))
+    return { status: 200, priced: false };
+  if (host === checkHosts.postOnly)
+    return method === 'POST' ? { status: 402, priced: true } : { status: 404, priced: false };
+  if (host === checkHosts.bodyPriced)
+    return method === 'POST' ? { status: 402, priced: body === 'example' } : { status: 404, priced: false };
+
+  return { status: 402, priced: true };
+};
+
 /** The hosts of the sample links for each case of the check. */
 export const sampleCheckHosts = checkHosts;
+
+// The links that ask for a payment, for some method
+const knownHosts: readonly string[] = [checkHosts.bodyPriced, checkHosts.postOnly, checkHosts.base, checkHosts.near, checkHosts.mpp, checkHosts.hostile, checkHosts.slow, checkHosts.busy, checkHosts.fallback, checkHosts.hidden, checkHosts.unlisted, unavailableHost, ...checkedHosts, ...edgeHosts];
 
 const hostileDescription = '<script>alert(1)</script>';
 const hostileValue = '"><img src=x onerror=alert(1)>';
@@ -549,12 +583,43 @@ const base64 = (value: unknown): string => Buffer.from(JSON.stringify(value)).to
  * hosts of `sampleCheckHosts` the refusals, one for each detail the pay host gives. Any other host is "not a paid
  * link". A typed link that isn't one is `invalid_target`, `not_a_url`.
  */
-export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.example.com', method = 'GET'): { readonly status: number; readonly body: unknown } => {
+export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.example.com', method = 'GET', header = true): { readonly status: number; readonly body: unknown } => {
   const answered = (body: unknown): { readonly status: number; readonly body: unknown } => ({ status: 200, body });
+  // `ANY` is a check with no method: GET, then POST when the header is there
+  const any = method === 'ANY';
+  const first = any ? 'GET' : method;
+  const tryOf = (host: string, sent: string, body: 'none' | 'example'): Try => ({ method: sent, body, status: behaviour(host, sent, body).status });
+  // The tries a check of the host makes, in order, and the one that gave a price
+  const plan = (host: string): { readonly tried: Try[]; readonly won: Try | undefined } => {
+    const tried: Try[] = [];
+    for (const sent of any ? ['GET', 'POST'] : [method]) {
+      if (any && sent === 'POST' && !header) {
+        tried.push({ method: 'POST', body: 'none', status: null, skipped: 'header' });
+        break;
+      }
+      const plain = tryOf(host, sent, 'none');
+      tried.push(plain);
+      if (behaviour(host, sent, 'none').priced)
+        return { tried, won: plain };
+      // An API that asks 0 for a POST with no body: the check sends the API's own example once
+      if (sent === 'POST' && host === checkHosts.bodyPriced && plain.status === 402) {
+        const example = tryOf(host, sent, 'example');
+        tried.push(example);
+        if (behaviour(host, sent, 'example').priced)
+          return { tried, won: example };
+      }
+    }
+
+    return { tried, won: undefined };
+  };
+  const lastMethod = (tried: readonly Try[]): string => [...tried].reverse().find(entry => entry.skipped === undefined)?.method ?? first;
   // A refusal as the pay host answers it: `method`, the reason, the message of its detail, and the target's
-  // status in `upstream` when the target answered
-  const refuse = (reason: string, detail: string, message: string, status?: number): { readonly status: number; readonly body: unknown } =>
-    answered({ payable: false, method, reason, message, detail, ...status === undefined ? {} : { upstream: { status } } });
+  // status in `upstream` when the target answered. One try of the first method has the status, unless `tried` says more.
+  const refuse = (reason: string, detail: string, message: string, status?: number, tried?: readonly Try[]): { readonly status: number; readonly body: unknown } => {
+    const made = tried ?? (status === undefined ? [] : [{ method: first, body: 'none', status } as Try]);
+
+    return answered({ payable: false, method: lastMethod(made), exampleBody: null, tried: made, reason, message, detail, ...status === undefined ? {} : { upstream: { status } } });
+  };
   let target: URL;
   try {
     target = new URL(typed.includes('://') ? typed : `https://${typed}`);
@@ -570,7 +635,7 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
     return refuse('invalid_target', 'invalid_host', 'The link must name a host, such as api.example.com.');
   const { host } = target;
   const refusals: Readonly<Record<string, { readonly status: number; readonly body: unknown }>> = {
-    [checkHosts.notPayable]: refuse('not_payable', 'no_payment_asked', `The link answered 200 without asking for a payment. Anyfare routes paid calls only.`, 200),
+    [checkHosts.notPayable]: refuse('not_payable', 'no_payment_asked', `The link answered 200 without asking for a payment. Anyfare routes paid calls only.`, 200, plan(checkHosts.notPayable).tried),
     [checkHosts.unsupported]: refuse('unsupported_payment', 'no_option', 'The link asks for a payment, but in no way Anyfare can pay yet.', 402),
     [checkHosts.noChallenge]: refuse('unsupported_payment', 'no_challenge', 'The link answered 402, but without a payment request Anyfare can read.', 402),
     [checkHosts.blocked]: refuse('host_not_allowed', 'blocklisted', 'Anyfare doesn\'t route payments to this host.'),
@@ -583,17 +648,20 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
     [checkHosts.timeout]: refuse('upstream_unavailable', 'timeout', 'The host didn\'t answer in time.'),
     [checkHosts.unreachable]: refuse('upstream_unavailable', 'unreachable', 'The host couldn\'t be reached.'),
     [checkHosts.headersTooLarge]: refuse('upstream_unavailable', 'headers_too_large', 'The API answered with headers too large to read.'),
-    [checkHosts.other]: answered({ payable: false, method, reason: 'surprise', message: 'Something we did not expect <b>happened</b>' }),
+    [checkHosts.other]: answered({ payable: false, method: first, exampleBody: null, tried: [], reason: 'surprise', message: 'Something we did not expect <b>happened</b>' }),
     [checkHosts.limited]: { status: 429, body: { error: { code: 'rate_limited', message: 'Too many requests' } } },
   };
   const refused = refusals[host];
   if (refused !== undefined)
     return refused;
-  const known: readonly string[] = [checkHosts.base, checkHosts.near, checkHosts.mpp, checkHosts.hostile, checkHosts.slow, checkHosts.busy, checkHosts.postOnly, checkHosts.fallback, checkHosts.hidden, checkHosts.unlisted, unavailableHost, ...checkedHosts, ...edgeHosts];
-  if (!known.includes(host) || host === checkHosts.postOnly && method !== 'POST')
-    return refuse('not_payable', 'no_payment_asked', `The link answered 200 without asking for a payment. Anyfare routes paid calls only.`, 200);
+  const { tried, won } = plan(host);
+  // The status the last try answered
+  const plain = [...tried].reverse().find(entry => entry.status !== null)?.status ?? 200;
+  if (won === undefined)
+    return refuse('not_payable', 'no_payment_asked', `The link answered ${plain} without asking for a payment. Anyfare routes paid calls only.`, plain, tried);
 
   const mpp = host === checkHosts.mpp;
+  const bodyPriced = host === checkHosts.bodyPriced;
   const onNear = host === checkHosts.near;
   const hostile = host === checkHosts.hostile;
   const asset = mpp ? 'USDC.e' : 'USDC';
@@ -605,7 +673,7 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
   const accept = {
     scheme: 'exact',
     network,
-    amount: mpp ? '5000' : '10000',
+    amount: mpp ? '5000' : bodyPriced ? '1000' : '10000',
     asset: onNear ? '17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1' : '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     payTo,
     maxTimeoutSeconds: 60,
@@ -613,7 +681,7 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
   };
   const x402 = { x402Version: 2, error: 'Payment required', resource, accepts: [accept] };
   const mppRequest = { method: 'tempo', intent: 'charge', realm: host, amount: '0.005', currency: asset, recipient: `0x${'5d2e'.repeat(10)}`, expires: new Date(now + 25_000).toISOString(), description };
-  const price = mpp ? '0.005' : '0.01';
+  const price = mpp ? '0.005' : bodyPriced ? '0.001' : '0.01';
   const ways: readonly { paidWith: string; protocol: string; asset: string }[] = [
     { paidWith: 'near', protocol: 'x402', asset: 'USDC' },
     { paidWith: 'base', protocol: 'x402', asset: 'USDC' },
@@ -630,7 +698,9 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
     status: 200,
     body: {
       payable: true,
-      method,
+      method: won.method,
+      exampleBody: bodyPriced ? exampleBody : null,
+      tried,
       target: `https://${host}${target.pathname}${target.search}`,
       price: { amount: price, currency: 'USD', asset: mpp ? 'usdce-tempo' : onNear ? 'usdc-near' : 'usdc-base', network },
       quote: { amount: price, fee: '0', currency: 'USD' },
@@ -655,7 +725,7 @@ export const checkDelayMs = (typed: string): number => /(^|\/\/)slow\.example\.c
 
 /** The endpoint's numbers for a period: the sample hosts' calls scaled, and zeros for any other endpoint. */
 export const sampleEndpointStats = (host: string, path: string, period: Period, now: number, empty = false): EndpointStats => {
-  const known = !empty && (edgeHosts.includes(host) || serviceHosts.includes(host) && servicePaths.includes(path as never) || host === checkHosts.busy || host === checkHosts.hostile || host === checkHosts.postOnly || host === checkHosts.fallback);
+  const known = !empty && (edgeHosts.includes(host) || serviceHosts.includes(host) && servicePaths.includes(path as never) || host === checkHosts.busy || host === checkHosts.hostile || host === checkHosts.postOnly || host === checkHosts.bodyPriced || host === checkHosts.fallback);
   const scale = known ? topScale[period] : 0;
   const calls = Math.round(402 * scale);
 
@@ -693,14 +763,15 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
     return { status: 200, body: sampleTop(period as Period, now, empty, mode === 'edge') };
   }
   if (pathname === '/_/check') {
-    const method = searchParams.get('method') ?? 'GET';
-    if (!checkMethods.includes(method))
-      return { status: 400, body: { error: { code: 'invalid_request', message: 'The method is GET or POST' } } };
-    // A POST check is honoured only with the header, so a plain link can't make the pay host send a POST
-    if (method === 'POST' && !Object.entries(headers).some(([name, value]) => name.toLowerCase() === 'x-anyfare-check' && value === '1'))
-      return { status: 400, body: { error: { code: 'invalid_request', message: 'A POST check needs the header X-Anyfare-Check: 1' } } };
+    const method = searchParams.get('method') ?? 'ANY';
+    if (method !== 'ANY' && !checkMethods.includes(method))
+      return { status: 400, body: { error: { code: 'invalid_request', message: 'The method is GET, POST, PUT, PATCH or DELETE' } } };
+    const header = Object.entries(headers).some(([name, value]) => name.toLowerCase() === 'x-anyfare-check' && value === '1');
+    // A check with a method but GET is honoured only with the header, so a plain link can't make the pay host send one
+    if (method !== 'ANY' && method !== 'GET' && !header)
+      return { status: 400, body: { error: { code: 'invalid_request', message: `A ${method} check needs the header X-Anyfare-Check: 1` } } };
 
-    return sampleCheck(searchParams.get('url') ?? '', now, undefined, method);
+    return sampleCheck(searchParams.get('url') ?? '', now, undefined, method, header);
   }
   if (pathname === '/v1/endpoints/stats') {
     const period = searchParams.get('period') ?? '30d';
