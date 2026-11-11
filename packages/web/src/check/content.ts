@@ -15,6 +15,9 @@ export const checkTitle = 'Check a link';
 
 export const checkDescription = 'Paste the link of one paid API and see what it asks, what it costs through Anyfare, and every way to pay it. Nothing is paid by checking.';
 
+/** Under a payable check whose link a cap or a limit kept out of the list: its service page would be a 404. */
+export const unlistedLine = 'This link isn\'t in the list of services yet.';
+
 export const emptyLine = 'Paste the link of one paid endpoint, the one that answers 402.';
 
 export const checkingLine = 'Checking the link. This can take a few seconds.';

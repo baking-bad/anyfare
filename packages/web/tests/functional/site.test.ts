@@ -84,6 +84,10 @@ let refused: Running;
 let shared: Running;
 let capped: Running;
 let edge: Running;
+// Only checked services, no paid call anywhere
+let checkedOnly: Running;
+// Its own fake API, which the tests that list a host while the site runs change
+let listing: Running;
 
 beforeAll(async () => {
   const build = spawnSync(process.execPath, [nextBin, 'build'], {
@@ -94,8 +98,8 @@ beforeAll(async () => {
   if (build.status !== 0)
     throw new Error(`next build failed:\n${build.stdout}\n${build.stderr}`);
 
-  const [fullApi, emptyApi, downApi, cappedApi, edgeApi] = await Promise.all([startFakeApi('full'), startFakeApi('empty'), startFakeApi('down'), startFakeApi('capped'), startFakeApi('edge')]);
-  [full, empty, down, refused, shared, capped, edge] = await Promise.all([
+  const [fullApi, emptyApi, downApi, cappedApi, edgeApi, checkedApi, listingApi] = await Promise.all([startFakeApi('full'), startFakeApi('empty'), startFakeApi('down'), startFakeApi('capped'), startFakeApi('edge'), startFakeApi('checked'), startFakeApi('full')]);
+  [full, empty, down, refused, shared, capped, edge, checkedOnly, listing] = await Promise.all([
     startSite(fullApi, fullApi.url),
     startSite(emptyApi, emptyApi.url),
     startSite(downApi, downApi.url),
@@ -103,11 +107,13 @@ beforeAll(async () => {
     startSite(fullApi, fullApi.url, sharedUrls),
     startSite(cappedApi, cappedApi.url),
     startSite(edgeApi, edgeApi.url),
+    startSite(checkedApi, checkedApi.url),
+    startSite(listingApi, listingApi.url),
   ]);
 }, 300_000);
 
 afterAll(async () => {
-  for (const running of [full, empty, down, refused, shared, capped, edge]) {
+  for (const running of [full, empty, down, refused, shared, capped, edge, checkedOnly, listing]) {
     running?.process.kill();
     await running?.api?.close();
   }
@@ -286,7 +292,7 @@ describe('the home page with an empty database', () => {
     expect(body).toContain('$0');
     expect(body).toMatch(/0<!-- --> paid calls today/);
     expect(body).toContain('No calls yet');
-    expect(body).toContain('No services yet');
+    expect(body).toContain('No paid services yet');
     expect(body).toContain('No paid calls yet');
     expect(body).not.toContain('role="alert"');
     noBrokenValues(body);
@@ -657,11 +663,11 @@ describe('the Services page', () => {
     const { response, body } = await get(full, '/services');
 
     expect(response.status).toBe(200);
-    expect(body).toContain('Services agents paid through Anyfare. Any x402 or MPP API can be paid the same way: paste its link on the home page.');
-    for (const text of ['Services paid through Anyfare', 'Paid endpoints on them', 'Calls through Anyfare, 30 days', 'Search by name or host', 'Most paid endpoints', 'Cheapest', '27'])
+    expect(body).toContain('Paid APIs that agents paid or checked through Anyfare. Paste any x402 or MPP link on the home page to add one.');
+    for (const text of ['Services listed', 'Paid through Anyfare', 'Calls through Anyfare, 30 days', 'Paid endpoints', 'Search by name or host', 'Newest', 'Most paid endpoints', 'Cheapest', '31', '27'])
       expect(body).toContain(text);
     expect(body).toContain('href="/services/api.example.com"');
-    expect(body).toMatch(/1<!-- -->–<!-- -->20<!-- --> of <!-- -->27/);
+    expect(body).toMatch(/1<!-- -->–<!-- -->20<!-- --> of <!-- -->31/);
     expect(body).not.toMatch(/registr|proposal|verified/i);
     expect(body).not.toContain('In public registries');
     noBrokenValues(body);
@@ -684,9 +690,9 @@ describe('the Services page', () => {
     expect(first.body).not.toContain('api.example.com</a>');
     const rows = (html: string): string => html.slice(html.indexOf('<tbody'), html.indexOf('</tbody>'));
     expect(rows(first.body)).toBe(rows(again.body));
-    expect(second.body).toMatch(/21<!-- -->–<!-- -->27/);
+    expect(second.body).toMatch(/21<!-- -->–<!-- -->31/);
     expect(second.body).toContain('ocr22.example.org');
-    expect(sorted.body).toMatch(/21<!-- -->–<!-- -->27/);
+    expect(sorted.body).toMatch(/21<!-- -->–<!-- -->31/);
     expect(full.api!.requests.slice(before).map(request => request.path)).toContain('/v1/services?q=maps&sort=calls&page=1&size=20');
     expect(full.api!.requests.slice(before).map(request => request.path)).toContain('/v1/services?sort=price&page=2&size=20');
   });
@@ -864,7 +870,7 @@ describe('the Service page', () => {
     const { response, body } = await get(full, '/services/nope.example.com');
 
     expect(response.status).toBe(404);
-    expect(body).toContain('No paid call went to this service through Anyfare yet.');
+    expect(body).toContain('No paid call or check has listed this service yet.');
     expect(body).toContain('href="/services"');
     expect(body).toContain('href="/check?url=nope.example.com"');
     expect((await get(empty, '/services/api.example.com')).response.status).toBe(404);
@@ -876,7 +882,7 @@ describe('the Service page', () => {
 
     for (const { response, body } of results) {
       expect(response.status).toBe(404);
-      expect(body).toContain('No paid call went to this service through Anyfare yet.');
+      expect(body).toContain('No paid call or check has listed this service yet.');
     }
     expect(full.api!.requests.slice(before).filter(request => request.path.startsWith('/v1/services/'))).toEqual([]);
   });
@@ -927,14 +933,15 @@ const textOf = (html: string): string => html.replace(/<script[\s\S]*?<\/script>
 const checkPath = (link: string, extra = ''): string => `/check?url=${encodeURIComponent(link)}${extra}`;
 
 describe('the answers of the real API that are not the usual ones', () => {
-  it('says "Showing the most used services" under the grid when the list is capped, and only then', async () => {
+  it('says the list keeps only the most used paid services under the grid when the list is capped, and only then', async () => {
     const limited = await get(capped, '/services');
     const usual = await get(full, '/services');
+    const line = 'The list keeps the most used paid services, so a search may miss some.';
 
-    expect(limited.body).toContain('Showing the most used services.');
-    expect(usual.body).not.toContain('Showing the most used services.');
-    expect((await get(capped, '/services.md')).body).toContain('Showing the most used services.');
-    expect((await get(full, '/services.md')).body).not.toContain('Showing the most used services.');
+    expect(limited.body).toContain(line);
+    expect(usual.body).not.toContain(line);
+    expect((await get(capped, '/services.md')).body).toContain(line);
+    expect((await get(full, '/services.md')).body).not.toContain(line);
   });
 
   it('shows a dash for a service with no price, in the list and in its endpoints', async () => {
@@ -2146,5 +2153,370 @@ describe('one host for the site and the console', () => {
     expect(textOfHtml(reply.body)).toContain('"amount":"5"');
     expect(reply.headers['x-robots-tag']).toBeUndefined();
     expect(reply.body).toMatch(/<meta name="robots" content="noindex, nofollow"\/>/);
+  });
+});
+
+// ---------- Services that were only checked ----------
+
+// The text of the rows of a table, in the order they come: the hosts of the links in the list
+const hostsInOrder = (html: string): string[] => [...html.slice(html.indexOf('<tbody'), html.indexOf('</tbody>')).matchAll(/class="row-link row-title mono svc-host" href="\/services\/([^"]+)"/g)].map(match => decodeURIComponent(match[1]!));
+
+describe('the Services page with services that were only checked', () => {
+  it('lists both kinds, and numbers each: services listed, paid through Anyfare, calls', async () => {
+    const { response, body } = await get(full, '/services');
+    const text = textOf(body);
+
+    expect(response.status).toBe(200);
+    expect(text).toContain('31 Services listed');
+    expect(text).toContain('27 Paid through Anyfare');
+    expect(text).toMatch(/\d Calls through Anyfare, 30 days/);
+    expect(text).not.toContain('Paid endpoints on them');
+    noBrokenValues(body);
+  });
+
+  it('gives a checked row its host, endpoints and price, "Not paid yet", and empty cells with a dash for a screen reader', async () => {
+    const { body } = await get(full, '/services?q=fresh02');
+    const row = body.slice(body.indexOf('<tbody'), body.indexOf('</tbody>'));
+    const cells = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(match => match[1]!);
+
+    expect(hostsInOrder(body)).toEqual(['fresh02.example.net']);
+    expect(textOf(cells[0]!).trim()).toMatch(/^fresh02\.example\.net Checked (today|yesterday)$/);
+    expect(textOf(cells[1]!).trim()).toBe('2');
+    expect(textOf(cells[2]!).trim()).toBe('$0.004');
+    expect(cells[3]).toContain('class="badge">Not paid yet</span>');
+    // Trend, buyers, volume, 2xx and median: nothing is drawn, and a screen reader reads a dash
+    for (const cell of cells.slice(4, 9)) {
+      expect(cell).toContain('<span class="sr-only">-</span>');
+      expect(cell).not.toContain('<svg');
+      expect(textOf(cell).trim()).toBe('-');
+    }
+    noBrokenValues(body);
+  });
+
+  it('says the day a check was made: a date when it is older than yesterday', async () => {
+    const { body } = await get(full, '/services?q=fresh03');
+
+    expect(textOf(body)).toMatch(/Checked \d{1,2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) 20\d\d/);
+    expect(body).toContain('class="r">-</td>');
+  });
+
+  it('leaves a paid row as it was: no badge, no line under its host', async () => {
+    const { body } = await get(full, '/services?q=api.example');
+    const row = body.slice(body.indexOf('<tbody'), body.indexOf('</tbody>'));
+
+    expect(row).not.toContain('Not paid yet');
+    expect(row).not.toContain('Checked');
+    expect(row).toContain('<svg class="spark"');
+  });
+
+  it('sorts by calls with paid services first, then the checked ones, newest first', async () => {
+    const first = await get(full, '/services');
+    const second = await get(full, '/services?page=2');
+
+    expect(hostsInOrder(first.body)).not.toContain('fresh01.example.net');
+    expect(hostsInOrder(second.body).slice(-4)).toEqual(['fresh01.example.net', 'fresh02.example.net', 'fresh03.example.net', 'fresh04.example.net']);
+  });
+
+  it('sorts by newest, and offers the sort', async () => {
+    const { body } = await get(full, '/services?sort=newest');
+
+    expect(hostsInOrder(body).slice(0, 5)).toEqual(['fresh01.example.net', 'fresh02.example.net', 'fresh03.example.net', 'fresh04.example.net', 'api.example.com']);
+    expect(body).toMatch(/<option value="newest" selected="">Newest<\/option>/);
+    expect(body).toMatch(/<option value="calls">Most calls through Anyfare<\/option><option value="newest"/);
+    expect(full.api!.requests.map(request => request.path)).toContain('/v1/services?sort=newest&page=1&size=20');
+    // The default stays as it was
+    expect((await get(full, '/services')).body).toMatch(/<option value="calls" selected="">Most calls through Anyfare<\/option>/);
+  });
+
+  it('finds a checked service by a search', async () => {
+    const found = await get(full, '/services?q=FRESH04');
+    const none = await get(full, '/services?q=zzzz');
+
+    expect(hostsInOrder(found.body)).toEqual(['fresh04.example.net']);
+    expect(none.body).toContain('Nothing matches.');
+  });
+
+  it('shows only checked services when no call was paid, and keeps its empty states true', async () => {
+    const { response, body } = await get(checkedOnly, '/services');
+    const text = textOf(body);
+
+    expect(response.status).toBe(200);
+    expect(hostsInOrder(body)).toEqual(['fresh01.example.net', 'fresh02.example.net', 'fresh03.example.net', 'fresh04.example.net']);
+    expect(text).toContain('4 Services listed');
+    expect(text).toContain('0 Paid through Anyfare');
+    expect(text).toContain('0 Calls through Anyfare, 30 days');
+    expect(text).not.toContain('No services yet');
+    noBrokenValues(body);
+    expect(textOf((await get(checkedOnly, '/services?q=zzzz')).body)).toContain('Nothing matches.');
+  });
+
+  it('says a service is the same on the page and in its twin: the lead, the numbers, the status, "Not paid yet", the day and how to add one', async () => {
+    const { response, body } = await get(full, '/services.md?sort=newest');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('Paid APIs that agents paid or checked through Anyfare. Paste any x402 or MPP link on the home page to add one.');
+    expect(body).toContain('- Services listed: 31\n- Paid through Anyfare: 27\n- Calls through Anyfare, 30 days: ');
+    expect(body).toMatch(/\| \[fresh01\.example\.net\]\(https:\/\/anyfare\.example\.com\/services\/fresh01\.example\.net\) \| checked \| 1 \| \$0\.002 \| Not paid yet \| - \| - \| - \| - \| Checked (today|yesterday) \|/);
+    expect(body).toMatch(/\| \[api\.example\.com\]\([^)]*\) \| paid \| 4 \|/);
+    expect(body).toContain('check a paid link');
+    expect(body).toContain('A paid link you check joins the list of services, as checked, until someone pays it.');
+    expect(body).not.toMatch(/undefined|NaN|\bnull\b/);
+  });
+});
+
+describe('the Service page of a service that was only checked', () => {
+  it('answers 200 with the host, the endpoints count, "Not paid yet", the day, and the line that nobody has paid it', async () => {
+    const { response, body } = await get(full, '/services/fresh02.example.net');
+    const text = textOf(pageText(body));
+
+    expect(response.status).toBe(200);
+    expect(text).toContain('fresh02.example.net');
+    expect(text).toContain('2 paid endpoints');
+    expect(text).toContain('Not paid yet');
+    expect(text).toMatch(/Checked (today|yesterday)/);
+    expect(text).toContain('Nobody has paid this API through Anyfare yet. Copy a pay link and be the first.');
+    noBrokenValues(body);
+  });
+
+  it('lists every endpoint with its price and a pay link, empty number cells, a "Checked" line under the path and the method in the check link', async () => {
+    const { body } = await get(full, '/services/fresh02.example.net');
+    const rows = [...body.matchAll(/<tr class="click">([\s\S]*?)<\/tr>/g)].map(match => match[1]!);
+
+    expect(rows).toHaveLength(2);
+    expect(body).toContain('aria-label="Copy the pay link of /v1/sample/quotes/latest"');
+    expect(body).toContain('aria-label="Copy the pay link of /v1/sample/lookup"');
+    expect(body).toContain('href="/check?url=fresh02.example.net/v1/sample/quotes/latest"');
+    // The second endpoint asks on POST: its check opens with the method
+    expect(body).toContain('href="/check?url=fresh02.example.net/v1/sample/lookup&amp;method=POST"');
+    expect(rows[0]).toMatch(/<code>\/v1\/sample\/quotes\/latest<\/code>[\s\S]*Checked (today|yesterday)/);
+    expect(textOf(rows[0]!)).toMatch(/\$0\.004/);
+    expect((rows[0]!.match(/<span class="sr-only">-<\/span>/g) ?? [])).toHaveLength(5);
+  });
+
+  it('shows the empty states, small and shared, in place of the numbers: not zeros, not an error', async () => {
+    const { body } = await get(full, '/services/fresh02.example.net');
+    const page = pageText(body);
+    const text = textOf(page);
+
+    expect(page.match(/class="empty sm"/g)?.length).toBeGreaterThanOrEqual(5);
+    for (const title of ['No paid calls yet', 'No buyers yet', 'No calls yet'])
+      expect(text).toContain(title);
+    for (const heading of ['Stats', 'Paid calls per day', 'By payment method', 'Top 5 buyers', 'Live calls to fresh02.example.net'])
+      expect(text).toContain(heading);
+    for (const number of ['Unique buyers', 'Came back', 'Answered 2xx', 'Median time', 'Avg. per buyer'])
+      expect(text).not.toContain(number);
+    expect(body).not.toContain('role="alert"');
+    expect(page).not.toContain('class="kpis"');
+    noBrokenValues(body);
+  });
+
+  it('is the same for a period in the URL', async () => {
+    const { response, body } = await get(full, '/services/fresh02.example.net?period=all');
+
+    expect(response.status).toBe(200);
+    expect(textOf(body)).toContain('Nobody has paid this API');
+    noBrokenValues(body);
+  });
+
+  it('answers 200 for it in a database with no paid call, and 404 for a paid host there', async () => {
+    expect((await get(checkedOnly, '/services/fresh01.example.net')).response.status).toBe(200);
+    const missing = await get(checkedOnly, '/services/api.example.com');
+
+    expect(missing.response.status).toBe(404);
+    expect(missing.body).toContain('No paid call or check has listed this service yet.');
+  });
+
+  it('has a twin with the same facts: the status, "Not paid yet", the day, the line, the pay links and the empty states', async () => {
+    const { response, body } = await get(full, '/services/fresh02.example.net.md');
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('2 paid endpoints.\n\nStatus: checked. Not paid yet. Checked ');
+    expect(body).toContain('Nobody has paid this API through Anyfare yet. Copy a pay link and be the first.');
+    expect(body).toContain('https://pay.example.com/fresh02.example.net/v1/sample/quotes/latest');
+    expect(body).toContain('| POST /v1/sample/lookup | checked |');
+    expect(body).toContain('No paid calls yet.');
+    expect(body).toContain('No buyers yet.');
+    expect(body).not.toMatch(/undefined|NaN|\bnull\b/);
+  });
+});
+
+describe('the Service page of a paid service with a checked endpoint', () => {
+  it('shows its numbers as before, and the checked endpoint after the paid ones, marked the same way', async () => {
+    const { response, body } = await get(full, '/services/pdf06.example.org');
+    const rows = [...body.matchAll(/<tr class="click">([\s\S]*?)<\/tr>/g)].map(match => match[1]!);
+    const text = textOf(pageText(body));
+
+    expect(response.status).toBe(200);
+    expect(rows).toHaveLength(4);
+    expect(textOf(rows[3]!)).toMatch(/POST \/v1\/sample\/preview Checked (today|yesterday) \$0\.\d+/);
+    expect(rows[3]).toContain('<span class="sr-only">-</span>');
+    for (const row of rows.slice(0, 3)) {
+      expect(row).not.toContain('Checked');
+      expect(row).not.toContain('<span class="sr-only">-</span>');
+    }
+    expect(body).toContain('href="/check?url=pdf06.example.org/v1/sample/preview&amp;method=POST"');
+    expect(body).toContain('aria-label="Copy the pay link of /v1/sample/preview"');
+    expect(text).toContain('4 paid endpoints');
+    expect(text).toMatch(/Checked (today|yesterday)/);
+    expect(text).not.toContain('Not paid yet');
+    expect(text).not.toContain('Nobody has paid');
+    for (const part of ['Unique buyers', 'Came back', 'Top 5 buyers', 'By payment method'])
+      expect(text).toContain(part);
+    expect(body).not.toContain('class="empty sm"');
+    noBrokenValues(body);
+  });
+
+  it('has the checked endpoint in its twin, after the paid ones, and says when it was checked', async () => {
+    const { body } = await get(full, '/services/pdf06.example.org.md');
+
+    expect(body).toMatch(/4 paid endpoints\.\n\nStatus: paid\. Checked (today|yesterday)\./);
+    expect(body).toMatch(/\| POST \/v1\/sample\/preview \| checked \| \$0\.\d+ \| Not paid yet \|/);
+    expect(body).not.toContain('Nobody has paid this API');
+    expect(body.indexOf('| paid |')).toBeLessThan(body.indexOf('| checked |'));
+  });
+
+  it('shows no check line in the head of a paid service that no check confirmed', async () => {
+    const text = textOf(pageText((await get(full, '/services/api.example.com')).body));
+
+    expect(text).not.toContain('Checked ');
+    expect(text).not.toContain('Not paid yet');
+  });
+});
+
+describe('a host nobody listed', () => {
+  it('is a 404 with words that fit both kinds, on the page and in the twin', async () => {
+    const page = await get(full, '/services/nobody.example.com');
+    const twin = await get(full, '/services/nobody.example.com.md');
+
+    expect(page.response.status).toBe(404);
+    expect(page.body).toContain('No paid call or check has listed this service yet.');
+    expect(page.body).toContain('href="/check?url=nobody.example.com"');
+    expect(twin.response.status).toBe(404);
+    expect(twin.body).toContain('No paid call or check has listed this service yet.');
+  });
+});
+
+describe('the Check page leads to the service', () => {
+  it('has the Service button when the link is listed, and no line about it', async () => {
+    const { body } = await get(full, checkPath('api.example.com/v1/sample/lookup'));
+    const head = body.slice(body.indexOf('class="row-between check-head"'), body.indexOf('What the API asks'));
+
+    expect(head).toMatch(/<a class="btn secondary lg" href="\/services\/api.example.com">Service<\/a>/);
+    expect(textOf(head)).not.toContain('isn\'t in the list');
+  });
+
+  it('has no Service button when the link is not in the list, and one small line says why', async () => {
+    const { response, body } = await get(full, checkPath('unlisted.example.com/v1/x'));
+    const head = body.slice(body.indexOf('class="row-between check-head"'), body.indexOf('What the API asks'));
+
+    expect(response.status).toBe(200);
+    expect(head).toContain('Payable through Anyfare');
+    expect(head).toContain('Copy pay link');
+    expect(head).not.toContain('href="/services/unlisted.example.com"');
+    expect(head).not.toMatch(/>Service<\/a>/);
+    expect(textOf(head)).toContain('This link isn&#x27;t in the list of services yet.');
+    expect(body).not.toContain('href="/services/unlisted.example.com"');
+  });
+
+  it('says the same in the twin: the service page, or why there is none', async () => {
+    const listed = await get(full, '/check.md?url=api.example.com/v1/sample/lookup');
+    const unlisted = await get(full, '/check.md?url=unlisted.example.com/v1/x');
+
+    expect(listed.body).toContain('Its service page: https://anyfare.example.com/services/api.example.com');
+    expect(unlisted.body).toContain('This link isn\'t in the list of services yet.');
+    expect(unlisted.body).not.toContain('/services/unlisted.example.com');
+  });
+
+  it('opens a service page that exists for a checked link', async () => {
+    const check = await get(full, checkPath('fresh01.example.net/v1/sample/lookup'));
+
+    expect(check.body).toContain('href="/services/fresh01.example.net"');
+    expect((await get(full, '/services/fresh01.example.net')).response.status).toBe(200);
+  });
+});
+
+describe('what stays paid-only on the home page', () => {
+  it('never shows a checked service in the top services, with both kinds listed', async () => {
+    const { body } = await get(full, '/');
+    const top = body.slice(body.indexOf('Top 5 used through Anyfare'), body.indexOf('id="agents"') === -1 ? undefined : body.indexOf('id="agents"'));
+
+    expect(top).toContain('href="/services/api.example.com"');
+    expect(body).not.toContain('fresh0');
+    expect(body).toContain('Top 5 used through Anyfare');
+    expect(top).toContain('These are the 5 that agents paid most this month.');
+  });
+
+  it('shows the empty state, not a checked service, when only checked services are listed', async () => {
+    const { response, body } = await get(checkedOnly, '/');
+    const text = textOf(body);
+
+    expect(response.status).toBe(200);
+    expect(body).not.toContain('fresh0');
+    expect(text).toContain('No paid services yet Services appear here once agents have paid them through Anyfare.');
+    noBrokenValues(body);
+    const twin = await get(checkedOnly, '/index.md');
+
+    expect(twin.body).toContain('No paid services yet.');
+    expect(twin.body).not.toContain('fresh0');
+    expect((await get(full, '/index.md')).body).not.toContain('fresh0');
+  });
+
+  it('keeps the Calls page and its top lists to paid calls', async () => {
+    const calls = await get(checkedOnly, '/calls');
+    const text = textOf(calls.body);
+
+    expect(calls.response.status).toBe(200);
+    expect(calls.body).not.toContain('fresh0');
+    expect(text).toContain('No paid calls yet');
+  });
+});
+
+describe('a link checked while the site runs shows within 5 seconds', () => {
+  // The service page and its twin read the API for every request: nothing in the website keeps a copy of them
+  it('is a 404 before the link is listed, and the page the moment the API lists it', async () => {
+    const host = 'newly-checked.example.net';
+    const before = await get(listing, `/services/${host}`);
+    const beforeTwin = await get(listing, `/services/${host}.md`);
+
+    expect(before.response.status).toBe(404);
+    expect(beforeTwin.response.status).toBe(404);
+    listing.api!.listChecked(host);
+    const after = await get(listing, `/services/${host}`);
+    const afterTwin = await get(listing, `/services/${host}.md`);
+
+    expect(after.response.status).toBe(200);
+    expect(textOf(pageText(after.body))).toContain('Nobody has paid this API through Anyfare yet.');
+    expect(afterTwin.response.status).toBe(200);
+    expect(afterTwin.body).toContain('Status: checked.');
+    // And the list, in both sorts, holds it
+    expect(hostsInOrder((await get(listing, '/services?sort=newest')).body)[0]).toBe(host);
+    expect((await get(listing, `/services?q=${host}`)).body).toContain(`href="/services/${host}"`);
+    expect((await get(listing, `/services.md?q=${host}`)).body).toContain(`[${host}]`);
+  });
+
+  it('is not kept by a cache the site sends for longer than the API allows, and the read of the API is made for each request', async () => {
+    const host = 'newly-checked.example.net';
+    const before = listing.api!.requests.filter(request => request.path.startsWith(`/v1/services/${host}`)).length;
+    const first = await get(listing, `/services/${host}`);
+    const second = await get(listing, `/services/${host}`);
+    const twin = await get(listing, `/services/${host}.md`);
+    const after = listing.api!.requests.filter(request => request.path.startsWith(`/v1/services/${host}`)).length;
+
+    // The page is never kept; the twin may be kept for the 3 seconds the API itself allows, and no longer
+    for (const reply of [first, second])
+      expect(reply.response.headers.get('cache-control')).toMatch(/no-store|no-cache|private/);
+    const control = twin.response.headers.get('cache-control') ?? '';
+
+    expect(control).toBe('public, max-age=3');
+    expect(control).not.toMatch(/s-maxage|stale-while-revalidate/);
+    // The proxy's check that the host exists, the page's own read, and the twin's: at least one read each time
+    expect(after - before).toBeGreaterThanOrEqual(3);
+  });
+
+  it('shows a listed host\'s Service button on the check the moment it is listed', async () => {
+    const host = 'second-check.example.net';
+    listing.api!.listChecked(host);
+
+    expect((await get(listing, `/services/${host}`)).response.status).toBe(200);
   });
 });

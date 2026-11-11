@@ -350,6 +350,7 @@ table.t tr.fresh td { animation: enter 900ms var(--ease-out); }
 .skeleton.line { height: 16px; } .skeleton.title { height: 28px; } .skeleton.block { height: 96px; border-radius: var(--radius-lg); }
 .skeleton.w-full { width: 100%; } .skeleton.w-lg { width: 320px; } .skeleton.w-md { width: 200px; } .skeleton.w-sm { width: 96px; }
 .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; padding: 48px 24px; }
+.empty.sm { gap: 8px; padding: 24px 16px; }
 .empty .row-title { font-size: var(--text-base); }
 .empty p { max-width: 420px; }
 

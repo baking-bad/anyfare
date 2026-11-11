@@ -1,6 +1,6 @@
 import { payReader, serverReader } from '../../../src/api/server';
 import { readSettings } from '../../../src/config';
-import { markdownPageFor } from '../../../src/markdown/pages';
+import { defaultMaxAge, markdownPageFor } from '../../../src/markdown/pages';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,5 +23,5 @@ export const GET = async (request: Request, { params }: { readonly params: Promi
   if (typeof answer !== 'string')
     return new Response(answer.body, { status: answer.status, headers: { ...headers, 'cache-control': 'no-store', vary: 'Accept' } });
 
-  return new Response(answer, { headers: { ...headers, 'cache-control': 'public, max-age=30', vary: 'Accept' } });
+  return new Response(answer, { headers: { ...headers, 'cache-control': `public, max-age=${page.maxAge ?? defaultMaxAge}`, vary: 'Accept' } });
 };

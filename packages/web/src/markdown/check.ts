@@ -5,10 +5,10 @@ import { paidWithName } from '../content/home';
 import { count, ms, pct, usdOf } from '../format';
 import type { CheckNumbers, PayableCheck } from '../check/answer';
 import {
-  askRows, asksSentence, checkAddress, checkDescription, cut, defaultMethod, offersPost, tryPostLine, describedAs, emptyLine, linkParts, noCallsLine, periodName, refusalWords, titleFor, unavailableLine, wayWords,
+  askRows, asksSentence, checkAddress, checkDescription, cut, defaultMethod, offersPost, tryPostLine, describedAs, emptyLine, linkParts, noCallsLine, periodName, refusalWords, titleFor, unavailableLine, unlistedLine, wayWords,
 } from '../check/content';
 import type { CheckData } from '../check/data';
-import { inexactLine } from '../services/content';
+import { inexactLine, isHost, servicePath } from '../services/content';
 
 // The Check page as Markdown: the same facts as the page, from the same reads. Text that came from the
 // link's own API is put on one line and cut, so it can't add structure to the page.
@@ -69,6 +69,10 @@ const callsList = (siteUrl: string, calls: ApiResult<CallsPage>): string => {
 ${value.calls.map(call => `| ${call.at} | ${cell(paidWithName(call.paidWith))} | ${call.status === 'paid' ? usdOf(call.amount) : '$0'} | [${call.status === 'paid' ? 'Paid' : call.apiStatus === null ? 'free' : `${call.apiStatus} free`}](${siteUrl}/calls/${call.id}) |`).join('\n')}`;
 };
 
+// Where the endpoint's service is, or why there is no page for it yet
+const serviceLine = (siteUrl: string, check: PayableCheck): string =>
+  check.listed && isHost(check.host) ? `Its service page: ${siteUrl}${servicePath(check.host)}` : unlistedLine;
+
 const payable = (settings: SiteSettings, check: PayableCheck, data: CheckData): string => {
   const { params } = data;
   const fallen = data.stats !== undefined && !data.stats.ok && check.stats !== null;
@@ -79,6 +83,8 @@ const payable = (settings: SiteSettings, check: PayableCheck, data: CheckData): 
   return `# ${probed}${check.host}${check.path}
 
 Payable through Anyfare.${probed === '' ? '' : ` Checked with ${params.method}.`}${check.checkedAt === undefined ? '' : ` Checked at ${check.checkedAt}${check.ms === undefined ? '' : `, ${ms(check.ms)}`}.`}
+
+${serviceLine(settings.siteUrl, check)}
 
 ## What the API asks
 

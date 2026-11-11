@@ -40,6 +40,7 @@ const isNullableString = (value: unknown): boolean => value === null || typeof v
 const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
 const isNumber = (value: unknown): value is number => typeof value === 'number';
 const isArray = (value: unknown): value is readonly unknown[] => Array.isArray(value);
+const isListedStatus = (value: unknown): boolean => value === 'paid' || value === 'checked';
 
 const isStats = (value: unknown): value is Stats =>
   isRecord(value) && isNullableString(value['updatedAt']) && isNullableString(value['allUpdatedAt'])
@@ -54,12 +55,13 @@ const isTopStats = (value: unknown): value is TopStats =>
 
 const isServicesPage = (value: unknown): value is ServicesPage =>
   isRecord(value) && Array.isArray(value['services']) && isNumber(value['total']) && isBoolean(value['totalCapped']) && isRecord(value['totals'])
-  && value['services'].every(row => isRecord(row) && isString(row['host']) && isNullableString(row['priceFrom']) && Array.isArray(row['trend']));
+  && isNumber(value['totals']['services']) && isNumber(value['totals']['paidServices'])
+  && value['services'].every(row => isRecord(row) && isString(row['host']) && isListedStatus(row['status']) && isNullableString(row['priceFrom']) && isNullableString(row['checkedAt']) && Array.isArray(row['trend']));
 
 const isServiceDetail = (value: unknown): value is ServiceDetail =>
-  isRecord(value) && typeof value['host'] === 'string' && isBoolean(value['exact']) && isNumber(value['paidEndpoints']) && isRecord(value['stats']) && Array.isArray(value['endpoints'])
+  isRecord(value) && typeof value['host'] === 'string' && isListedStatus(value['status']) && isNullableString(value['checkedAt']) && isBoolean(value['exact']) && isNumber(value['paidEndpoints']) && isRecord(value['stats']) && Array.isArray(value['endpoints'])
   && Array.isArray(value['daily']) && Array.isArray(value['byPaidWith']) && isRecord(value['topBuyers']) && Array.isArray(value['topBuyers']['buyers'])
-  && value['endpoints'].every(endpoint => isRecord(endpoint) && isString(endpoint['path']) && isNullableString(endpoint['priceNow']));
+  && value['endpoints'].every(endpoint => isRecord(endpoint) && isString(endpoint['path']) && isNullableString(endpoint['priceNow']) && isListedStatus(endpoint['status']) && isNullableString(endpoint['checkedAt']));
 
 const isEndpointStats = (value: unknown): value is EndpointStats =>
   isRecord(value) && isBoolean(value['exact']) && isRecord(value['stats']) && Array.isArray(value['daily']) && Array.isArray(value['byPaidWith']);

@@ -95,7 +95,7 @@ export const TwoWays = ({ payUrl, apiUrl, consoleUrl }: { readonly payUrl: strin
   );
 };
 
-/** The 5 services agents paid most. A failed read shows its error, and no service shows the empty state. */
+/** The 5 services agents paid most: a service that was only checked is never here. A failed read shows its error, and no paid service shows the empty state. */
 export const TopServices = ({ services }: { readonly services: ApiResult<ServicesPage> }) => (
   <section className="band">
     <div className="container ruled section">
@@ -106,7 +106,7 @@ export const TopServices = ({ services }: { readonly services: ApiResult<Service
       {!services.ok ? (
         <ErrorState title="The services didn't load">The Platform API didn&apos;t answer. Reload the page in a moment.</ErrorState>
       ) : services.value.services.length === 0 ? (
-        <div className="card flush"><EmptyState icon="list" title="No services yet">Services appear here once agents have paid them through Anyfare.</EmptyState></div>
+        <div className="card flush"><EmptyState icon="list" title="No paid services yet">Services appear here once agents have paid them through Anyfare.</EmptyState></div>
       ) : (
         <DataTable label="Top 5 services">
           <thead><tr><th>Service</th><th className="r">Paid endpoints</th><th className="r">Price from</th><th className="r">Calls through Anyfare</th><th className="r">Buyers</th><th className="r">Volume</th><th><span className="sr-only">Open</span></th></tr></thead>

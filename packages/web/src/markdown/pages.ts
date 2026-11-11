@@ -44,6 +44,8 @@ export interface MarkdownAnswer {
 
 export interface MarkdownPage {
   readonly pattern: RegExp;
+  // How many seconds a cache may keep the twin. Default 30. A service's twin follows its API: the API lets a read of it be kept for 3 seconds.
+  readonly maxAge?: number;
   readonly render: (context: MarkdownContext) => Promise<string | MarkdownAnswer>;
 }
 
@@ -69,6 +71,7 @@ export const markdownPages: readonly MarkdownPage[] = [
   {
     // A name that is not a host has a twin too, and it answers 404 without asking the API
     pattern: /^\/services\/[^/]+$/,
+    maxAge: 3,
     render: async ({ settings, read, path, search }) => {
       const host = hostOfSegment(path.slice('/services/'.length));
       if (!isHost(host))
@@ -102,4 +105,7 @@ export const markdownPages: readonly MarkdownPage[] = [
 ];
 
 /** The entry for an HTML page, when it has a Markdown twin. */
+/** How long a cache may keep a twin, in seconds. */
+export const defaultMaxAge = 30;
+
 export const markdownPageFor = (path: string): MarkdownPage | undefined => markdownPages.find(page => page.pattern.test(path));

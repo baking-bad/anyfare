@@ -79,6 +79,8 @@ export interface PayableCheck {
   readonly payWith: readonly PayWay[];
   // The numbers over 30 days; null when the pay host couldn't read them
   readonly stats: CheckNumbers | null;
+  // Whether the endpoint is among the services now. false: a cap or a limit kept it out, so its service page doesn't exist yet.
+  readonly listed: boolean;
   readonly checkedAt: string | undefined;
   readonly ms: number | undefined;
 }
@@ -127,6 +129,7 @@ export interface PayableAnswer {
   readonly upstream: { readonly status: number; readonly headers: Readonly<Record<string, string>>; readonly x402: unknown | undefined; readonly mpp: readonly unknown[] | undefined };
   readonly payWith: readonly PayWay[];
   readonly stats: { readonly calls: number; readonly buyers: number; readonly volume: string; readonly successRate: number | null; readonly p50Ms: number | null } | null;
+  readonly listed: boolean;
   readonly checkedAt: string;
   readonly ms: number;
 }
@@ -273,6 +276,8 @@ export const readCheckAnswer = (value: unknown): CheckAnswer | undefined => {
       upstream: readUpstream(value['upstream']),
       payWith: readWays(value['payWith']),
       stats: readStats(value['stats']),
+      // Only a plain true lists it: an answer without the field never leads to a page that may not exist
+      listed: value['listed'] === true,
       checkedAt,
       ms,
     },

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listServices } from '../api/endpoints';
 import { createReader, type ApiResult } from '../api/reader';
 import type { ServicesPage } from '../api/types';
+import { Badge } from '../components/Badge';
 import { Button } from '../components/Button';
 import { DataTable } from '../components/DataTable';
 import { EmptyState } from '../components/EmptyState';
@@ -17,12 +18,14 @@ import { useSettings } from '../components/Settings';
 import { Skeleton } from '../components/Skeleton';
 import { Sparkline } from '../components/Sparkline';
 import { count, ms, pct, usdOf } from '../format';
-import { cappedLine, firstRunLine, firstRunTitle, noMatchLine, servicePath, unavailableLine } from './content';
+import { cappedLine, firstRunLine, firstRunTitle, noMatchLine, notPaidYet, rowStatus, servicePath, servicesNumberLabels, unavailableLine } from './content';
 import { apiServicesQuery, parseServicesFilters, servicesHref, sortChoices, withoutControls, withSearch, withSort, type ServicesFilters } from './filters';
 
 export interface ServicesListProps {
   // The page of the list the server read for the URL
   readonly first: ApiResult<ServicesPage>;
+  // The server's clock when it rendered: "Checked today" counts from it, so the first render matches in the browser
+  readonly now: number;
 }
 
 const searchDelayMs = 300;
@@ -31,11 +34,14 @@ const skeletonRows = [0, 1, 2, 3, 4, 5, 6, 7];
 
 type Totals = ServicesPage['totals'];
 
+/** A cell with nothing to show: nothing is drawn, and a screen reader reads a dash. */
+const NoValue = () => <span className="sr-only">-</span>;
+
 const Cards = ({ totals }: { readonly totals: Totals | null }) => (
   <div className="stat-cards mt-32">
-    <div className="card"><span className="v">{totals === null ? '-' : count(totals.services)}</span><span className="l">Services paid through Anyfare</span></div>
-    <div className="card"><span className="v">{totals === null ? '-' : count(totals.paidEndpoints)}</span><span className="l">Paid endpoints on them</span></div>
-    <div className="card"><span className="v">{totals === null ? '-' : count(totals.calls30d)}</span><span className="l">Calls through Anyfare, 30 days</span></div>
+    <div className="card"><span className="v">{totals === null ? '-' : count(totals.services)}</span><span className="l">{servicesNumberLabels.listed}</span></div>
+    <div className="card"><span className="v">{totals === null ? '-' : count(totals.paidServices)}</span><span className="l">{servicesNumberLabels.paid}</span></div>
+    <div className="card"><span className="v">{totals === null ? '-' : count(totals.calls30d)}</span><span className="l">{servicesNumberLabels.calls}</span></div>
   </div>
 );
 
@@ -44,7 +50,7 @@ const Cards = ({ totals }: { readonly totals: Totals | null }) => (
  * live in the URL: the grid reads the list for the URL, and the browser's back and forward move through
  * what it set. The server renders the first page for the URL, so the same URL shows the same page.
  */
-export const ServicesList = ({ first }: ServicesListProps) => {
+export const ServicesList = ({ first, now }: ServicesListProps) => {
   const { apiUrl } = useSettings();
   const reader = useMemo(() => createReader({ apiUrl }), [apiUrl]);
   const params = useSearchParams();
@@ -166,20 +172,40 @@ export const ServicesList = ({ first }: ServicesListProps) => {
                   </div>
                 </td>
               </tr>
-            ) : result.value.services.map(service => (
-              <tr key={service.host} className="click">
-                <td><Link prefetch={false} className="row-link row-title mono svc-host" href={servicePath(service.host)}>{service.host}</Link></td>
-                <td className="r">{count(service.paidEndpoints)}</td>
-                <td className="r">{usdOf(service.priceFrom)}</td>
-                <td className="r semi">{count(service.calls)}</td>
-                <td><Sparkline values={service.trend} /></td>
-                <td className="r">{count(service.buyers)}</td>
-                <td className="r">{usdOf(service.volume)}</td>
-                <td className="r">{service.successRate === null ? '-' : pct(service.successRate)}</td>
-                <td className="r">{service.p50Ms === null ? '-' : ms(service.p50Ms)}</td>
-                <td className="r"><Icon name="chev" className="chev" /></td>
-              </tr>
-            ))}
+            ) : result.value.services.map(service => {
+              const { notPaid, checked } = rowStatus(service, now);
+
+              return (
+                <tr key={service.host} className="click">
+                  <td>
+                    <Link prefetch={false} className="row-link row-title mono svc-host" href={servicePath(service.host)}>{service.host}</Link>
+                    {checked === undefined ? null : <span className="xs muted svc-checked">{checked}</span>}
+                  </td>
+                  <td className="r">{count(service.paidEndpoints)}</td>
+                  <td className="r">{usdOf(service.priceFrom)}</td>
+                  {notPaid ? (
+                    <>
+                      <td className="r"><Badge>{notPaidYet}</Badge></td>
+                      <td><NoValue /></td>
+                      <td className="r"><NoValue /></td>
+                      <td className="r"><NoValue /></td>
+                      <td className="r"><NoValue /></td>
+                      <td className="r"><NoValue /></td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="r semi">{count(service.calls)}</td>
+                      <td><Sparkline values={service.trend} /></td>
+                      <td className="r">{count(service.buyers)}</td>
+                      <td className="r">{usdOf(service.volume)}</td>
+                      <td className="r">{service.successRate === null ? '-' : pct(service.successRate)}</td>
+                      <td className="r">{service.p50Ms === null ? '-' : ms(service.p50Ms)}</td>
+                    </>
+                  )}
+                  <td className="r"><Icon name="chev" className="chev" /></td>
+                </tr>
+              );
+            })}
           </tbody>
         </DataTable>
         {result.ok && result.value.totalCapped ? <p className="small muted mt-8 svc-capped">{cappedLine}</p> : null}

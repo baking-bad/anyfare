@@ -86,8 +86,8 @@ describe('robots.txt', () => {
   });
 });
 
-const row = (host: string) => ({ host, paidEndpoints: 1, priceFrom: '0.01', currency: 'USD', calls: 1, buyers: 1, volume: '0.01', successRate: 1, p50Ms: 100, trend: [] });
-const page = (hosts: readonly string[]): ServicesPage => ({ services: hosts.map(row), page: 1, size: 100, total: hosts.length, totalCapped: false, totals: { services: hosts.length, paidEndpoints: hosts.length, calls30d: hosts.length }, updatedAt: null });
+const row = (host: string) => ({ host, status: 'paid' as const, listedAt: null, checkedAt: null, paidEndpoints: 1, priceFrom: '0.01', currency: 'USD', calls: 1, buyers: 1, volume: '0.01', successRate: 1, p50Ms: 100, trend: [] });
+const page = (hosts: readonly string[]): ServicesPage => ({ services: hosts.map(row), page: 1, size: 100, total: hosts.length, totalCapped: false, totals: { services: hosts.length, paidServices: hosts.length, paidEndpoints: hosts.length, calls30d: hosts.length }, updatedAt: null });
 
 const readerOf = (result: ApiResult<ServicesPage>, paths: string[] = []): Reader => (async (path: string) => {
   paths.push(path);

@@ -10,6 +10,7 @@ export const defaultSort: ServiceSort = 'calls';
 /** The sorts the page offers, in order. */
 export const sortChoices: readonly { readonly value: ServiceSort; readonly label: string }[] = [
   { value: 'calls', label: 'Most calls through Anyfare' },
+  { value: 'newest', label: 'Newest' },
   { value: 'buyers', label: 'Most buyers' },
   { value: 'volume', label: 'Most volume' },
   { value: 'endpoints', label: 'Most paid endpoints' },

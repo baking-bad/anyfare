@@ -20,6 +20,8 @@ export interface ServiceLiveProps {
   readonly calls: readonly Call[] | null;
   // The server's clock when it rendered: the "when" of each row counts from it until the browser takes over
   readonly now: number;
+  // A service nobody has paid: its empty state is small
+  readonly small?: boolean;
 }
 
 const rememberedCalls = 500;
@@ -28,7 +30,7 @@ const rememberedCalls = 500;
  * The last calls to one service. The server renders them from its read. The stream, opened with the
  * service's host as its filter, then puts each new call on top of the list, which keeps its size.
  */
-export const ServiceLive = ({ host, calls: firstCalls, now: serverNow }: ServiceLiveProps) => {
+export const ServiceLive = ({ host, calls: firstCalls, now: serverNow, small = false }: ServiceLiveProps) => {
   const { apiUrl } = useSettings();
   const now = useNow(serverNow);
   const [calls, setCalls] = useState(firstCalls);
@@ -58,7 +60,7 @@ export const ServiceLive = ({ host, calls: firstCalls, now: serverNow }: Service
         ) : (
           <div className="rows feed" aria-live="off">
             {calls.length === 0
-              ? <EmptyState icon="activity" title="No calls yet">Calls to this service appear here as they are paid.</EmptyState>
+              ? <EmptyState small={small} icon="activity" title="No calls yet">Calls to this service appear here as they are paid.</EmptyState>
               : calls.map(call => <CallRow key={call.id} call={call} now={now} fresh={call.id === freshId} />)}
           </div>
         )}

@@ -166,12 +166,12 @@ describe('the Services twin', () => {
     const markdown = servicesMarkdown(settings, ok, { sort: 'calls', page: 1 });
 
     expect(markdown).toMatch(/^# Services\n/);
-    expect(markdown).toContain('Services agents paid through Anyfare. Any x402 or MPP API can be paid the same way: paste its link on the home page.');
+    expect(markdown).toContain('\nPaid APIs that agents paid or checked through Anyfare. Paste any x402 or MPP link on the home page to add one.\n');
     expect(markdown).toContain('https://pay.example.com/<host>/<path>');
-    expect(markdown).toContain('- Services paid through Anyfare: 27');
-    expect(markdown).toContain('| [api.example.com](https://site.example.com/services/api.example.com) | 4 | $0.001 | 612 | 41 | $6.06 | 99% | 340 ms |');
-    expect(markdown).toContain('| [geo02.example.org](https://site.example.com/services/geo02.example.org) | 3 | $0.007 | 183 | 14 | $1.81 | - | - |');
-    expect(markdown).toContain('Page 1, services 1–20 of 27. Next page: https://site.example.com/services.md?page=2');
+    expect(markdown).toContain('- Services listed: 31\n- Paid through Anyfare: 27\n- Calls through Anyfare, 30 days:');
+    expect(markdown).toContain('| [api.example.com](https://site.example.com/services/api.example.com) | paid | 4 | $0.001 | 612 | 41 | $6.06 | 99% | 340 ms | - |');
+    expect(markdown).toContain('| [geo02.example.org](https://site.example.com/services/geo02.example.org) | paid | 3 | $0.007 | 183 | 14 | $1.81 | - | - | - |');
+    expect(markdown).toContain('Page 1, services 1–20 of 31. Next page: https://site.example.com/services.md?page=2');
     expect(markdown).toContain('`GET https://api.example.com/v1/services?sort=calls&page=1&size=20`');
     expect(markdown).not.toMatch(/registr|verified|proposal|undefined|NaN|\bnull\b/i);
   });

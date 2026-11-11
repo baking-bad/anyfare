@@ -47,7 +47,7 @@ describe('the home page as Markdown', () => {
     expect(empty).toContain('- Paid through Anyfare in the last 24 hours: $0\n');
     expect(empty).toContain('- Paid calls today: 0');
     expect(empty).toContain('No calls yet.');
-    expect(empty).toContain('No services yet.');
+    expect(empty).toContain('No paid services yet.');
     expect(empty).toContain('| 30 days | 0 | $0 | 0 | 0 |');
     expect(empty).not.toMatch(/undefined|NaN|null/);
   });

@@ -69,7 +69,7 @@ ${value.byPaidWith['30d'].length === 0 ? 'No paid calls yet.' : value.byPaidWith
 Details: ${siteUrl}/calls`);
 
   const top = section(data.services, ({ services }) => services.length === 0
-    ? 'No services yet.'
+    ? 'No paid services yet.'
     : `${topText.lead}
 
 | Service | Paid endpoints | Price from | Calls through Anyfare | Buyers | Volume |

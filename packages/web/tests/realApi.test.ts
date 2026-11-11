@@ -46,7 +46,8 @@ describe('the fake API answers in the real shapes', () => {
     const sorted = await listServices(read, { sort: 'price', size: 100 });
 
     expect(sorted.ok && sorted.value.services.at(-1)!.priceFrom).toBeNull();
-    expect(sorted.ok && sorted.value.services.filter(service => service.priceFrom === null)).toHaveLength(1);
+    // The paid one and one that was only checked
+    expect(sorted.ok && sorted.value.services.filter(service => service.priceFrom === null).map(service => service.host).sort()).toEqual(['fresh03.example.net', 'tts03.example.org']);
   });
 
   it('has one service and one endpoint whose numbers stopped at their cap', async () => {
@@ -101,10 +102,16 @@ describe('the shape checks of the reads', () => {
   const answerWith = (body: unknown) => createReader({ apiUrl: 'http://api.example.com', fetch: async () => Response.json(body) });
 
   it('turn an answer that lacks a field the page needs into an error value', async () => {
-    const page = { services: [], page: 1, size: 20, total: 0, totals: { services: 0, paidEndpoints: 0, calls30d: 0 }, updatedAt: null };
+    const page = { services: [], page: 1, size: 20, total: 0, totals: { services: 0, paidServices: 0, paidEndpoints: 0, calls30d: 0 }, updatedAt: null };
+    const row = { host: 'a.example.com', status: 'checked', priceFrom: null, checkedAt: null, trend: [] };
 
     expect(await listServices(answerWith(page))).toMatchObject({ ok: false, error: { code: 'unexpected_answer' } });
     expect(await listServices(answerWith({ ...page, totalCapped: false }))).toMatchObject({ ok: true });
+    // A service without its status, or with one the page doesn't know, is not an answer it can read
+    expect(await listServices(answerWith({ ...page, totalCapped: false, services: [row] }))).toMatchObject({ ok: true });
+    expect(await listServices(answerWith({ ...page, totalCapped: false, services: [{ ...row, status: undefined }] }))).toMatchObject({ ok: false, error: { code: 'unexpected_answer' } });
+    expect(await listServices(answerWith({ ...page, totalCapped: false, services: [{ ...row, status: 'registered' }] }))).toMatchObject({ ok: false, error: { code: 'unexpected_answer' } });
+    expect(await listServices(answerWith({ ...page, totalCapped: false, totals: { services: 0, paidEndpoints: 0, calls30d: 0 } }))).toMatchObject({ ok: false, error: { code: 'unexpected_answer' } });
     expect(await getService(answerWith({ host: 'a.example.com', stats: {}, endpoints: [], daily: [], byPaidWith: [], topBuyers: { buyers: [] } }), 'a.example.com')).toMatchObject({ ok: false, error: { code: 'unexpected_answer' } });
     expect(await getEndpointStats(answerWith({ stats: {}, daily: [], byPaidWith: [] }), 'a.example.com', '/x')).toMatchObject({ ok: false, error: { code: 'unexpected_answer' } });
   });

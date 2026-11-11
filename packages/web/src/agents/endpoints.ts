@@ -103,6 +103,7 @@ const byPeriod = <TValue>(value: TValue) => ({ today: value, '7d': value, '30d':
 
 const serviceRow = {
   host: 'pro-api.coinmarketcap.com',
+  status: 'paid',
   paidEndpoints: 1,
   priceFrom: '0.01',
   currency: 'USD',
@@ -112,6 +113,8 @@ const serviceRow = {
   successRate: 1,
   p50Ms: 340,
   trend: [0, 0, 4, 8],
+  listedAt: time,
+  checkedAt: null,
 };
 
 const share = { paidWith: 'base', calls: 12, volume: '0.12' };
@@ -135,6 +138,7 @@ export const endpoints: readonly Endpoint[] = [
         upstream: { status: 402, headers: {} },
         payWith: [{ paidWith: 'base', protocol: 'x402', asset: 'USDC', amount: '0.01', currency: 'USD' }],
         stats: { calls: 0, buyers: 0, volume: '0', successRate: null, p50Ms: null },
+        listed: true,
         checkedAt: '<time>',
         ms: 340,
       },
@@ -144,6 +148,7 @@ export const endpoints: readonly Endpoint[] = [
       'A link that can\'t be paid is still a `200`: `{ "payable": false, "method": "GET", "reason": "...", "message": "...", "detail": "..." }`, with `upstream: { "status": 200 }` when the API answered. The reasons and their details are `invalid_target` (`not_a_url`, `invalid_host`, `ip_address`), `host_not_allowed` (`blocklisted`, `own_host`, `private_address`, `opted_out`), `not_payable` (`no_payment_asked`: the API asks for no payment), `unsupported_payment` (`no_challenge`, `no_option`: it asks in a way we don\'t pay) and `upstream_unavailable` (`dns`, `refused`, `timeout`, `unreachable`).',
       'In a payable answer `upstream.x402` is the decoded `PAYMENT-REQUIRED`, and `upstream.mpp` is a list of the decoded MPP challenges. `stats` is the endpoint\'s numbers over 30 days, or `null` when they can\'t be read.',
       '`price` is what the API asks. `quote` is what you pay through Anyfare, in USD. `link` is the link to call.',
+      '`listed` says whether the link is among the services now. A paid link you check joins the list of services, as checked, until someone pays it. `listed: false` means this link was not added to that list this time: it has no page under `/v1/services` yet.',
       'Some APIs ask for payment only on a method other than `GET`. A `GET` check of such a link answers `not_payable`: check it again with `&method=POST` and the header `X-Anyfare-Check: 1`. The answer returns the `method` it probed with. The second example is one that asks only on `POST`.',
     ],
     source: { package: 'proxy', method: 'GET', path: '/_/check' },
@@ -267,7 +272,7 @@ export const endpoints: readonly Endpoint[] = [
     source: { package: 'api', method: 'GET', path: '/v1/topups/:id' },
   },
   {
-    id: 'catalog', group: 'public', method: 'GET', host: 'api', path: '/v1/catalog', summary: 'The endpoints Anyfare has routed, with prices and the ways to pay', who: 'No key', example: 'catalog',
+    id: 'catalog', group: 'public', method: 'GET', host: 'api', path: '/v1/catalog', summary: 'The endpoints Anyfare routes, paid or checked, with prices and the ways to pay', who: 'No key', example: 'catalog',
     request: ['`q`: part of a host or path. `maxPrice`: USD. `limit`: 1 to 100, default 20. `cursor`: the `next` of the page before.'],
     answer: {
       status: 200,
@@ -282,6 +287,7 @@ export const endpoints: readonly Endpoint[] = [
           currency: 'USD',
           methods: ['credits', 'x402', 'mpp'],
           verified: false,
+          status: 'paid',
           updatedAt: time,
           link: `<pay host>/${exampleLink}`,
         }],
@@ -289,6 +295,7 @@ export const endpoints: readonly Endpoint[] = [
       },
     },
     errors: ['400 invalid_request', ...publicErrors],
+    notes: ['`status` is `paid` when a paid call through Anyfare reached the endpoint, and `checked` when only a payable check listed it. A paid link you check joins the list of services, as checked, until someone pays it.'],
     source: { package: 'api', method: 'GET', path: '/v1/catalog' },
   },
   {
@@ -394,18 +401,20 @@ export const endpoints: readonly Endpoint[] = [
     source: { package: 'api', method: 'GET', path: '/v1/stats/top' },
   },
   {
-    id: 'services', group: 'public', method: 'GET', host: 'api', path: '/v1/services', summary: 'Services with at least one paid call: price, calls, buyers, volume', who: 'No key', example: 'services',
-    request: ['`q`: part of a host. `sort`: calls, buyers, volume, endpoints or price. `page`: from 1. `size`: 1 to 100, default 20.'],
-    answer: { status: 200, json: { services: [serviceRow], page: 1, size: 3, total: 1, totalCapped: false, totals: { services: 1, paidEndpoints: 1, calls30d: 12 }, updatedAt: time } },
+    id: 'services', group: 'public', method: 'GET', host: 'api', path: '/v1/services', summary: 'The listed services, paid or checked: price, calls, buyers, volume', who: 'No key', example: 'services',
+    request: ['`q`: part of a host. `sort`: calls, buyers, volume, endpoints, price or newest. `page`: from 1. `size`: 1 to 100, default 20.'],
+    answer: { status: 200, json: { services: [serviceRow], page: 1, size: 3, total: 1, totalCapped: false, totals: { services: 1, paidServices: 1, paidEndpoints: 1, calls30d: 12 }, updatedAt: time } },
     errors: ['400 invalid_request', ...publicErrors],
     notes: [
-      'The list holds the services with a paid call in the last 30 days. `calls`, `buyers` and `volume` are the last 30 days, and so are `totals`. `trend` is paid calls per UTC day, oldest first. `priceFrom` is `null` when no price is known.',
+      'The list holds the services that were paid through Anyfare and those that were only checked. A paid link you check joins the list of services, as checked, until someone pays it. `status` is `paid` or `checked`. A checked service has zero `calls`, `buyers` and `volume`, `null` rates and a `trend` of zeros. `listedAt` and `checkedAt` are times, or `null`.',
+      '`calls`, `buyers` and `volume` are the last 30 days. `totals.services` counts every listed service, `totals.paidServices` those that were paid, and `totals.calls30d` the paid calls of the last 30 days. `paidEndpoints` counts the listed endpoints of a host, paid or checked, and `priceFrom` is the lowest of their prices. `trend` is paid calls per UTC day, oldest first. `priceFrom` is `null` when no price is known.',
+      '`sort=calls` lists the paid services first, then the checked ones, newest first. `sort=newest` lists the most recently listed first.',
       '`totalCapped` is `true` when more services had a paid call than the list keeps: a search may miss some.',
     ],
     source: { package: 'api', method: 'GET', path: '/v1/services' },
   },
   {
-    id: 'service', group: 'public', method: 'GET', host: 'api', path: '/v1/services/:host', summary: 'One service: its numbers, endpoints, days, ways to pay and top buyers', who: 'No key', example: 'service',
+    id: 'service', group: 'public', method: 'GET', host: 'api', path: '/v1/services/:host', summary: 'One service, paid or checked: its numbers, endpoints, days, ways to pay and top buyers', who: 'No key', example: 'service',
     request: ['`period`: today, 7d, 30d or all. Default 30d.'],
     answer: {
       status: 200,
@@ -413,9 +422,12 @@ export const endpoints: readonly Endpoint[] = [
         host: 'pro-api.coinmarketcap.com',
         period: '30d',
         updatedAt: time,
+        status: 'paid',
+        listedAt: time,
+        checkedAt: null,
         paidEndpoints: 1,
         stats: { calls: 12, callsBefore: 8, volume: '0.12', buyers: 3, returningShare: 0.33, successRate: 1, failedCalls: 0, p50Ms: 340, p95Ms: 800 },
-        endpoints: [{ path: '/x402/v3/cryptocurrency/quotes/latest', method: 'GET', priceNow: '0.01', calls: 12, buyers: 3, volume: '0.12', successRate: 1, p50Ms: 340, link: `<pay host>/${exampleLink}` }],
+        endpoints: [{ path: '/x402/v3/cryptocurrency/quotes/latest', method: 'GET', priceNow: '0.01', calls: 12, buyers: 3, volume: '0.12', successRate: 1, p50Ms: 340, link: `<pay host>/${exampleLink}`, status: 'paid', checkedAt: null }],
         daily: [{ day: '2026-11-12', calls: 12, volume: '0.12', buyers: 3 }],
         byPaidWith: [{ paidWith: 'base', calls: 12, share: 1, buyers: 3, volume: '0.12' }],
         topBuyers: { share: 1, buyers: [{ payer: '0x…', paidWith: 'base', calls: 12, spent: '0.12', lastCallAt: time }] },
@@ -424,8 +436,9 @@ export const endpoints: readonly Endpoint[] = [
     },
     errors: ['400 invalid_request', '404 not_found', ...publicErrors, ...unavailableErrors],
     notes: [
-      '`404` when no paid call has reached the host. A Credits buyer is listed with `payer: null` and `paidWith: "credits"`.',
-      '`paidEndpoints` is the number of paid endpoints in the period; `endpoints` lists at most 100. `priceNow` is `null` when no price is known.',
+      '`404` when no paid call or payable check has listed the host. A Credits buyer is listed with `payer: null` and `paidWith: "credits"`.',
+      'A service that was only checked answers `200` with `status: "checked"`, zero numbers and empty `daily`, `byPaidWith` and `topBuyers.buyers`. A paid link you check joins the list of services, as checked, until someone pays it. Its `endpoints` have `status: "checked"` and a `checkedAt` time, and come after the paid ones. A paid service lists its checked endpoints the same way.',
+      '`paidEndpoints` is the number of listed endpoints, paid or checked; `endpoints` lists at most 100. `priceNow` is `null` when no price is known.',
       '`exact` is `false` when the numbers were read when asked for and stopped at their cap: they cover the newest 10,000 calls only. A read that can\'t finish answers `503 stats_unavailable`: try again shortly.',
     ],
     source: { package: 'api', method: 'GET', path: '/v1/services/*' },

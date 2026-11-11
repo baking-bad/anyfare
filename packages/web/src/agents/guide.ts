@@ -32,7 +32,7 @@ export const platformGuide = (hosts: Hosts): string => {
 
 ## Steps
 
-1. Check a link. Free, no key. "payable": true comes with the price and our quote. A link that asks for payment only on POST is "not_payable" to this GET check: add \`&method=POST\` and the header \`X-Anyfare-Check: 1\` to the check:
+1. Check a link. Free, no key. "payable": true comes with the price and our quote. A paid link you check joins the list of services, as checked, until someone pays it. A link that asks for payment only on POST is "not_payable" to this GET check: add \`&method=POST\` and the header \`X-Anyfare-Check: 1\` to the check:
 
 \`\`\`sh
 ${curl('check-post')}
@@ -75,7 +75,7 @@ ${curl('paid-call')}
 - [OpenAPI, API host](${links.openapi.api})
 - [OpenAPI, pay host](${links.openapi.pay})
 - [For agents](${links.page}): the same, with the API as a table. Twin: ${links.twin}
-- [Services](${siteUrl}/services.md): the services agents paid, and [calls](${siteUrl}/calls.md), newest first
+- [Services](${siteUrl}/services.md): the services agents paid or checked, and [calls](${siteUrl}/calls.md), newest first
 - [Check a link](${siteUrl}/check.md?url=<link>): the check, with the numbers of the API behind it
 - A call's receipt: ${siteUrl}/calls/<id>.md or ${apiUrl}/v1/calls/<id>
 `;

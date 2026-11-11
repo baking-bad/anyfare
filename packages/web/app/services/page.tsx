@@ -27,7 +27,7 @@ export const generateMetadata = (): Metadata => {
 };
 
 /**
- * The Services page: the services agents paid through Anyfare. The search, the sort and the page come from
+ * The Services page: the paid APIs agents paid or checked through Anyfare. The search, the sort and the page come from
  * the URL, and the server renders the same page for the same URL. A read that failed shows the shared error
  * state, and an empty database shows the first-run empty state.
  */
@@ -39,7 +39,7 @@ const Services = async ({ searchParams }: { readonly searchParams: Promise<Reado
   return (
     <PageView
       agent={{
-        title: 'Services: paid through Anyfare',
+        title: 'Services: paid or checked through Anyfare',
         markdown: servicesMarkdown(settings, result, filters),
         json: servicesJson(result),
         requests: servicesRequests(settings, filters),
@@ -52,7 +52,7 @@ const Services = async ({ searchParams }: { readonly searchParams: Promise<Reado
             <h1 className="page-title">{servicesTitle}</h1>
             <p className="muted">{servicesLead}</p>
           </div>
-          <ServicesList first={result} />
+          <ServicesList first={result} now={Date.now()} />
         </div>
       </section>
     </PageView>

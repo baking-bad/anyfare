@@ -101,6 +101,8 @@ Ask before you sign up, before you make a payment key (and agree its limits), be
 
 ${fence(curl('check'), 'sh')}
 
+A paid link you check joins the list of services, as checked, until someone pays it. "listed" in the answer says whether the link is in the list now.
+
 Some APIs ask for payment only on POST. A GET check of such a link answers "payable": false with the reason "not_payable": check it again with \`&method=POST\` and the header \`X-Anyfare-Check: 1\`. The header is there so that a plain link can't make Anyfare send a POST to an API: without it the answer is 400. For example, an API that asks only on POST:
 
 ${fence(curl('check-post'), 'sh')}
@@ -187,7 +189,7 @@ No key. Any origin may read them. Each is limited per address: a 429 comes with 
 
 - Calls and receipts: GET ${apiUrl}/v1/calls, GET ${apiUrl}/v1/calls/stream, GET ${apiUrl}/v1/calls/<id>.
 - Numbers: GET ${apiUrl}/v1/stats, /v1/stats/live, /v1/stats/top, /v1/services, /v1/services/<host>, /v1/endpoints/stats.
-- Services agents paid, as a catalog with prices: GET ${apiUrl}/v1/catalog.
+- Services agents paid or checked, as a catalog with prices: GET ${apiUrl}/v1/catalog.
 - Pages with a Markdown twin: ${siteUrl}/services.md, ${siteUrl}/calls.md, ${siteUrl}/check.md?url=<link>, ${siteUrl}/calls/<id>.md.
 
 ## Errors

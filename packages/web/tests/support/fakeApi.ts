@@ -9,10 +9,11 @@ import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, P
 // is sample.near, and every time is today or counted back from it.
 //
 // Modes:
-// - full: a database with calls, services and stats
+// - full: a database with calls, services and stats; the services are paid ones and a few that were only checked
 // - empty: an empty database: zeros, empty lists, status 200
 // - down: every request answers 500
 // - capped: as full, with `totalCapped: true` on the services list
+// - checked: a database where no call was paid, and links were only checked: every service is a checked one, and calls and stats are empty
 // - edge: as full, with the odd shapes a page must hold: a service whose host has a port (`fake-api.test:8186`), one whose
 //   host is 200 characters, a call to it with a 512-character path, a free Credits call, and calls from days and weeks ago
 //
@@ -32,7 +33,7 @@ import type { Call, CallsPage, DailyPoint, EndpointStats, LiveStats, PaidWith, P
 // By hand: `node tests/support/fakeApi.ts full 4010`. Calls made while it runs are pushed to the
 // streams: `POST /_test/call` with a call as JSON, or with no body for a sample call.
 
-export type FakeApiMode = 'full' | 'empty' | 'down' | 'capped' | 'edge';
+export type FakeApiMode = 'full' | 'empty' | 'down' | 'capped' | 'edge' | 'checked';
 
 const day = 86_400_000;
 const checkMethods: readonly string[] = ['GET', 'POST'];
@@ -123,38 +124,92 @@ export const unpricedHost = 'tts03.example.org';
 /** The service whose numbers can't be read: its page and its endpoints answer 503. */
 export const unavailableHost = 'rpc05.example.org';
 
-const serviceRow = (host: string, index: number): ServiceRow => index < hosts.length ? {
-  host,
-  paidEndpoints: 4 - index % 3,
-  priceFrom: money(0.001 * (1 + index)),
-  currency: 'USD',
-  calls: 612 - index * 97,
-  buyers: 41 - index * 6,
-  volume: money((612 - index * 97) * 0.0099),
-  successRate: 0.99 - index * 0.01,
-  p50Ms: 340 + index * 40,
-  trend: Array.from({ length: 30 }, (_, step) => (step * 3 + index * 5) % 17),
-} : {
-  host,
-  paidEndpoints: 1 + index % 4,
-  priceFrom: money(0.001 * (1 + index % 7)),
-  currency: 'USD',
-  calls: 190 - (index - hosts.length) * 7,
-  buyers: Math.max(1, 15 - (index - hosts.length)),
-  volume: money((190 - (index - hosts.length) * 7) * 0.0099),
-  // Some have no rate and no time yet
-  successRate: index % 6 === 0 ? null : 0.97,
-  p50Ms: index % 6 === 0 ? null : 400 + index * 5,
-  trend: Array.from({ length: 30 }, (_, step) => (step * 2 + index) % 9),
+/** The services only a check listed, newest first: `fresh01` is the newest. */
+export const checkedHosts: readonly string[] = ['fresh01.example.net', 'fresh02.example.net', 'fresh03.example.net', 'fresh04.example.net'];
+/** The paid service that also has an endpoint only a check listed. */
+export const mixedHost = 'pdf06.example.org';
+/** The checked service with no price known. */
+export const unpricedCheckedHost = 'fresh03.example.net';
+
+const hour = 3_600_000;
+// How long before now each checked service was checked: an hour, two hours, three days and twelve days
+const checkedAgo: readonly number[] = [hour, 2 * hour, 72 * hour, 288 * hour];
+const noTrend: readonly number[] = Array.from({ length: 30 }, () => 0);
+
+/** A service a check listed: no calls, buyers or volume, no rates, a trend of zeros. `index` 0 is the newest. */
+const checkedRow = (host: string, index: number, now: number): ServiceRow => {
+  const at = new Date(now - (checkedAgo[index] ?? 5 * hour)).toISOString();
+
+  return {
+    host,
+    status: 'checked',
+    paidEndpoints: 1 + index % 3,
+    priceFrom: host === unpricedCheckedHost ? null : money(0.002 * (1 + index)),
+    currency: 'USD',
+    calls: 0,
+    buyers: 0,
+    volume: '0',
+    successRate: null,
+    p50Ms: null,
+    trend: noTrend,
+    listedAt: at,
+    checkedAt: at,
+  };
 };
 
-const rowOf = (host: string, index: number): ServiceRow => host === unpricedHost ? { ...serviceRow(host, index), priceFrom: null } : serviceRow(host, index);
-
-const edgeRow = (host: string, index: number): ServiceRow => ({
-  ...serviceRow(host, 0), host, paidEndpoints: 3 + index, calls: 700 - index * 20, priceFrom: '0.0044',
+const paidRow = (host: string, index: number, now: number): ServiceRow => ({
+  ...index < hosts.length ? {
+    host,
+    paidEndpoints: 4 - index % 3,
+    priceFrom: money(0.001 * (1 + index)),
+    currency: 'USD',
+    calls: 612 - index * 97,
+    buyers: 41 - index * 6,
+    volume: money((612 - index * 97) * 0.0099),
+    successRate: 0.99 - index * 0.01,
+    p50Ms: 340 + index * 40,
+    trend: Array.from({ length: 30 }, (_, step) => (step * 3 + index * 5) % 17),
+  } : {
+    host,
+    paidEndpoints: 1 + index % 4,
+    priceFrom: money(0.001 * (1 + index % 7)),
+    currency: 'USD',
+    calls: 190 - (index - hosts.length) * 7,
+    buyers: Math.max(1, 15 - (index - hosts.length)),
+    volume: money((190 - (index - hosts.length) * 7) * 0.0099),
+    // Some have no rate and no time yet
+    successRate: index % 6 === 0 ? null : 0.97,
+    p50Ms: index % 6 === 0 ? null : 400 + index * 5,
+    trend: Array.from({ length: 30 }, (_, step) => (step * 2 + index) % 9),
+  },
+  status: 'paid',
+  listedAt: new Date(now - (20 + index) * day).toISOString(),
+  checkedAt: null,
 });
 
-const serviceRows = (empty: boolean, edge = false): readonly ServiceRow[] => empty ? [] : [...edge ? edgeHosts.map(edgeRow) : [], ...serviceHosts.map(rowOf)];
+const rowOf = (host: string, index: number, now: number): ServiceRow => {
+  const row = paidRow(host, index, now);
+  if (host === mixedHost) {
+    // A check also listed one more endpoint of it: it counts, and it says when it was checked
+    return { ...row, paidEndpoints: row.paidEndpoints + 1, checkedAt: new Date(now - 5 * hour).toISOString() };
+  }
+
+  return host === unpricedHost ? { ...row, priceFrom: null } : row;
+};
+
+const edgeRow = (host: string, index: number, now: number): ServiceRow => ({
+  ...paidRow(host, 0, now), host, paidEndpoints: 3 + index, calls: 700 - index * 20, priceFrom: '0.0044',
+});
+
+/** What a service is listed with, newest first: the ones checked while the fake ran, then `checkedHosts`. */
+const checkedList = (extra: ReadonlySet<string>): readonly string[] => [...[...extra].reverse(), ...checkedHosts];
+
+const checkedRows = (now: number, extra: ReadonlySet<string>): readonly ServiceRow[] => checkedList(extra).map((host, index) => (
+  extra.has(host) ? { ...checkedRow(host, 0, now), host, paidEndpoints: 1, priceFrom: '0.003', listedAt: new Date(now - 1_000 - index).toISOString(), checkedAt: new Date(now - 1_000 - index).toISOString() } : checkedRow(host, checkedHosts.indexOf(host), now)
+));
+
+const serviceRows = (now: number, mode: FakeApiMode, extra: ReadonlySet<string> = new Set()): readonly ServiceRow[] =>
+  mode === 'empty' ? [] : mode === 'checked' ? checkedRows(now, extra) : [...mode === 'edge' ? edgeHosts.map((host, index) => edgeRow(host, index, now)) : [], ...serviceHosts.map((host, index) => rowOf(host, index, now)), ...checkedRows(now, extra)];
 
 /** The calls of edge mode, newest first: a long host with a long path, a host with a port, and a free Credits call. */
 const edgeHead = (now: number): readonly Call[] => [
@@ -296,17 +351,49 @@ const servicePaths = ['/v1/sample/quotes/latest', '/v1/sample/lookup', '/v1/samp
 const pathShares = [0.65, 0.2, 0.1, 0.05] as const;
 const waysShare: Readonly<Record<string, number>> = { near: 0.36, base: 0.22, solana: 0.1, tempo: 0.05, credits: 0.27 };
 
+/** A service only a check listed, as the API answers it: `200` with zeros, its endpoints as checked, and empty lists. */
+const checkedService = (row: ServiceRow, period: Period, now: number, payUrl: string): ServiceDetail => ({
+  host: row.host,
+  period,
+  updatedAt: new Date(now).toISOString(),
+  status: 'checked',
+  listedAt: row.listedAt,
+  checkedAt: row.checkedAt,
+  paidEndpoints: row.paidEndpoints,
+  stats: { calls: 0, callsBefore: period === 'all' ? null : 0, volume: '0', buyers: 0, returningShare: 0, successRate: null, failedCalls: 0, p50Ms: null, p95Ms: null },
+  endpoints: servicePaths.slice(0, row.paidEndpoints).map((samplePath, step) => ({
+    path: samplePath,
+    method: step === 1 ? 'POST' : 'GET',
+    priceNow: row.priceFrom === null ? null : money(Number(row.priceFrom) * (1 + step)),
+    calls: 0,
+    buyers: 0,
+    volume: '0',
+    successRate: null,
+    p50Ms: null,
+    link: `${payUrl}/${row.host}${samplePath}`,
+    status: 'checked' as const,
+    checkedAt: row.checkedAt,
+  })),
+  daily: [],
+  byPaidWith: [],
+  topBuyers: { share: 0, buyers: [] },
+  exact: true,
+});
+
 /**
  * One service for a period, or undefined for a host the fake doesn't know (the hosts of `serviceHosts`).
  * `maps.example.com` has no call in the period before, so it has no change to show. The top buyers hold
  * a Credits buyer with no payer.
  */
-export const sampleService = (host: string, period: Period, now: number, payUrl = 'https://pay.example.com', edge = false): ServiceDetail | undefined => {
+export const sampleService = (host: string, period: Period, now: number, payUrl = 'https://pay.example.com', edge = false, paid = true, extra: ReadonlySet<string> = new Set()): ServiceDetail | undefined => {
+  const checkedRowOf = checkedRows(now, extra).find(row => row.host === host);
+  if (checkedRowOf !== undefined)
+    return checkedService(checkedRowOf, period, now, payUrl);
   const edgeIndex = edge ? edgeHosts.indexOf(host) : -1;
   const index = serviceHosts.indexOf(host);
-  if (index < 0 && edgeIndex < 0)
+  if (!paid || index < 0 && edgeIndex < 0)
     return undefined;
-  const row = edgeIndex >= 0 ? edgeRow(host, edgeIndex) : rowOf(host, index);
+  const row = edgeIndex >= 0 ? edgeRow(host, edgeIndex, now) : rowOf(host, index, now);
   const scale = topScale[period];
   const calls = Math.round(row.calls * scale);
   const buyers = Math.max(1, Math.round(row.buyers * Math.min(1, scale)));
@@ -317,6 +404,9 @@ export const sampleService = (host: string, period: Period, now: number, payUrl 
     period,
     updatedAt: new Date(now - 60_000).toISOString(),
     // An edge host has one paid endpoint more than the period has calls on
+    status: 'paid',
+    listedAt: row.listedAt,
+    checkedAt: row.checkedAt,
     paidEndpoints: row.paidEndpoints,
     stats: {
       calls,
@@ -329,7 +419,7 @@ export const sampleService = (host: string, period: Period, now: number, payUrl 
       p50Ms: row.p50Ms,
       p95Ms: row.p50Ms === null ? null : Math.round(row.p50Ms * 2.4),
     },
-    endpoints: servicePaths.slice(0, edgeIndex >= 0 ? row.paidEndpoints - 1 : row.paidEndpoints).map((samplePath, step) => ({
+    endpoints: [...servicePaths.slice(0, edgeIndex >= 0 ? row.paidEndpoints - 1 : host === mixedHost ? row.paidEndpoints - 1 : row.paidEndpoints).map((samplePath, step) => ({
       path: edgeIndex === 1 && step === 0 ? longPath : samplePath,
       method: step === row.paidEndpoints - 1 && row.paidEndpoints > 2 ? null : step === 1 ? 'POST' : 'GET',
       priceNow: row.priceFrom === null ? null : money(Number(row.priceFrom) * (1 + step)),
@@ -339,7 +429,22 @@ export const sampleService = (host: string, period: Period, now: number, payUrl 
       successRate: row.successRate,
       p50Ms: row.p50Ms,
       link: `${payUrl}/${host}${edgeIndex === 1 && step === 0 ? longPath : samplePath}`,
-    })),
+      status: 'paid' as const,
+      checkedAt: null,
+    })), ...host === mixedHost ? [{
+      // An endpoint only a check listed comes after the paid ones, with zero numbers
+      path: '/v1/sample/preview',
+      method: 'POST',
+      priceNow: money(Number(row.priceFrom) * 2),
+      calls: 0,
+      buyers: 0,
+      volume: '0',
+      successRate: null,
+      p50Ms: null,
+      link: `${payUrl}/${host}/v1/sample/preview`,
+      status: 'checked' as const,
+      checkedAt: row.checkedAt,
+    }] : []],
     daily: dailySeries(now, false).map(point => ({ day: point.day, calls: Math.round(point.calls * row.calls / 600), volume: volume(Math.round(point.calls * row.calls / 600)), buyers: Math.round(point.calls * row.calls / 6000) })),
     byPaidWith: rails.map(paidWith => ({
       paidWith,
@@ -394,6 +499,8 @@ const checkHosts = {
   limited: 'limited.example.com',
   // A link with more than one page of calls
   busy: 'busy.example.com',
+  // Payable, but a limit kept it out of the list of services: `listed` is false, and its service page would be a 404
+  unlisted: 'unlisted.example.com',
 } as const;
 
 /** The hosts of the sample links for each case of the check. */
@@ -451,7 +558,7 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
   const refused = refusals[host];
   if (refused !== undefined)
     return refused;
-  const known: readonly string[] = [checkHosts.base, checkHosts.near, checkHosts.mpp, checkHosts.hostile, checkHosts.slow, checkHosts.busy, checkHosts.postOnly, checkHosts.fallback, unavailableHost, ...edgeHosts];
+  const known: readonly string[] = [checkHosts.base, checkHosts.near, checkHosts.mpp, checkHosts.hostile, checkHosts.slow, checkHosts.busy, checkHosts.postOnly, checkHosts.fallback, checkHosts.unlisted, unavailableHost, ...checkedHosts, ...edgeHosts];
   if (!known.includes(host) || host === checkHosts.postOnly && method !== 'POST')
     return refuse('not_payable', 'no_payment_asked', `The link answered 200 without asking for a payment. Anyfare routes paid calls only.`, 200);
 
@@ -505,6 +612,7 @@ export const sampleCheck = (typed: string, now: number, payUrl = 'https://pay.ex
       payWith: ways.map(way => ({ ...way, amount: price, currency: 'USD' })),
       // Null when the numbers can't be read
       stats: host === unavailableHost ? null : sampleStats.stats,
+      listed: host !== checkHosts.unlisted,
       checkedAt: new Date(now - 4_000).toISOString(),
       ms: 340,
     },
@@ -538,8 +646,9 @@ export const sampleEndpointStats = (host: string, path: string, period: Period, 
 const unavailable = { status: 503, body: { error: { code: 'stats_unavailable', message: 'These numbers can\'t be read right now: try again shortly' } } } as const;
 
 /** The answer to a read: its status and body. Undefined for a path the fake doesn't know. */
-export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number, headers: Readonly<Record<string, string | string[] | undefined>> = {}): { readonly status: number; readonly body: unknown } | undefined => {
-  const empty = mode === 'empty';
+export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number, headers: Readonly<Record<string, string | string[] | undefined>> = {}, extra: ReadonlySet<string> = new Set()): { readonly status: number; readonly body: unknown } | undefined => {
+  // No call was paid: an empty database, or one where links were only checked
+  const empty = mode === 'empty' || mode === 'checked';
   const { pathname, searchParams } = url;
   if (pathname === '/v1/stats')
     return { status: 200, body: sampleStats(now, empty) };
@@ -598,28 +707,36 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
       return { status: 400, body: { error: { code: 'invalid_request', message: 'The request is not valid' } } };
     const size = intParam(searchParams.get('size'), 20, 100);
     const page = intParam(searchParams.get('page'), 1, 1000);
-    const all = [...serviceRows(empty, mode === 'edge')];
+    const all = [...serviceRows(now, mode, extra)];
     const q = searchParams.get('q')?.toLowerCase();
     const rows = all.filter(row => q === undefined || row.host.toLowerCase().includes(q));
     const sort = searchParams.get('sort') ?? 'calls';
-    if (!['calls', 'buyers', 'volume', 'endpoints', 'price'].includes(sort))
+    if (!['calls', 'buyers', 'volume', 'endpoints', 'price', 'newest'].includes(sort))
       return { status: 400, body: { error: { code: 'invalid_request', message: 'Unknown sort' } } };
+    const newest = (a: ServiceRow, b: ServiceRow): number => Date.parse(b.listedAt ?? '') - Date.parse(a.listedAt ?? '');
     rows.sort((a, b) => (
-      sort === 'buyers' ? b.buyers - a.buyers
-        : sort === 'volume' ? Number(b.volume) - Number(a.volume)
-          : sort === 'endpoints' ? b.paidEndpoints - a.paidEndpoints
-            // A service with no price comes last
-            : sort === 'price' ? (a.priceFrom === null ? 1 : 0) - (b.priceFrom === null ? 1 : 0) || Number(a.priceFrom) - Number(b.priceFrom)
-              : 0
-    ) || b.calls - a.calls);
+      sort === 'newest' ? newest(a, b)
+        : sort === 'buyers' ? b.buyers - a.buyers
+          : sort === 'volume' ? Number(b.volume) - Number(a.volume)
+            : sort === 'endpoints' ? b.paidEndpoints - a.paidEndpoints
+              // A service with no price comes last
+              : sort === 'price' ? (a.priceFrom === null ? 1 : 0) - (b.priceFrom === null ? 1 : 0) || Number(a.priceFrom) - Number(b.priceFrom)
+                // By calls the paid services come first, then the checked ones, newest first
+                : (a.status === 'checked' ? 1 : 0) - (b.status === 'checked' ? 1 : 0)
+    ) || (sort === 'newest' ? 0 : b.calls - a.calls) || newest(a, b));
     const body: ServicesPage = {
       services: rows.slice((page - 1) * size, page * size),
       page,
       size,
       total: rows.length,
       totalCapped: mode === 'capped',
-      totals: { services: all.length, paidEndpoints: all.reduce((sum, row) => sum + row.paidEndpoints, 0), calls30d: all.reduce((sum, row) => sum + row.calls, 0) },
-      updatedAt: empty ? null : new Date(now - 60_000).toISOString(),
+      totals: {
+        services: all.length,
+        paidServices: all.filter(row => row.status === 'paid').length,
+        paidEndpoints: all.reduce((sum, row) => sum + row.paidEndpoints, 0),
+        calls30d: all.reduce((sum, row) => sum + row.calls, 0),
+      },
+      updatedAt: all.length === 0 ? null : new Date(now - 60_000).toISOString(),
     };
 
     return { status: 200, body };
@@ -628,12 +745,12 @@ export const answer = (url: URL, mode: Exclude<FakeApiMode, 'down'>, now: number
     const period = searchParams.get('period') ?? '30d';
     if (!periods.includes(period as Period))
       return { status: 400, body: { error: { code: 'invalid_request', message: 'Unknown period' } } };
-    if (decodeURIComponent(pathname.slice('/v1/services/'.length)).toLowerCase() === unavailableHost && !empty)
+    if (decodeURIComponent(pathname.slice('/v1/services/'.length)).toLowerCase() === unavailableHost && mode !== 'empty' && mode !== 'checked')
       return unavailable;
-    const service = empty ? undefined : sampleService(decodeURIComponent(pathname.slice('/v1/services/'.length)).toLowerCase(), period as Period, now, undefined, mode === 'edge');
+    const service = mode === 'empty' ? undefined : sampleService(decodeURIComponent(pathname.slice('/v1/services/'.length)).toLowerCase(), period as Period, now, undefined, mode === 'edge', mode !== 'checked', extra);
 
     return service === undefined
-      ? { status: 404, body: { error: { code: 'not_found', message: 'No paid call went to this service' } } }
+      ? { status: 404, body: { error: { code: 'not_found', message: 'No paid call or payable check has listed this host' } } }
       : { status: 200, body: service };
   }
 
@@ -647,6 +764,8 @@ export interface FakeApi {
   readonly requests: { readonly path: string; readonly headers: IncomingMessage['headers'] }[];
   // Pushes a call to every open stream whose filters it passes
   readonly emitCall: (call: Call) => void;
+  // Lists a host as a checked service, as a payable check does: its service page answers 200 from now on. The services list holds it first.
+  readonly listChecked: (host: string) => void;
   readonly openStreams: () => number;
   readonly close: () => Promise<void>;
 }
@@ -662,6 +781,8 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0): Promise<FakeApi
   const requests: FakeApi['requests'][number][] = [];
   // Each open stream with the filters it was opened with
   const streams = new Map<ServerResponse, URLSearchParams>();
+  // The hosts listed while the fake runs
+  const listed = new Set<string>();
   let counter = 1000;
   // Writes a call to every stream whose filters it passes
   const push = (call: Call): void => {
@@ -704,7 +825,13 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0): Promise<FakeApi
 
       return;
     }
-    const found = answer(url, mode, Date.now(), request.headers);
+    if (url.pathname === '/_test/checked' && request.method === 'POST') {
+      listed.add((url.searchParams.get('host') ?? '').toLowerCase());
+      json(response, 200, { listed: [...listed] });
+
+      return;
+    }
+    const found = answer(url, mode, Date.now(), request.headers, listed);
     const delay = url.pathname === '/_/check' ? checkDelayMs(url.searchParams.get('url') ?? '') : 0;
     const send = (): void => {
       if (found === undefined)
@@ -723,6 +850,7 @@ export const startFakeApi = async (mode: FakeApiMode, port = 0): Promise<FakeApi
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     requests,
     emitCall: push,
+    listChecked: host => void listed.add(host.toLowerCase()),
     openStreams: () => streams.size,
     close: async () => {
       for (const stream of streams.keys())
@@ -743,11 +871,11 @@ export const refusedUrl = async (): Promise<string> => {
   return `http://127.0.0.1:${port}`;
 };
 
-// Run by hand: node tests/support/fakeApi.ts [full|empty|down|capped|edge] [port]
+// Run by hand: node tests/support/fakeApi.ts [full|empty|down|capped|edge|checked] [port]
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [mode = 'full', port = '4010'] = process.argv.slice(2);
-  if (mode !== 'full' && mode !== 'empty' && mode !== 'down' && mode !== 'capped' && mode !== 'edge')
-    throw new Error('The mode is full, empty, down, capped or edge');
+  if (mode !== 'full' && mode !== 'empty' && mode !== 'down' && mode !== 'capped' && mode !== 'edge' && mode !== 'checked')
+    throw new Error('The mode is full, empty, down, capped, edge or checked');
   const api = await startFakeApi(mode, Number(port));
   process.stdout.write(`The fake API answers in ${mode} mode at ${api.url}\n`);
   process.on('SIGTERM', () => void api.close().then(() => process.exit(0)));

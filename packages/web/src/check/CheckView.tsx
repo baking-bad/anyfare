@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import type { ApiResult } from '../api/reader';
 import type { CallsPage, EndpointStats } from '../api/types';
 import { Badge } from '../components/Badge';
-import { Button } from '../components/Button';
+import { Button, buttonClass } from '../components/Button';
 import { CodeBlock } from '../components/CodeBlock';
 import { CopyButton } from '../components/CopyButton';
 import { ErrorState } from '../components/ErrorState';
@@ -20,7 +20,7 @@ import { CheckCalls } from './CheckCalls';
 import { CheckStats } from './CheckStats';
 import {
   askRows, asksSentence, byHandNote, checkAddress, checkTabs, codeSamples, cut, defaultMethod, describedAs, emptyLine, linkParts, methodFlag, offersPost, refusalWords, shellWord,
-  tryPostLabel, tryPostLine, wayWords,
+  tryPostLabel, tryPostLine, unlistedLine, wayWords,
   type CheckMethod, type CheckParams, type CheckTab,
 } from './content';
 import { LinkPending } from './LinkPending';
@@ -103,11 +103,12 @@ const CheckHead = ({ check, method, now }: { readonly check: PayableCheck; reado
           <Badge tone="success" icon="check">Payable through Anyfare</Badge>
           <span className="xs muted">{checkedLine(check, now)}</span>
         </div>
+        {check.listed ? null : <p className="xs muted">{unlistedLine}</p>}
       </div>
     </div>
     <div className="row">
       <CopyButton text={check.link} label="Copy pay link" variant="primary" size="lg" withIcon />
-      {isHost(check.host) ? <Button variant="secondary" size="lg" href={servicePath(check.host)}>Service</Button> : null}
+      {check.listed && isHost(check.host) ? <Link prefetch={false} className={buttonClass({ variant: 'secondary', size: 'lg' })} href={servicePath(check.host)}>Service</Link> : null}
     </div>
   </div>
 );

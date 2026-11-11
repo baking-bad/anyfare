@@ -153,7 +153,14 @@ export interface TopStats {
   readonly topupTokens: readonly { readonly network: string; readonly token: string; readonly count: number }[];
 }
 
-export type ServiceSort = 'calls' | 'buyers' | 'volume' | 'endpoints' | 'price';
+/**
+ * How a service or an endpoint came to be listed. `paid`: a paid call through Anyfare reached it. `checked`: only a
+ * payable check listed it, and nobody has paid it through Anyfare yet.
+ */
+export type ListedStatus = 'paid' | 'checked';
+
+// `newest`: the most recently listed first
+export type ServiceSort = 'calls' | 'buyers' | 'volume' | 'endpoints' | 'price' | 'newest';
 
 export interface ServicesQuery {
   readonly q?: string;
@@ -162,9 +169,14 @@ export interface ServicesQuery {
   readonly size?: number;
 }
 
-/** A service in the list: a host with at least one paid call. Calls, buyers and volume are for 30 days. */
+/**
+ * A service in the list: a host with a paid call, or one a payable check listed. Calls, buyers and volume are for 30
+ * days. A checked service has zero calls, buyers and volume, no rates, and a trend of zeros.
+ */
 export interface ServiceRow {
   readonly host: string;
+  readonly status: ListedStatus;
+  // Its listed endpoints, paid or checked: each asks for a payment
   readonly paidEndpoints: number;
   // null when no price is known
   readonly priceFrom: string | null;
@@ -177,6 +189,9 @@ export interface ServiceRow {
   readonly p50Ms: number | null;
   // Paid calls per day, the last 30 UTC days, oldest first
   readonly trend: readonly number[];
+  // When its first endpoint was listed, and when a check last confirmed one: null when never
+  readonly listedAt: string | null;
+  readonly checkedAt: string | null;
 }
 
 export interface ServicesPage {
@@ -186,8 +201,8 @@ export interface ServicesPage {
   readonly total: number;
   // true when more services had a paid call in 30 days than the list keeps: a search may miss some
   readonly totalCapped: boolean;
-  // Over all services, whatever `q` says
-  readonly totals: { readonly services: number; readonly paidEndpoints: number; readonly calls30d: number };
+  // Over all services, whatever `q` says. `services`: every listed one; `paidServices`: those a paid call reached.
+  readonly totals: { readonly services: number; readonly paidServices: number; readonly paidEndpoints: number; readonly calls30d: number };
   readonly updatedAt: string | null;
 }
 
@@ -196,7 +211,10 @@ export interface ServiceDetail {
   readonly host: string;
   readonly period: Period;
   readonly updatedAt: string;
-  // The paid endpoints in the period; `endpoints` lists at most 100
+  readonly status: ListedStatus;
+  readonly listedAt: string | null;
+  readonly checkedAt: string | null;
+  // The listed endpoints, paid or checked; `endpoints` lists at most 100
   readonly paidEndpoints: number;
   readonly stats: {
     readonly calls: number;
@@ -210,6 +228,7 @@ export interface ServiceDetail {
     readonly p50Ms: number | null;
     readonly p95Ms: number | null;
   };
+  // Those of paid calls, then those listed only by a check, which have zero numbers
   readonly endpoints: readonly {
     readonly path: string;
     readonly method: string | null;
@@ -220,6 +239,8 @@ export interface ServiceDetail {
     readonly successRate: number | null;
     readonly p50Ms: number | null;
     readonly link: string;
+    readonly status: ListedStatus;
+    readonly checkedAt: string | null;
   }[];
   readonly daily: readonly { readonly day: string; readonly calls: number; readonly volume: string; readonly buyers: number }[];
   readonly byPaidWith: readonly { readonly paidWith: PaidWith; readonly calls: number; readonly share: number; readonly buyers: number; readonly volume: string }[];

@@ -10,11 +10,11 @@ import { readSettings } from '../../../src/config';
 import { socialTags } from '../../../src/seo/social';
 import { markdownUrl } from '../../../src/markdown/negotiate';
 import { serviceMarkdown } from '../../../src/markdown/service';
-import { hostOfSegment, isHost, parsePeriod, servicePath, serviceDescription } from '../../../src/services/content';
+import { hostOfSegment, isChecked, isHost, parsePeriod, servicePath, serviceDescription } from '../../../src/services/content';
 import { loadService, loadServiceCalls, serviceJson, serviceRequests } from '../../../src/services/data';
 import { DailyChart } from '../../../src/services/DailyChart';
 import { ServiceLive } from '../../../src/services/ServiceLive';
-import { EndpointsTable, PaidWithTable, ServiceHead, ServiceStats, ServiceUnavailable, TopBuyers } from '../../../src/services/ServiceView';
+import { EndpointsTable, PaidWithTable, ServiceHead, ServiceStats, ServiceUnavailable, TopBuyers, UnpaidStates } from '../../../src/services/ServiceView';
 
 type Props = {
   readonly params: Promise<{ readonly host: string }>;
@@ -38,8 +38,9 @@ export const generateMetadata = async ({ params }: Props): Promise<Metadata> => 
 const first = (value: string | string[] | undefined): string | undefined => Array.isArray(value) ? value[0] : value;
 
 /**
- * One service. proxy.ts has already answered a host that isn't one and a service the API doesn't know with
- * the 404 page. A read that fails otherwise, such as the API being down, shows the shared error state in
+ * One service, paid or only checked. Nothing here is cached: the page reads the API for every request (it reads
+ * the request's headers), so a newly checked link shows as soon as the API lists it. proxy.ts has already
+ * answered a host that isn't one and a service the API doesn't know with the 404 page. A read that fails otherwise, such as the API being down, shows the shared error state in
  * place of the numbers: a page can't choose a status other than 404, and the twin answers 503. The live
  * calls read on their own.
  */
@@ -68,17 +69,21 @@ const Service = async ({ params, searchParams }: Props) => {
     >
       <section className="band">
         <div className="container ruled page-pad svc-page">
-          <ServiceHead host={host} service={service} />
+          <ServiceHead host={host} service={service} now={now} />
           {service === undefined ? <ServiceUnavailable code={result.ok ? undefined : result.error.code} /> : (
             <>
-              <EndpointsTable host={host} endpoints={service.endpoints} />
-              <ServiceStats host={host} service={service} />
-              <DailyChart daily={service.daily} />
-              <PaidWithTable service={service} />
-              <TopBuyers service={service} now={now} />
+              <EndpointsTable host={host} endpoints={service.endpoints} now={now} unpaid={isChecked(service.status)} />
+              {isChecked(service.status) ? <UnpaidStates /> : (
+                <>
+                  <ServiceStats host={host} service={service} />
+                  <DailyChart daily={service.daily} />
+                  <PaidWithTable service={service} />
+                  <TopBuyers service={service} now={now} />
+                </>
+              )}
             </>
           )}
-          <ServiceLive host={host} calls={calls.ok ? calls.value.calls : null} now={now} />
+          <ServiceLive host={host} calls={calls.ok ? calls.value.calls : null} now={now} small={service !== undefined && isChecked(service.status)} />
         </div>
       </section>
     </PageView>

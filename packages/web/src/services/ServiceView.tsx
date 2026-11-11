@@ -5,22 +5,25 @@ import type { ServiceDetail } from '../api/types';
 import { shortAddress } from '../calls/address';
 import { Badge } from '../components/Badge';
 import { Button } from '../components/Button';
+import { Card, CardHead } from '../components/Card';
 import { CopyButton } from '../components/CopyButton';
 import { DataTable } from '../components/DataTable';
+import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import { Icon } from '../components/Icon';
 import { Rail } from '../components/Rail';
 import { paidWithName } from '../content/home';
 import { count, ms, pct, usd, usdOf } from '../format';
 import { formatChange } from '../home/change';
-import { callsChange, checkHref, comparedWith, endpointsLine, failedLine, inexactLine, lastCall, meterShare, perBuyer, togetherLine } from './content';
+import { callsChange, checkHref, comparedWith, endpointNote, failedLine, headStatus, inexactLine, isChecked, lastCall, meterShare, nobodyPaidLine, notPaidYet, perBuyer, togetherLine } from './content';
 import { PeriodSwitch } from './PeriodSwitch';
 
 const methodClass = (method: string): string => ({ GET: 'get', POST: 'post', DELETE: 'del' } as Record<string, string>)[method.toUpperCase()] ?? '';
 
 /** The top of the page: the breadcrumb, the host's tile and name, the number of paid endpoints, and the check button. */
-export const ServiceHead = ({ host, service }: { readonly host: string; readonly service: ServiceDetail | undefined }) => {
+export const ServiceHead = ({ host, service, now }: { readonly host: string; readonly service: ServiceDetail | undefined; readonly now: number }) => {
   const mostUsed = service === undefined ? undefined : [...service.endpoints].sort((a, b) => b.calls - a.calls)[0];
+  const status = service === undefined ? undefined : headStatus(service, now);
 
   return (
     <>
@@ -34,8 +37,12 @@ export const ServiceHead = ({ host, service }: { readonly host: string; readonly
           <span className="tile svc-tile" aria-hidden="true">{host.charAt(0).toUpperCase()}</span>
           <div className="stack svc-name">
             <h1 className="page-title svc-host-title">{host}</h1>
-            {service === undefined ? null : (
-              <div className="row svc-count"><Badge>{endpointsLine(service.paidEndpoints, service.endpoints.length)}</Badge></div>
+            {status === undefined ? null : (
+              <div className="row svc-count">
+                <Badge>{status.endpoints}</Badge>
+                {status.notPaid ? <Badge>{notPaidYet}</Badge> : null}
+                {status.checked === undefined ? null : <span className="xs muted">{status.checked}</span>}
+              </div>
             )}
           </div>
         </div>
@@ -45,8 +52,14 @@ export const ServiceHead = ({ host, service }: { readonly host: string; readonly
   );
 };
 
-/** The endpoints table. A row opens the check page for its endpoint; its Copy button copies the pay link and opens nothing. */
-export const EndpointsTable = ({ host, endpoints }: { readonly host: string; readonly endpoints: ServiceDetail['endpoints'] }) => (
+/** An endpoint's number cell when no one has paid it: nothing is drawn, and a screen reader reads a dash. */
+const NoValue = () => <span className="sr-only">-</span>;
+
+/**
+ * The endpoints table, the paid ones and then those only a check listed. A row opens the check page for its
+ * endpoint; its Copy button copies the pay link and opens nothing. `unpaid` is a service nobody has paid.
+ */
+export const EndpointsTable = ({ host, endpoints, now, unpaid = false }: { readonly host: string; readonly endpoints: ServiceDetail['endpoints']; readonly now: number; readonly unpaid?: boolean }) => (
   <div className="mt-32">
     <DataTable label="Endpoints" title="Endpoints" aside="Paths only. We never show query strings: they can hold a buyer's data">
       <thead>
@@ -57,26 +70,45 @@ export const EndpointsTable = ({ host, endpoints }: { readonly host: string; rea
       <tbody>
         {endpoints.length === 0 ? (
           <tr><td colSpan={9} className="muted">No paid endpoints.</td></tr>
-        ) : endpoints.map(endpoint => (
-          <tr key={`${endpoint.method ?? ''} ${endpoint.path}`} className="click">
-            <td>
-              <Link prefetch={false} className="row-link svc-endpoint" href={checkHref(host, endpoint.path, endpoint.method)}>
-                {endpoint.method === null ? null : <span className={`method ${methodClass(endpoint.method)}`.trim()}>{endpoint.method.toUpperCase()}</span>}
-                <code>{endpoint.path}</code>
-              </Link>
-            </td>
-            <td className="r">{usdOf(endpoint.priceNow)}</td>
-            <td className="r semi">{count(endpoint.calls)}</td>
-            <td className="r">{count(endpoint.buyers)}</td>
-            <td className="r">{usdOf(endpoint.volume)}</td>
-            <td className="r">{endpoint.successRate === null ? '-' : pct(endpoint.successRate)}</td>
-            <td className="r">{endpoint.p50Ms === null ? '-' : ms(endpoint.p50Ms)}</td>
-            <td className="r"><CopyButton text={endpoint.link} size="xs" withIcon className="row-copy" name={`Copy the pay link of ${endpoint.path}`} /></td>
-            <td className="r"><Icon name="chev" className="chev" /></td>
-          </tr>
-        ))}
+        ) : endpoints.map(endpoint => {
+          const note = endpointNote(endpoint, now);
+          const checked = isChecked(endpoint.status);
+
+          return (
+            <tr key={`${endpoint.method ?? ''} ${endpoint.path}`} className="click">
+              <td>
+                <Link prefetch={false} className="row-link svc-endpoint" href={checkHref(host, endpoint.path, endpoint.method)}>
+                  {endpoint.method === null ? null : <span className={`method ${methodClass(endpoint.method)}`.trim()}>{endpoint.method.toUpperCase()}</span>}
+                  <code>{endpoint.path}</code>
+                </Link>
+                {note === undefined ? null : <span className="xs muted svc-checked">{note}</span>}
+              </td>
+              <td className="r">{usdOf(endpoint.priceNow)}</td>
+              {checked ? (
+                <>
+                  <td className="r"><NoValue /></td>
+                  <td className="r"><NoValue /></td>
+                  <td className="r"><NoValue /></td>
+                  <td className="r"><NoValue /></td>
+                  <td className="r"><NoValue /></td>
+                </>
+              ) : (
+                <>
+                  <td className="r semi">{count(endpoint.calls)}</td>
+                  <td className="r">{count(endpoint.buyers)}</td>
+                  <td className="r">{usdOf(endpoint.volume)}</td>
+                  <td className="r">{endpoint.successRate === null ? '-' : pct(endpoint.successRate)}</td>
+                  <td className="r">{endpoint.p50Ms === null ? '-' : ms(endpoint.p50Ms)}</td>
+                </>
+              )}
+              <td className="r"><CopyButton text={endpoint.link} size="xs" withIcon className="row-copy" name={`Copy the pay link of ${endpoint.path}`} /></td>
+              <td className="r"><Icon name="chev" className="chev" /></td>
+            </tr>
+          );
+        })}
       </tbody>
     </DataTable>
+    {unpaid ? <p className="small muted mt-8">{nobodyPaidLine}</p> : null}
   </div>
 );
 
@@ -193,6 +225,31 @@ export const TopBuyers = ({ service, now }: { readonly service: ServiceDetail; r
       </tbody>
     </DataTable>
   </div>
+);
+
+/**
+ * What a service nobody has paid shows in place of its numbers: the stats, the calls per day, the ways buyers
+ * paid and the top buyers, each as a small empty state under its own title.
+ */
+export const UnpaidStates = () => (
+  <>
+    <div className="mt-48">
+      <h2 className="h3">Stats</h2>
+      <Card className="mt-16 flush"><EmptyState small icon="activity" title="No paid calls yet">The numbers appear here once someone pays this API through Anyfare.</EmptyState></Card>
+    </div>
+    <Card className="mt-16">
+      <CardHead title="Paid calls per day" />
+      <EmptyState small icon="activity" title="No paid calls yet">Each day's paid calls show here once there are some.</EmptyState>
+    </Card>
+    <Card className="mt-16">
+      <CardHead title="By payment method" />
+      <EmptyState small icon="wallet" title="No paid calls yet">How buyers paid shows here once calls are paid.</EmptyState>
+    </Card>
+    <Card className="mt-16">
+      <CardHead title="Top 5 buyers" />
+      <EmptyState small icon="list" title="No buyers yet">The buyers that paid most show here once there are some.</EmptyState>
+    </Card>
+  </>
 );
 
 /** The service's numbers could not be read. */

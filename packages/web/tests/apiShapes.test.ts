@@ -369,7 +369,7 @@ describe('the website\'s types against the API\'s response schemas', () => {
     const removed = stats.replace('  paidEndpoints: integer,\n  stats: object({\n    calls: integer,\n    callsBefore', '  stats: object({\n    calls: integer,\n    callsBefore');
     expect(removed).not.toBe(stats);
     expect(differences(schema(removed), type).join(' ')).toContain('the schema does not have paidEndpoints');
-    const nullable = stats.replace('  updatedAt: time,\n  paidEndpoints', '  updatedAt: nullableTime,\n  paidEndpoints');
+    const nullable = stats.replace('  updatedAt: time,\n  status: listedStatus', '  updatedAt: nullableTime,\n  status: listedStatus');
     expect(nullable).not.toBe(stats);
     expect(differences(schema(nullable), type)).toEqual(['the type does not allow null for updatedAt']);
   });
@@ -393,7 +393,7 @@ describe('the website\'s types against the pay host\'s check', () => {
 
   it('reads the check\'s schema well: the fields and the nulls it is known to have', () => {
     const payable = schemaFacts(checkSource, 'payableSchema');
-    expect(payable.top).toEqual(['payable', 'method', 'target', 'price', 'quote', 'link', 'protocol', 'asks', 'upstream', 'payWith', 'stats', 'checkedAt', 'ms']);
+    expect(payable.top).toEqual(['payable', 'method', 'target', 'price', 'quote', 'link', 'protocol', 'asks', 'upstream', 'payWith', 'stats', 'listed', 'checkedAt', 'ms']);
     expect([...payable.nullable].sort()).toEqual(['network', 'p50Ms', 'stats', 'successRate']);
     expect(payable.names).toContain('mpp');
     const refused = schemaFacts(checkSource, 'refusedSchema');
