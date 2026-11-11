@@ -18,7 +18,8 @@ const json = async (url: string, init?: RequestInit): Promise<{ status: number; 
 
   return { status: response.status, headers: response.headers, body: text === '' ? undefined : JSON.parse(text) };
 };
-const check = (target: string) => json(`${stack.urls.pay}/_/check?url=${encodeURIComponent(target)}`);
+const check = (target: string, method?: 'GET' | 'POST', headers: Record<string, string> = {}) =>
+  json(`${stack.urls.pay}/_/check?url=${encodeURIComponent(target)}${method ? `&method=${method}` : ''}`, { headers });
 
 beforeAll(async () => {
   [database, redis] = await Promise.all([createTestDatabase(), createTestRedis()]);
@@ -68,6 +69,20 @@ describe('the local stack', () => {
 
     expect(checked.body).toMatchObject({ payable: false, reason });
     expect(typeof checked.body.message).toBe('string');
+  });
+
+  it('answers 402 only to a POST at /post-only: not payable with GET, payable with POST and the check header', async () => {
+    const target = `${stack.urls.paidApi}/post-only`;
+    const byGet = await check(target);
+    const withoutHeader = await check(target, 'POST');
+    const byPost = await check(target, 'POST', { 'x-anyfare-check': '1' });
+
+    expect(byGet.body).toMatchObject({ payable: false, method: 'GET' });
+    expect(byGet.body.upstream).toMatchObject({ status: 405 });
+    expect(withoutHeader.status).toBeGreaterThanOrEqual(400);
+    expect(byPost.status).toBe(200);
+    expect(byPost.body).toMatchObject({ payable: true, method: 'POST', price: { amount: '0.001' }, quote: { amount: '0.0011' } });
+    expect(byPost.body.link).toBe(`${stack.urls.pay}/${stack.paidApiHost}/post-only`);
   });
 
   it.each([

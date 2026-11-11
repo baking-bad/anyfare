@@ -4,7 +4,8 @@ import { createLogger, type Logger } from '@anyfare/common';
 import { LocalOnlyError } from './guard.js';
 import { startLocalStack, StackPrerequisiteError, type LocalStack } from './stack.js';
 
-const stackUsage = 'Usage: npm run stack:local\n'
+const stackUsage = 'Usage: npm run stack:local [-- --scratch]\n'
+  + '  --scratch  runs on a new empty database next to the local one, so every page starts at zero, and drops it when the stack stops\n'
   + 'Needs Postgres and Redis from docker-compose.yml, and DATABASE_URL and REDIS_URL in .env. LOG_LEVEL sets the apps\' log level (default: warn).';
 
 const json = (field: string): string => `node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).${field}'`;
@@ -23,7 +24,7 @@ export const describeStack = (stack: LocalStack): string => {
     `  Proxy          ${pay}   (the pay host, metrics on ${stack.ports.proxyMetrics})`,
     `  Signer         http://127.0.0.1:${stack.ports.signer}   (metrics on ${stack.ports.signerMetrics})`,
     `  Workers        http://127.0.0.1:${stack.ports.workers}   (health and metrics)`,
-    `  Website        ${website}   (not started here: link text only)`,
+    `  Website        ${website}   (not started here: the commands to start it are below)`,
     '',
     'Fakes',
     `  Paid API       ${paidApi}   (self-signed certificate; the proxy trusts it)`,
@@ -32,6 +33,16 @@ export const describeStack = (stack: LocalStack): string => {
     `  1Click         ${stack.urls.oneClick}`,
     `  NEAR node      ${stack.urls.nearRpc}`,
     `  Tempo node     ${stack.urls.tempoRpc}`,
+    ...stack.scratchDatabase === undefined ? [] : [
+      '',
+      `Database       ${stack.scratchDatabase}   (a new empty one: the local database is not used, and this one is dropped when the stack stops)`,
+    ],
+    '',
+    'Start the website against this stack, from the repository root, in another shell:',
+    '',
+    `  export SITE_URL=${website} CONSOLE_URL=http://localhost:${stack.ports.website + 1} API_URL=${api} PAY_URL=${pay}`,
+    '  npm run build -w @anyfare/web',
+    '  npm run start -w @anyfare/web',
     '',
     'Try it, in one shell:',
     '',
@@ -49,11 +60,21 @@ export const describeStack = (stack: LocalStack): string => {
     `  ${check('/unpayable')}`,
     `  curl -s '${pay}/_/check?url=https://${stack.paidApiHost.split(':')[0]}:1/base'`,
     `  curl -s '${pay}/_/check?url=https://10.0.0.5/prices'`,
+    '  # A POST-only endpoint: a GET check finds no price, a POST check needs its header and finds one',
+    `  ${check('/post-only')}`,
+    `  curl -s '${pay}/_/check?url=${paidApi}/post-only&method=POST' -H "X-Anyfare-Check: 1"`,
+    '  # A link nobody paid: a payable check lists it as checked. Open its service page after it.',
+    `  curl -s '${pay}/_/check?url=${paidApi}/near&method=GET'`,
+    `  ${website}/services/${stack.paidApiHost}`,
     '  # The same call on NEAR and on Tempo',
     `  curl -s ${pay}/${stack.paidApiHost}/near -H "Authorization: Bearer $KEY"`,
     `  curl -s ${pay}/${stack.paidApiHost}/tempo -H "Authorization: Bearer $KEY"`,
     '',
-    'Fill the database with a month of calls: npm run seed:local (and npm run seed:local -- --empty to take it away)',
+    ...stack.scratchDatabase === undefined
+      ? ['Fill the database with a month of calls: npm run seed:local (and npm run seed:local -- --empty to take it away)']
+      : [
+        `Seed this database: npm run seed:local -- --scratch-name ${stack.scratchDatabase}   (add --checked-only for only the services a check listed)`,
+      ],
     '',
   ].join('\n');
 };
@@ -66,7 +87,10 @@ try {
   if (!databaseUrl || !redisUrl)
     throw new StackPrerequisiteError('DATABASE_URL and REDIS_URL are not set. Copy .env.example to .env, and run: docker compose up -d');
   console.log('Starting the local stack…');
-  const stack = await startLocalStack({ databaseUrl, redisUrl, logger });
+  const unknown = process.argv.slice(2).filter(argument => argument !== '--scratch');
+  if (unknown.length > 0)
+    throw new StackPrerequisiteError(`Unknown option ${unknown[0]}`);
+  const stack = await startLocalStack({ databaseUrl, redisUrl, logger, scratch: process.argv.includes('--scratch') });
   console.log(describeStack(stack));
 
   let stopping = false;

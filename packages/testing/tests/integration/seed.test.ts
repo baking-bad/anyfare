@@ -88,7 +88,7 @@ describe('the seed', () => {
   });
 
   it('registers each endpoint with its last price, and keeps the very long path and host', async () => {
-    expect(await count(sql`select count(*) as n from routed_endpoints where last_price is not null`)).toBe(summary.endpoints - 1);
+    expect(await count(sql`select count(*) as n from routed_endpoints where last_price is not null and status = 'paid'`)).toBe(summary.endpoints - 1);
     expect(await count(sql`select count(*) as n from payments where length(target_path) = ${veryLongPath.length}`)).toBe(1);
     expect(longHost).toHaveLength(200);
     expect(await count(sql`select count(*) as n from payments where target_host = ${longHost}`)).toBeGreaterThan(0);
@@ -175,7 +175,7 @@ describe('the seed', () => {
 
     await emptyLocal({ postgres: database.postgres, config });
 
-    for (const table of ['payments', 'call_details', 'target_payments', 'signatures', 'topups', 'ledger_transactions', 'ledger_entries', 'accounts', 'api_keys', 'routed_endpoints'])
+    for (const table of ['payments', 'call_details', 'target_payments', 'signatures', 'topups', 'ledger_transactions', 'ledger_entries', 'accounts', 'api_keys', 'routed_endpoints', 'checked_hosts', 'stats_buyers'])
       expect(await count(sql.raw(`select count(*) as n from ${table}`)), table).toBe(0);
     expect(await count(sql`select coalesce(sum(abs(balance)), 0) as n from balances`)).toBe(0);
     expect(await count(sql`select count(*) as n from balances b where not exists (select 1 from ledger_accounts a where a.id = b.ledger_account_id)`)).toBe(0);

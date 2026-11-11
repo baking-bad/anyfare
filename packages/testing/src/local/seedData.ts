@@ -84,6 +84,50 @@ export const veryLongPathService = 'api.example.com';
 
 export const seededHosts: readonly string[] = services.map(service => service.host);
 
+export interface CheckedEndpointDefinition {
+  readonly method: 'GET' | 'POST';
+  readonly path: string;
+  // What the API asks, in micro-USD
+  readonly price: bigint;
+  // How long before now its check was
+  readonly checkedAgoMs: number;
+}
+
+export interface CheckedServiceDefinition {
+  readonly host: string;
+  readonly endpoints: readonly CheckedEndpointDefinition[];
+}
+
+const hourMs = 3_600_000;
+const dayMs = 24 * hourMs;
+const checkedEndpoint = (method: 'GET' | 'POST', path: string, price: number, checkedAgoMs: number): CheckedEndpointDefinition =>
+  ({ method, path, price: BigInt(price), checkedAgoMs });
+
+/** Hosts a check listed and no paid call has reached: checked today, yesterday and 5 days ago. */
+export const checkedServices: readonly CheckedServiceDefinition[] = [
+  { host: 'invoices.example.com', endpoints: [checkedEndpoint('POST', '/v1/invoices/parse', 12_000, 25 * 60_000), checkedEndpoint('GET', '/v1/invoices/status', 1_500, 40 * 60_000)] },
+  { host: 'rates.example.org', endpoints: [checkedEndpoint('GET', '/v1/rates', 600, 3 * hourMs)] },
+  {
+    host: 'images.example.net',
+    endpoints: [
+      checkedEndpoint('POST', '/v1/resize', 4_000, dayMs + 2 * hourMs), checkedEndpoint('POST', '/v1/classify', 9_000, dayMs + 2 * hourMs + 60_000),
+      checkedEndpoint('GET', '/v1/formats', 300, dayMs + 3 * hourMs),
+    ],
+  },
+  { host: 'geo.example.com', endpoints: [checkedEndpoint('GET', '/v1/lookup', 2_000, dayMs + 8 * hourMs), checkedEndpoint('POST', '/v1/lookup/batch', 7_500, dayMs + 8 * hourMs)] },
+  { host: 'speech.example.org', endpoints: [checkedEndpoint('POST', '/v1/transcribe', 30_000, 5 * dayMs + hourMs)] },
+  { host: 'legal.example.net', endpoints: [checkedEndpoint('GET', '/v1/clauses', 5_000, 5 * dayMs + 6 * hourMs), checkedEndpoint('POST', '/v1/review', 45_000, 5 * dayMs + 7 * hourMs)] },
+];
+
+/** A seeded paid host that also has endpoints a check listed. */
+export const checkedOnPaidHost: CheckedServiceDefinition = {
+  host: 'weather.example.net',
+  endpoints: [checkedEndpoint('GET', '/v1/forecast/daily', 2_400, 2 * hourMs), checkedEndpoint('POST', '/v1/forecast/batch', 11_000, dayMs + 5 * hourMs)],
+};
+
+/** Every host the seed writes endpoints for. */
+export const allSeededHosts: readonly string[] = [...seededHosts, ...checkedServices.map(service => service.host)];
+
 // --- Addresses and transaction hashes, of the right form for each chain ---
 
 const base58Alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';

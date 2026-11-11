@@ -16,7 +16,7 @@ import { createAllStats, createRecentStats } from '@anyfare/workers';
 import { createFakeClock } from '../clock.js';
 import { createSeededRandom, type SeededRandom } from './random.js';
 import {
-  fakeTransactionHash, longHost, merchantAddress, payerAddresses, seedAccountPrefix, seedKeyPrefix, seedLedgerPrefix, seedRequestPrefix, services,
+  checkedOnPaidHost, checkedServices, fakeTransactionHash, longHost, merchantAddress, payerAddresses, seedAccountPrefix, seedKeyPrefix, seedLedgerPrefix, seedRequestPrefix, services,
   veryLongPath, veryLongPathService, type ChainName, type EndpointDefinition, type ServiceDefinition,
 } from './seedData.js';
 import { creditedFor, seedTopup, type TopupSeeding } from './seedTopups.js';
@@ -40,6 +40,8 @@ export interface SeedOptions {
   readonly now?: Date;
   readonly seed?: number;
   readonly calls?: number;
+  // Seed only the services a check listed, with no call, account or top-up. Default: false.
+  readonly checkedOnly?: boolean;
   readonly log?: (line: string) => void;
 }
 
@@ -52,6 +54,9 @@ export interface SeedSummary {
   readonly topups: number;
   readonly services: number;
   readonly endpoints: number;
+  // The hosts listed only by a check, and their endpoints, those on a paid host not counted among the hosts
+  readonly checkedServices: number;
+  readonly checkedEndpoints: number;
   // A key of the first account, so the console can be tried: made up, and good only against this database
   readonly masterKey: string;
   readonly paymentKey: string;
@@ -272,8 +277,21 @@ const keyLabels = ['research agent', 'trading bot', 'shared key', 'nightly job']
 
 /** Fills the database, then counts the public numbers once. Wipes the seed's own rows first, so it can run again. */
 export const seedLocal = async ({
-  postgres, config, now = systemClock.now(), seed = defaultSeed, calls: callCount = defaultCallCount, log = () => undefined,
+  postgres, config, now = systemClock.now(), seed = defaultSeed, calls: callCount = defaultCallCount, checkedOnly = false, log = () => undefined,
 }: SeedOptions): Promise<SeedSummary> => {
+  if (checkedOnly) {
+    log('Removing the rows of an earlier seed');
+    await wipeSeededRows(postgres.db);
+    log('Writing the services a check listed');
+    const written = await seedCheckedServices({ postgres, config, now, withPaidHost: false });
+    log('Counting the public numbers');
+    await countPublicNumbers({ postgres, config });
+
+    return {
+      callsByWay: {}, calls: 0, freeCalls: 0, accounts: 0, topups: 0, services: 0, endpoints: 0, ...written, masterKey: '', paymentKey: '',
+    };
+  }
+
   const { db } = postgres;
   const random = createSeededRandom(seed);
   const end = new Date(now.getTime() - 5_000);
@@ -480,12 +498,45 @@ export const seedLocal = async ({
     topups += 1;
   }
 
+  log('Writing the services a check listed');
+  const written = await seedCheckedServices({ postgres, config, now, withPaidHost: true });
+
   log('Counting the public numbers');
   await countPublicNumbers({ postgres, config });
 
   const summary = await summarize(postgres);
 
-  return { ...summary, accounts: accounts.length, topups, masterKey: firstMaster, paymentKey: firstPayment };
+  return { ...summary, ...written, accounts: accounts.length, topups, masterKey: firstMaster, paymentKey: firstPayment };
+};
+
+/**
+ * Lists the services a check lists, through the routing repository's registration, as a real check does: its method,
+ * its time, the last quote. A fake clock gives each its time. With `withPaidHost`, two more on a host the calls reached.
+ */
+const seedCheckedServices = async ({ postgres, config, now, withPaidHost }: {
+  readonly postgres: Postgres;
+  readonly config: PlatformConfig;
+  readonly now: Date;
+  readonly withPaidHost: boolean;
+}): Promise<Pick<SeedSummary, 'checkedServices' | 'checkedEndpoints'>> => {
+  const clock = createFakeClock(now);
+  const routing = createRoutingRepository({ db: postgres.db, clock });
+  const definitions = withPaidHost ? [...checkedServices, checkedOnPaidHost] : checkedServices;
+  let endpoints = 0;
+  for (const definition of definitions) {
+    for (const endpoint of definition.endpoints) {
+      clock.set(new Date(now.getTime() - endpoint.checkedAgoMs));
+      const registered = await routing.registerEndpoint({
+        host: definition.host, path: endpoint.path, lastPrice: BigInt(routingQuote(endpoint.price as MicroUsd, config.routingFeeBps).quote),
+        checked: { method: endpoint.method, mayAddHost: true },
+      });
+      if (registered !== 'created')
+        throw new Error(`The seed's checked endpoint ${definition.host}${endpoint.path} was not listed: ${registered}`);
+      endpoints += 1;
+    }
+  }
+
+  return { checkedServices: checkedServices.length, checkedEndpoints: endpoints };
 };
 
 /** Runs the workers' two counts of the public numbers once, so the pages have numbers at once. */

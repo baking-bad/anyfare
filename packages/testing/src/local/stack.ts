@@ -25,7 +25,9 @@ import { encodeBase58 } from '../solanaRpc.js';
 import { startFakeTempoRpc, type FakeTempoRpc } from '../tempoRpc.js';
 import { loadLocalConfig } from './config.js';
 import { startFakePaidApi, type FakePaidApi } from './fakeApi.js';
-import { assertLocalDatabase, assertNotProduction } from './guard.js';
+import { countPublicNumbers } from './seed.js';
+import { assertLocalDatabase, assertNotProduction, LocalOnlyError } from './guard.js';
+import { createScratchDatabase } from './scratch.js';
 
 // The local stack: the Platform API, the proxy, the workers and the Signer, with every outside service a
 // fake from this package, on fixed local ports. Nothing here holds money: the keys are made up at start.
@@ -77,6 +79,9 @@ export interface StackOptions {
   readonly redisUrl: string;
   // Starts every Redis key and channel, so a test can share the server. Default: none.
   readonly redisPrefix?: string;
+  // Runs on a new empty database made next to `databaseUrl`'s, and drops it, by its exact name, on close. The
+  // database of `databaseUrl` is not read or changed. Default: false.
+  readonly scratch?: boolean;
   // A port of 0 takes a free one. Default: defaultStackPorts.
   readonly ports?: Partial<StackPorts>;
   // Default: CONFIG_PATH of the environment, else config/example.yaml
@@ -102,6 +107,8 @@ export interface LocalStack {
   // The fake paid API, as the pay host names it: `<host>:<port>`
   readonly paidApiHost: string;
   readonly paidApiEndpoints: FakePaidApi['endpoints'];
+  // The name of the scratch database this run made, which close drops. Undefined without `scratch`.
+  readonly scratchDatabase?: string;
   close(): Promise<void>;
 }
 
@@ -171,7 +178,22 @@ export const startLocalStack = async (options: StackOptions): Promise<LocalStack
 
   try {
     // Postgres and Redis come from docker-compose.yml
-    const databaseUrl = Secret.from(options.databaseUrl);
+    let scratchName: string | undefined;
+    let databaseUrl = Secret.from(options.databaseUrl);
+    if (options.scratch) {
+      try {
+        const scratch = await createScratchDatabase(options.databaseUrl);
+        // Dropped last, once every connection to it is closed
+        closers.push(() => scratch.drop());
+        scratchName = scratch.name;
+        databaseUrl = scratch.url;
+      }
+      catch (error) {
+        if (error instanceof LocalOnlyError)
+          throw error;
+        throw new StackPrerequisiteError(`Can't make a scratch database at ${hostOf(options.databaseUrl)}. Start Postgres with: docker compose up -d db`, { cause: error });
+      }
+    }
     const postgres = own(createPostgres({ url: databaseUrl, logger }));
     try {
       await postgres.ping();
@@ -253,6 +275,9 @@ export const startLocalStack = async (options: StackOptions): Promise<LocalStack
     }));
     await proxy.listen({ host: '127.0.0.1', port: ports.proxy, metricsPort: ports.proxyMetrics });
 
+    // A new database has no counted numbers yet: count once, before the workers start, so the pages answer zeros at once
+    if (scratchName !== undefined)
+      await countPublicNumbers({ postgres, config });
     const workers = own(createWorkers({
       config, logger, postgres, statsPostgres, facilitators,
       mppCheck: createMppSettlementCheck({ rpc: createTempoRpc({ network: config.mpp.network, url: tempoRpc.url }), timeoutMs: config.timeouts.connectMs, clock: systemClock }),
@@ -272,6 +297,7 @@ export const startLocalStack = async (options: StackOptions): Promise<LocalStack
       },
       paidApiHost: `${fakeApiHost}:${paidApi.port}`,
       paidApiEndpoints: paidApi.endpoints,
+      ...scratchName === undefined ? {} : { scratchDatabase: scratchName },
       close: () => closing ??= closeAll(),
     };
   }

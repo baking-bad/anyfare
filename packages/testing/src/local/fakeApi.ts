@@ -52,6 +52,7 @@ export const fakeApiEndpoints = [
   { path: '/tempo', what: 'MPP on Tempo, $0.001' },
   { path: '/free', what: 'no payment: answers 200' },
   { path: '/unpayable', what: 'x402 on a network we do not pay' },
+  { path: '/post-only', what: 'x402 on Base, $0.001, asked only of a POST: a GET answers 405' },
 ] as const;
 
 const json = (response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void => {
@@ -128,7 +129,11 @@ export const startFakePaidApi = async ({ config, host, port, tempoRpcUrl }: Fake
 
       return;
     }
-    if (path !== '/base' && path !== '/near' && path !== '/unpayable') {
+    if (path === '/post-only' && request.method !== 'POST') {
+      json(response, 405, { error: 'method not allowed' }, { allow: 'POST' });
+      return;
+    }
+    if (path !== '/base' && path !== '/near' && path !== '/unpayable' && path !== '/post-only') {
       json(response, 404, { error: 'not found' });
       return;
     }
