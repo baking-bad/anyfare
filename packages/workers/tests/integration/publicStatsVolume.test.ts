@@ -119,7 +119,9 @@ const flood = (pathLength: number) => {
       expect(midnight.result).toMatchObject({ services: maxServices, written: stored.services + stored.pages + stored.endpoints });
       for (const run of [first, again, midnight]) {
         expect(run.tookMs).toBeLessThan(recentBudgetMs / 2);
-        expect(run.peakMb).toBeLessThan(256);
+        // The peak holds garbage the collector hasn't taken yet, so it moves with the machine. What a run keeps
+        // is the next line. An unbounded count grows past this by a wide margin.
+        expect(run.peakMb).toBeLessThan(512);
         expect(run.leftMb).toBeLessThan(32);
       }
 
