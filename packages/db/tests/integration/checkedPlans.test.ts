@@ -120,7 +120,7 @@ const plans = async () => Promise.all(statements().map(plan));
 // No table of these read whole. The blocklist is the operators' own, a few rows: the planner may read it whole.
 const wholeRead = /Seq Scan on (?:routed_endpoints|stats_services|checked_hosts)\b/;
 
-const blocklist = async (): Promise<(host: string) => boolean> => createBlocklistMatcher(await createStatsRepository({ db: database.db }).blocklist({ timeoutMs: 2_000 }));
+const blocklist = async (): Promise<(host: string) => boolean> => createBlocklistMatcher(await createStatsRepository({ db: database.db }).blocklist({ limit: 10_001, timeoutMs: 2_000 }));
 
 describe('the plans of what checks list', () => {
   it('read every service the list may show in one statement: no blocklist, the paid hosts newest first by their index, each with one probe of its paid endpoints', async () => {
@@ -247,12 +247,14 @@ describe('the plans of what checks list', () => {
       const page = await catalog.routed({ q: 'BUSY-0.example', limit: 100, ...after === undefined ? {} : { after }, isBlocked, timeoutMs: 2_000 });
       pages += 1;
       found.push(...page.entries.map(entry => `${entry.host}${entry.path}`));
-      expect(page.entries.length > 0 || page.partial || page.next === undefined).toBe(true);
+      // A page that goes on with fewer than its limit says so, and only such a page
+      expect(page.partial).toBe(page.next !== undefined && page.entries.length < 100);
       if (pages === 1) {
-        const [scan, stop] = statements();
+        // One statement: the window read once, its matches and where it ends
+        const sent = statements();
+        expect(sent).toHaveLength(1);
         expect([page.entries.length, page.partial, page.next !== undefined]).toEqual([0, true, true]);
-        expect(await buffers(scan!)).toBeLessThan(2_000);
-        expect(await buffers(stop!)).toBeLessThan(2_000);
+        expect(await buffers(sent[0]!)).toBeLessThan(2_000);
       }
       if (page.next === undefined)
         break;

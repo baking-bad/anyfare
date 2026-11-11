@@ -36,9 +36,9 @@ export interface CatalogRepository {
   /**
    * A page of routed endpoints, of paid calls and of checks, oldest first, after `after`, none of a host `isBlocked`
    * says the blocklist names, and where the next page goes on from. `q` is a case-insensitive substring of the host
-   * followed by the path; `maxPrice` leaves out endpoints with no quote. A page reads at most `catalogScanBudget`
-   * rows: `partial` says the budget ended its search before the end. One statement or two, each giving up after
-   * `timeoutMs`.
+   * followed by the path; `maxPrice` leaves out endpoints with no quote. A search reads at most `catalogScanBudget`
+   * rows a page. `partial`: the page goes on, with fewer than `limit` endpoints, as a search's budget or the blocklist
+   * left it. One statement, giving up after `timeoutMs`.
    */
   routed(input: {
     readonly q?: string;
@@ -50,7 +50,15 @@ export interface CatalogRepository {
   }): Promise<{ readonly entries: readonly RoutedCatalogEntry[]; readonly next: CatalogCursor | undefined; readonly partial: boolean }>;
 }
 
-const keyOf = (row: { readonly created_at: string; readonly host: string; readonly path: string }): CatalogCursor => ({
+type CatalogRow = {
+  readonly host: string;
+  readonly path: string;
+  readonly last_price: string | null;
+  readonly created_at: string;
+  readonly status: RoutedEndpointStatus;
+};
+
+const keyOf = (row: { readonly created_at: string | Date; readonly host: string; readonly path: string }): CatalogCursor => ({
   createdAt: new Date(row.created_at), host: row.host, path: row.path,
 });
 
@@ -69,37 +77,51 @@ export const createCatalogRepository = ({ db }: CatalogRepositoryOptions): Catal
         ? sql`true`
         : sql`(${routedEndpoints.createdAt}, ${routedEndpoints.host}, ${routedEndpoints.path}) > (${after.createdAt}::timestamptz, ${after.host}::text, ${after.path}::text)`;
       const order = sql`${routedEndpoints.createdAt}, ${routedEndpoints.host}, ${routedEndpoints.path}`;
+      // A part of the host and path, without case: one pass over each row, whatever the search holds
       const filters = [
-        ...q ? [sql`(scanned.host || scanned.path) ilike ${`%${q.replace(/[%_\\]/g, '\\$&')}%`}`] : [],
-        ...maxPrice !== undefined ? [sql`scanned.last_price <= ${maxPrice}`] : [],
+        ...q ? [sql`strpos(lower(scan.host || scan.path), ${q.toLowerCase()}) > 0`] : [],
+        ...maxPrice !== undefined ? [sql`scan.last_price <= ${maxPrice}`] : [],
       ];
       const wanted = limit + 1 + blockedMargin;
-      // Read only as far as the page needs, and never past the budget
-      const rows = await statement<{ host: string; path: string; last_price: string | null; created_at: string; status: RoutedEndpointStatus }>(timeoutMs, sql`
-        select scanned.host, scanned.path, scanned.last_price::text as last_price, scanned.created_at, scanned.status from (
-          select ${routedEndpoints.host} as host, ${routedEndpoints.path} as path, ${routedEndpoints.lastPrice} as last_price,
-            ${routedEndpoints.createdAt} as created_at, ${routedEndpoints.status} as status
-          from ${routedEndpoints} where ${following} order by ${order} limit ${catalogScanBudget}
-        ) as scanned
-        where ${filters.length === 0 ? sql`true` : sql.join(filters, sql` and `)}
-        order by scanned.created_at, scanned.host, scanned.path limit ${wanted}`);
+      const columns = sql`${routedEndpoints.host} as host, ${routedEndpoints.path} as path, ${routedEndpoints.lastPrice} as last_price,
+        ${routedEndpoints.createdAt} as created_at, ${routedEndpoints.status} as status`;
+      let rows: CatalogRow[];
+      let windowEnd: CatalogCursor | undefined;
+      if (filters.length === 0) {
+        // Only as far as the page needs: every row it reads is one it may show
+        rows = await statement<CatalogRow>(timeoutMs, sql`select scan.host, scan.path, scan.last_price::text as last_price, scan.created_at, scan.status
+          from (select ${columns} from ${routedEndpoints} where ${following} order by ${order} limit ${wanted}) as scan`);
+      }
+      else {
+        // A search reads its budget's window once, and says where the window ends: the next page goes on from there, so
+        // no row written or taken out meanwhile is skipped or read twice
+        const [found] = await statement<{ rows: CatalogRow[]; last: { host: string; path: string; created_at: string } | null; scanned: number }>(timeoutMs, sql`
+          with scan as materialized (
+            select ${columns} from ${routedEndpoints} where ${following} order by ${order} limit ${catalogScanBudget}
+          )
+          select coalesce((select json_agg(matched order by matched.created_at, matched.host, matched.path) from (
+              select scan.host, scan.path, scan.last_price::text as last_price, scan.created_at, scan.status from scan
+              where ${sql.join(filters, sql` and `)} order by scan.created_at, scan.host, scan.path limit ${wanted}
+            ) as matched), '[]'::json) as rows,
+            (select json_build_object('host', scan.host, 'path', scan.path, 'created_at', scan.created_at) from scan
+              order by scan.created_at desc, scan.host desc, scan.path desc limit 1) as last,
+            (select count(*)::int from scan) as scanned`);
+        rows = found?.rows ?? [];
+        windowEnd = found?.last && found.scanned >= catalogScanBudget ? keyOf(found.last) : undefined;
+      }
       const shown = rows.filter(row => !isBlocked(row.host));
       const entries = shown.slice(0, limit).map(row => ({
         host: row.host, path: row.path, lastPrice: row.last_price === null ? undefined : BigInt(row.last_price) as MicroUsd, createdAt: new Date(row.created_at),
         status: row.status,
       }));
-      if (shown.length > limit)
-        return { entries, next: keyOf(shown[limit - 1]!), partial: false };
-      if (rows.length === wanted)
-        return { entries, next: keyOf(rows[wanted - 1]!), partial: false };
-      if (filters.length === 0)
-        return { entries, next: undefined, partial: false };
-      // The search read its whole budget, or came to the end: the budget's last row, if any, is where it goes on
-      const [last] = await statement<{ host: string; path: string; created_at: string }>(timeoutMs, sql`
-        select ${routedEndpoints.host} as host, ${routedEndpoints.path} as path, ${routedEndpoints.createdAt} as created_at
-        from ${routedEndpoints} where ${following} order by ${order} offset ${catalogScanBudget - 1} limit 1`);
+      // Where the next page goes on from: after the last one shown of a full page, after the last row read when the
+      // blocklist took some out, or after the search's window when its budget ended it. None: the end.
+      const next = shown.length > limit
+        ? keyOf(shown[limit - 1]!)
+        : rows.length === wanted ? keyOf(rows[wanted - 1]!) : windowEnd;
 
-      return last === undefined ? { entries, next: undefined, partial: false } : { entries, next: keyOf(last), partial: true };
+      // A page that goes on with fewer than `limit` endpoints says so, whatever the reason: a client never stops at it
+      return { entries, next, partial: next !== undefined && entries.length < limit };
     },
   };
 };

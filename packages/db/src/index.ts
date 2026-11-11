@@ -24,8 +24,8 @@ export type { PaymentRepository, PaymentRepositoryOptions, SettlingPayment, Stat
 export { createLedger, ledgerAccountIds } from './ledgerRepository.js';
 export type { CreditResult, Ledger, LedgerOptions } from './ledgerRepository.js';
 export {
-  checkedRegistrationTimeoutMs, createRoutingRepository, evictCheckedHost, maxCheckedEndpoints, maxCheckedEndpointsPerHost, maxCheckedHosts,
-  maxCheckedHostLabels, maxCheckedHostsPerParent, maxCheckedPathLength, maxEvictionsPerRegistration, maxRoutedEndpointsPerHost,
+  checkedRegistrationTimeoutMs, createRoutingRepository, evictCheckedHost, fillWindowRows, maxCheckedEndpoints, maxCheckedEndpointsPerHost, maxCheckedHosts,
+  maxCheckedHostLabels, maxCheckedHostsPerParent, maxCheckedPathLength, maxEvictionsPerRegistration, maxFillHosts, maxRoutedEndpointsPerHost,
 } from './routingRepository.js';
 export type {
   EndpointInput, EndpointListing, EndpointRegistration, NewSignature, NewTargetPayment, RoutingRepository, RoutingRepositoryOptions, TargetPaymentRecord,

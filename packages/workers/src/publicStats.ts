@@ -1,6 +1,6 @@
 import { Gauge, type Registry } from '@prometheus-io/client';
 
-import type { Clock } from '@anyfare/common';
+import type { Clock, Logger } from '@anyfare/common';
 import {
   buildLiveBase, buildPlatformAll, buildPlatformRecent, buildServicePage, buildServiceRow, buildStoredEndpoint, buildTopAnswer, emptyTopAnswer,
   endpointDailyDays, endpointNumbersOf, periodBefore, periodStart, recentPeriods, utcDayStart, type PlatformConfig, type ServicesTotals,
@@ -26,9 +26,12 @@ export const recentBudgetMs = 4 * 60_000;
 export const allBudgetMs = 20 * 60_000;
 // The services a statement counts together
 export const servicesPerBatch = 20;
-// The paid hosts one statement of the fill makes rows for, each from its at most 1,020 endpoints, and the statements a run
-export const paidHostsPerBatch = 500;
-const paidHostBatchesPerRun = 10;
+// The paid hosts one batch of the mending makes rows for, each from its at most 1,020 endpoints, the batches a run, and
+// how long each statement of it may take: a registration that meets a batch waits for it alone
+export const paidHostsPerBatch = 100;
+const paidHostBatchesPerRun = 20;
+const paidHostsTimeoutMs = 5_000;
+const paidHostsBudgetMs = 30_000;
 // Today's buyers kept to tell the live numbers' new ones apart
 export const keptBuyersPerDay = 100_000;
 // Rows a delete takes at a time
@@ -72,8 +75,9 @@ export const createPublicStatsMetrics = (registry: Registry, clock: Clock): Publ
 export interface PublicStatsOptions {
   readonly counter: StatsCounter;
   readonly store: StatsRepository;
-  // Makes the paid hosts' rows of hosts registered before that table, a few batches a run until every host has one
-  readonly routing?: Pick<RoutingRepository, 'backfillPaidHosts'>;
+  // Mends the paid hosts' rows a registration left without, a few small batches each run, and where its failure goes
+  readonly routing?: Pick<RoutingRepository, 'fillPaidHosts'>;
+  readonly logger?: Pick<Logger, 'warn'>;
   // The services cap
   readonly config: Pick<PlatformConfig, 'stats'>;
   readonly metrics: PublicStatsMetrics;
@@ -140,9 +144,32 @@ export interface PublicStatsResult {
  * cycle completes. Only then are the rows of services that left the set deleted, and the count marked
  * complete as of the cycle's first run, which every row of it is true at least as of.
  */
+/**
+ * The paid hosts' rows a registration left without, mended a batch of at most 100 hosts at a time until the newest
+ * endpoints are reached: at most 20 batches and 30 s a run, each statement giving up after its timeout. Never throws.
+ */
+const mendPaidHosts = async (
+  routing: PublicStatsOptions['routing'], logger: PublicStatsOptions['logger'], timeoutMs: number, stopping: AbortSignal | undefined,
+): Promise<void> => {
+  if (!routing)
+    return;
+  try {
+    const until = performance.now() + paidHostsBudgetMs;
+    for (let batch = 0; batch < paidHostBatchesPerRun && !stopping?.aborted && performance.now() < until; batch += 1) {
+      if ((await routing.fillPaidHosts({ batch: paidHostsPerBatch, timeoutMs: Math.min(timeoutMs, paidHostsTimeoutMs) })).caughtUp)
+        break;
+    }
+  }
+  catch (error) {
+    logger?.warn({ error }, 'The paid hosts couldn\'t be mended in this run: the next run tries again');
+  }
+};
+
 export const createRecentStats = ({
-  counter, store, routing, config, metrics, clock, timeoutMs = recentStatementTimeoutMs, budgetMs = recentBudgetMs, batchSize = servicesPerBatch,
+  counter, store, routing, logger, config, metrics, clock, timeoutMs = recentStatementTimeoutMs, budgetMs = recentBudgetMs, batchSize = servicesPerBatch,
 }: PublicStatsOptions) => async (stopping?: AbortSignal): Promise<PublicStatsResult> => {
+  // Before the count, apart from it: a failure of the mending is a warn line, and the count goes on
+  await mendPaidHosts(routing, logger, timeoutMs, stopping);
   const countedAt = clock.now();
   const to = countedAt;
   const today = utcDayStart(countedAt);
@@ -153,11 +180,6 @@ export const createRecentStats = ({
   let deleted = 0;
   const step = startSteps({ budgetMs, timeoutMs, stopping, result: () => ({ services, written, deleted }) });
 
-  // The paid hosts registered before their table, until each has its row: the list shows those the count doesn't store
-  for (let batch = 0; routing && batch < paidHostBatchesPerRun; batch += 1) {
-    if ((await step(ms => routing.backfillPaidHosts({ batch: paidHostsPerBatch, timeoutMs: ms }))).done)
-      break;
-  }
   const platform = await step(ms => counter.platform({ periods, to, timeoutMs: ms }));
   const daily = await step(ms => counter.platformDays({ from: monthFrom, to, timeoutMs: ms }));
   const topups = await step(ms => counter.topups({ periods, to, timeoutMs: ms }));

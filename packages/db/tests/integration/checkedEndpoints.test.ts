@@ -521,7 +521,7 @@ describe('the paid hosts\' rows', () => {
     clock.set(noon);
   });
 
-  it('are made by the workers for hosts registered before the table, a batch at a time, never over a registration\'s', async () => {
+  it('are mended by the workers from the routed endpoints, a window at a time: hosts from before the table, and never over a newer row', async () => {
     const routing = createRoutingRepository({ db: database.db, clock });
     const hosts = ['older-a.backfill.dev', 'older-b.backfill.dev', 'older-c.backfill.dev'];
     await database.db.insert(routedEndpoints).values([
@@ -531,16 +531,12 @@ describe('the paid hosts\' rows', () => {
       { host: 'checked-only.backfill.dev', path: '/v1/x', createdAt: new Date(noon), status: 'checked' as const, checkedAt: new Date(noon) },
     ]);
     await database.db.delete(paidHosts).where(sql`${paidHosts.host} like '%.backfill.dev'`);
-    await database.db.delete(statsAnswers).where(eq(statsAnswers.key, 'backfill:paid_hosts'));
-    // One a registration made a row for already keeps it
+    await database.db.delete(statsAnswers).where(eq(statsAnswers.key, 'fill:paid_hosts'));
+    // One a registration made a row for, newer than its endpoints, keeps it
     await database.db.insert(paidHosts).values({ host: hosts[2]!, registeredAt: new Date(noon), listedAt: new Date(noon), paidEndpoints: 1, endpoints: 1, priceFrom: 7n });
-    const made: number[] = [];
-    for (let run = 0; run < 1_000; run += 1) {
-      const result = await routing.backfillPaidHosts({ batch: 50, timeoutMs: 5_000 });
-      made.push(result.hosts);
-      if (result.done)
-        break;
-    }
+    const runs: { fixed: number; read: number; caughtUp: boolean }[] = [];
+    for (let run = 0; run < 100 && !runs.at(-1)?.caughtUp; run += 1)
+      runs.push(await routing.fillPaidHosts({ batch: 2, timeoutMs: 5_000 }));
 
     expect(await paidRowOf(hosts[0]!)).toEqual({
       host: hosts[0], registeredAt: new Date(Date.parse(noon) - 60_000), listedAt: new Date(Date.parse(noon) - 3_600_000), paidEndpoints: 1, endpoints: 2, priceFrom: 500n,
@@ -548,10 +544,71 @@ describe('the paid hosts\' rows', () => {
     expect(await paidRowOf(hosts[1]!)).toMatchObject({ endpoints: 1, priceFrom: 1_001n });
     expect(await paidRowOf(hosts[2]!)).toMatchObject({ priceFrom: 7n });
     expect(await paidRowOf('checked-only.backfill.dev')).toBeUndefined();
-    // Done: a later run reads its mark alone
-    expect(await routing.backfillPaidHosts({ batch: 50, timeoutMs: 5_000 })).toEqual({ hosts: 0, done: true });
-    expect(made.at(-1)).toBeLessThan(50);
+    // At most 2 hosts a call
+    expect(Math.max(...runs.map(run => run.fixed))).toBeLessThanOrEqual(2);
   });
+
+  it('are mended at every run, with no end: an endpoint a replica of older code registered later makes its host\'s row stale, and the next call mends it', async () => {
+    const routing = createRoutingRepository({ db: database.db, clock });
+    const host = 'rollout.backfill.dev';
+    // Past every endpoint the other tests wrote
+    clock.set(new Date(Date.parse(noon) + 2 * 86_400_000));
+    expect(await routing.registerEndpoint({ host, path: '/v1/a', lastPrice: 2_000n })).toBe('created');
+    while (!(await routing.fillPaidHosts({ batch: 100, timeoutMs: 5_000 })).caughtUp);
+    // Caught up: a call with nothing to mend reads the last few minutes, and mends nothing
+    const idle = await routing.fillPaidHosts({ batch: 100, timeoutMs: 5_000 });
+    expect(idle).toMatchObject({ fixed: 0, caughtUp: true });
+    expect(idle.read).toBeLessThan(10);
+    // Written as older code writes: the endpoint and nothing else
+    clock.advance(60_000);
+    await database.db.insert(routedEndpoints).values({ host, path: '/v1/b', lastPrice: 900n, createdAt: clock.now(), status: 'paid' });
+    expect(await paidRowOf(host)).toMatchObject({ endpoints: 1, priceFrom: 2_000n });
+
+    expect(await routing.fillPaidHosts({ batch: 100, timeoutMs: 5_000 })).toMatchObject({ fixed: 1, caughtUp: true });
+    expect(await paidRowOf(host)).toMatchObject({ registeredAt: clock.now(), paidEndpoints: 2, endpoints: 2, priceFrom: 900n });
+    clock.set(noon);
+  });
+
+  it('hold a registration of a host they mend for one batch at most', async () => {
+    const routing = createRoutingRepository({ db: database.db, clock });
+    // 100 hosts of 1,000 endpoints each from before the table, their times woven: one window holds all 100
+    const hosts = Array.from({ length: 100 }, (_, index) => `woven-${index}.backfill.dev`);
+    const start = Date.parse(noon) - 86_400_000;
+    for (let item = 0; item < 1_000; item += 10) {
+      await database.db.insert(routedEndpoints).values(hosts.flatMap((host, index) => Array.from({ length: 10 }, (_, offset) => ({
+        host, path: `/v1/item/${item + offset}`, lastPrice: 1_000n, createdAt: new Date(start + ((item + offset) * 100 + index) * 10), status: 'paid' as const,
+      }))));
+    }
+    await database.db.insert(statsAnswers).values({ key: 'fill:paid_hosts', answer: { createdAt: new Date(start - 1).toISOString(), host: '', path: '' }, countedAt: clock.now() })
+      .onConflictDoUpdate({ target: statsAnswers.key, set: { answer: sql`excluded.answer` } });
+
+    const fill = (async () => {
+      const started = performance.now();
+      const result = await routing.fillPaidHosts({ batch: 100, timeoutMs: 5_000 });
+
+      return { ...result, ms: performance.now() - started };
+    })();
+    // Once the batch holds the hosts' locks, a registration of one of them waits for it
+    for (;;) {
+      const { rows } = await database.db.execute(sql`select 1 from pg_locks where locktype = 'advisory' and classid = 7301 and granted`);
+      if (rows.length >= 100)
+        break;
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    const started = performance.now();
+    expect(await routing.registerEndpoint({ host: hosts[0]!, path: '/v1/item/0', lastPrice: 800n })).toBe('exists');
+    const waitedMs = performance.now() - started;
+    const mended = await fill;
+
+    expect(mended.fixed).toBe(100);
+    // One batch: 100 hosts' rows from their 100,000 endpoints, measured 20 to 60 ms here
+    expect(waitedMs).toBeLessThan(mended.ms + 50);
+    expect(waitedMs).toBeLessThan(2_000);
+    expect(await paidRowOf(hosts[0]!)).toMatchObject({ paidEndpoints: 1_000, endpoints: 1_000, priceFrom: 800n });
+    await database.db.delete(routedEndpoints).where(sql`${routedEndpoints.host} like 'woven-%'`);
+    await database.db.delete(paidHosts).where(sql`${paidHosts.host} like 'woven-%'`);
+    await database.db.delete(statsAnswers).where(eq(statsAnswers.key, 'fill:paid_hosts'));
+  }, 60_000);
 });
 
 describe('what a check lists of a host', () => {

@@ -30,11 +30,13 @@ export interface MigrateDatabaseOptions {
   readonly retryPauseMs?: number;
 }
 
-// Postgres gave up waiting for a lock
-const isLockTimeout = (error: unknown): boolean => {
+// Postgres gave up waiting for a lock (55P03), or chose the migrations' transaction as a deadlock's victim (40P01), such
+// as an index built while a registration read the table and then waited to write: either is gone once the others finish
+const retriedCodes = ['55P03', '40P01'];
+const lockFailureOf = (error: unknown): string | undefined => {
   const codes = (value: unknown): unknown[] => (value instanceof Error ? [(value as Error & { code?: unknown }).code, ...codes(value.cause)] : []);
 
-  return codes(error).includes('55P03');
+  return codes(error).find((code): code is string => typeof code === 'string' && retriedCodes.includes(code));
 };
 
 const countApplied = async (client: pg.Client): Promise<number> => {
@@ -50,8 +52,8 @@ const countApplied = async (client: pg.Client): Promise<number> => {
 /**
  * Applies pending migrations and returns how many it applied. Running it again applies nothing. A
  * one-off command runs it before the apps roll; apps never migrate on boot. A statement that waits for a
- * lock longer than `lockTimeoutMs` rolls the migrations' transaction back; the run tries again after a
- * pause, `attempts` times in all, then fails.
+ * lock longer than `lockTimeoutMs`, or a deadlock Postgres resolves by cancelling the migrations, rolls their
+ * transaction back; the run tries again after a pause, `attempts` times in all, then fails.
  */
 export const migrateDatabase = async ({
   url, logger, lockTimeoutMs = migrationLockTimeoutMs, attempts = migrationAttempts, retryPauseMs = migrationRetryPauseMs,
@@ -72,9 +74,12 @@ export const migrateDatabase = async ({
         break;
       }
       catch (error) {
-        if (!isLockTimeout(error) || attempt >= attempts)
+        const code = lockFailureOf(error);
+        if (code === undefined || attempt >= attempts)
           throw error;
-        logger.warn({ attempt, attempts, retryPauseMs }, 'A migration couldn\'t get a table\'s lock in time: it tries again after a pause');
+        logger.warn({ attempt, attempts, retryPauseMs, code }, code === '40P01'
+          ? 'A migration was a deadlock\'s victim: it tries again after a pause'
+          : 'A migration couldn\'t get a table\'s lock in time: it tries again after a pause');
         await sleep(retryPauseMs);
       }
     }

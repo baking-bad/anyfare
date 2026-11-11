@@ -99,8 +99,11 @@ export interface HostListing {
   readonly checked: readonly CheckedEndpointRow[];
   // By path
   readonly checkedTimes: ReadonlyMap<string, Date>;
-  // Listed only by checks, it is outside what the list shows of the checked pool: 20 hosts of its parent domain,
-  // or 1,000 in all, were checked more recently
+  // It is of the checked pool as the list reads it: listed only by checks, with a checked endpoint, and the count
+  // doesn't store it
+  readonly pooled: boolean;
+  // Of the checked pool, it is outside what the list shows of it: 20 hosts of its parent domain, or 1,000 in all, were
+  // checked more recently, the blocklist's included
   readonly poolHidden: boolean;
   // A paid host the count doesn't store, outside what the list shows of them: `maxPaid` such hosts were registered more recently
   readonly paidHidden: boolean;
@@ -175,8 +178,8 @@ export interface StatsRepository {
    * 1,000 most recently checked. The blocklist is applied by the reader.
    */
   listedServices(input: { readonly maxPaid: number; readonly timeoutMs: number }): Promise<ListedServices>;
-  /** Every host on the blocklist, in one statement giving up after `timeoutMs`. */
-  blocklist(input: { readonly timeoutMs: number }): Promise<string[]>;
+  /** The first `limit` hosts of the blocklist, the first entered first, in one statement giving up after `timeoutMs`. */
+  blocklist(input: { readonly limit: number; readonly timeoutMs: number }): Promise<string[]>;
   /**
    * A stored service's page of a period, with its stored endpoints, most paid calls of the period first, and
    * what checks listed of it. Undefined: not stored.
@@ -259,6 +262,7 @@ interface ListingJson {
   readonly checked_count: number;
   readonly checked: readonly { readonly path: string; readonly method: string | null; readonly price: string | null; readonly checked_at: string | null }[];
   readonly times: Readonly<Record<string, string>>;
+  readonly pooled: boolean;
   readonly pool_hidden: boolean;
   readonly paid_hidden: boolean;
 }
@@ -280,6 +284,7 @@ const toListing = (listing: ListingJson): HostListing => ({
     path: row.path, method: row.method, price: row.price === null ? undefined : BigInt(row.price), checkedAt: timeOf(row.checked_at),
   })),
   checkedTimes: new Map(Object.entries(listing.times).map(([path, at]) => [path, new Date(at)])),
+  pooled: listing.pooled,
   poolHidden: listing.pool_hidden,
   paidHidden: listing.paid_hidden,
 });
@@ -337,6 +342,8 @@ const listingSql = (host: string, paths: SQL, maxPaid: number): SQL => sql`jsonb
     ) as listed), '[]'::jsonb),
   'times', coalesce((select jsonb_object_agg(${routedEndpoints.path}, ${routedEndpoints.checkedAt}) from ${routedEndpoints}
     where ${routedEndpoints.host} = ${host} and ${routedEndpoints.path} in (${paths}) and ${routedEndpoints.checkedAt} is not null), '{}'::jsonb),
+  'pooled', exists (select 1 from ${checkedHosts} where ${checkedHosts.host} = ${host} and ${checkedHosts.paidAt} is null
+    and ${checkedHosts.checkedEndpoints} > 0 and not ${storedHost(sql`${checkedHosts.host}`)}),
   -- As the list reads the pool: the hosts listed only by checks, the most recently checked first, 20 of a parent domain
   -- and 1,000 in all. Those before it, by checked_hosts_parent_idx and checked_hosts_checked_idx, up to each cap.
   'pool_hidden', coalesce((select
@@ -610,7 +617,8 @@ export const createStatsRepository = ({ db }: StatsRepositoryOptions): StatsRepo
       };
     },
 
-    blocklist: async ({ timeoutMs }) => (await statement(db, timeoutMs, tx => tx.select({ host: hostBlocklist.host }).from(hostBlocklist))).map(entry => entry.host),
+    blocklist: async ({ limit, timeoutMs }) => (await statement(db, timeoutMs, tx => tx.select({ host: hostBlocklist.host }).from(hostBlocklist)
+      .orderBy(asc(hostBlocklist.createdAt), asc(hostBlocklist.host)).limit(limit))).map(entry => entry.host),
 
     servicePage: async (host, period, { timeoutMs, maxPaid }) => {
       // The period's own numbers order the endpoints; all time's are there once the all-time count reached them

@@ -130,10 +130,13 @@ export interface RoutingRepository {
   /** Whether an endpoint and its host are listed, in one statement giving up after `timeoutMs`. */
   endpointListing(host: string, path: string, options: { readonly timeoutMs: number }): Promise<EndpointListing>;
   /**
-   * Makes the paid hosts' rows of up to `batch` hosts registered before that table, the next by name from where the
-   * last call stopped, and says when every host has one. Each call is one statement giving up after `timeoutMs`.
+   * Mends the paid hosts' rows from the routed endpoints, a window of `fillWindowRows` in the catalog's order from where
+   * the last call stopped: a host with a paid endpoint and no row, or a row older than its newest endpoint, as a
+   * registration that wrote none leaves it (one from before the table, or from a replica of older code). At most
+   * `batch` hosts a call, at most `maxFillHosts`, under their registration locks. Once it reaches the newest endpoints,
+   * each call reads the last few minutes again: it never stops for good. Each statement gives up after `timeoutMs`.
    */
-  backfillPaidHosts(input: { readonly batch: number; readonly timeoutMs: number }): Promise<{ readonly hosts: number; readonly done: boolean }>;
+  fillPaidHosts(input: { readonly batch: number; readonly timeoutMs: number }): Promise<{ readonly fixed: number; readonly read: number; readonly caughtUp: boolean }>;
   /** The endpoint's own fee in basis points, if it has one. */
   endpointFee(host: string, path: string): Promise<number | undefined>;
   /** Sets an endpoint's own fee, or back to the default with null. Returns whether the endpoint exists. */
@@ -408,8 +411,14 @@ const registerChecked = async (
   return created.length > 0 ? 'created' : 'exists';
 };
 
-// The workers' fill of the paid hosts, for hosts registered before the table: how far it went, under this key
-const backfillKey = 'backfill:paid_hosts';
+// The workers' mending of the paid hosts' rows: where its next window starts, under this key
+const fillKey = 'fill:paid_hosts';
+// A window of the routed endpoints one call reads, and the most hosts it mends
+export const fillWindowRows = 1_000;
+export const maxFillHosts = 100;
+// Once it reached the newest endpoints, how far back each call reads again: a registration that commits late, or a
+// writer whose clock runs behind
+const fillOverlapMs = 5 * 60_000;
 
 export const createRoutingRepository = ({ db, clock }: RoutingRepositoryOptions): RoutingRepository => ({
   isBlocked: async host => (await db.select({ host: hostBlocklist.host }).from(hostBlocklist).where(eq(hostBlocklist.host, host))).length > 0,
@@ -452,43 +461,76 @@ export const createRoutingRepository = ({ db, clock }: RoutingRepositoryOptions)
     };
   },
 
-  backfillPaidHosts: async ({ batch, timeoutMs }) => {
-    const { rows: [mark] } = await db.execute<{ answer: { after?: string; done?: boolean } }>(sql`select ${statsAnswers.answer} as answer from ${statsAnswers}
-      where ${statsAnswers.key} = ${backfillKey}`);
-    if (mark?.answer.done)
-      return { hosts: 0, done: true };
-    const after = mark?.answer.after ?? '';
-    // The next hosts with a paid endpoint by routed_endpoints_listed_idx, one probe each, then each one's row from its
-    // endpoints by the key: a host a registration made a row for already keeps it
-    const { rows } = await withTransaction(db, async tx => {
-      await tx.execute(sql.raw(`set local statement_timeout = ${Math.max(1, Math.trunc(timeoutMs))}`));
+  fillPaidHosts: async ({ batch, timeoutMs }) => {
+    const size = Math.max(1, Math.min(batch, maxFillHosts));
+    const timeout = sql.raw(`set local statement_timeout = ${Math.max(1, Math.trunc(timeoutMs))}`);
+    const { rows: [mark] } = await db.execute<{ answer: { createdAt?: string; host?: string; path?: string } }>(sql`select ${statsAnswers.answer} as answer
+      from ${statsAnswers} where ${statsAnswers.key} = ${fillKey}`);
+    const from = mark?.answer.createdAt === undefined ? undefined
+      : { createdAt: new Date(mark.answer.createdAt), host: mark.answer.host ?? '', path: mark.answer.path ?? '' };
+    const following = from === undefined
+      ? sql`true`
+      : sql`(${routedEndpoints.createdAt}, ${routedEndpoints.host}, ${routedEndpoints.path}) > (${from.createdAt}::timestamptz, ${from.host}::text, ${from.path}::text)`;
+    // A window of the routed endpoints in the catalog's order, by routed_endpoints_catalog_idx; of its hosts, those with
+    // a paid endpoint, one probe of routed_endpoints_listed_idx each, and no row, or one older than their newest endpoint
+    const { rows: [found] } = await withTransaction(db, async tx => {
+      await tx.execute(timeout);
 
-      return tx.execute<{ host: string }>(sql`with recursive hosts(host) as (
-          (select ${routedEndpoints.host} from ${routedEndpoints} where ${routedEndpoints.status} = 'paid' and ${routedEndpoints.host} > ${after}
-            order by ${routedEndpoints.host} limit 1)
-          union all
-          select (select ${routedEndpoints.host} from ${routedEndpoints} where ${routedEndpoints.status} = 'paid' and ${routedEndpoints.host} > hosts.host
-            order by ${routedEndpoints.host} limit 1) from hosts where hosts.host is not null
+      return tx.execute<{ hosts: string[]; stale: number; read: number; last: { created_at: string; host: string; path: string } | null }>(sql`
+        with scan as materialized (
+          select ${routedEndpoints.host} as host, ${routedEndpoints.path} as path, ${routedEndpoints.createdAt} as created_at from ${routedEndpoints}
+          where ${following} order by ${routedEndpoints.createdAt}, ${routedEndpoints.host}, ${routedEndpoints.path} limit ${fillWindowRows}
         ),
-        chosen as (select host from hosts where host is not null limit ${batch}),
-        made as (
-          insert into ${paidHosts} (host, registered_at, listed_at, paid_endpoints, endpoints, price_from)
-          select chosen.host, every.registered_at, every.listed_at, every.paid_endpoints, every.endpoints, every.price_from from chosen cross join lateral (
-            select max(rows.created_at) filter (where rows.status = 'paid') as registered_at, min(rows.created_at) as listed_at,
-              (count(*) filter (where rows.status = 'paid'))::int as paid_endpoints, count(*)::int as endpoints, min(rows.last_price) as price_from
+        newest as (select scan.host, max(scan.created_at) as at from scan group by scan.host),
+        stale as (
+          select newest.host, newest.at from newest left join ${paidHosts} on ${paidHosts.host} = newest.host
+          where (${paidHosts.host} is null or ${paidHosts.registeredAt} < newest.at)
+            and (select ${routedEndpoints.createdAt} from ${routedEndpoints} where ${routedEndpoints.host} = newest.host and ${routedEndpoints.status} = 'paid'
+              order by ${routedEndpoints.createdAt} limit 1) is not null
+        )
+        select coalesce((select json_agg(chosen.host) from (select stale.host from stale order by stale.at, stale.host limit ${size}) as chosen), '[]') as hosts,
+          (select count(*)::int from stale) as stale, (select count(*)::int from scan) as read,
+          (select json_build_object('created_at', scan.created_at, 'host', scan.host, 'path', scan.path) from scan
+            order by scan.created_at desc, scan.host desc, scan.path desc limit 1) as last`);
+    });
+    const hosts = [...found?.hosts ?? []].sort();
+    if (hosts.length > 0) {
+      await withTransaction(db, async tx => {
+        await tx.execute(timeout);
+        // Each host's registration lock, in one order: a registration of one of them waits for this batch alone
+        await tx.execute(sql`select pg_advisory_xact_lock(${routingLockNamespace}, hashtext(chosen.host))
+          from (select jsonb_array_elements_text(${json(hosts)}) as host order by 1) as chosen`);
+        // Then, seeing every registration before it, each one's row from its endpoints by the key: when one of them was
+        // last registered is at least its newest endpoint's time
+        await tx.execute(sql`insert into ${paidHosts} (host, registered_at, listed_at, paid_endpoints, endpoints, price_from)
+          select chosen.host, every.registered_at, every.listed_at, every.paid_endpoints, every.endpoints, every.price_from
+          from jsonb_array_elements_text(${json(hosts)}) as chosen(host) cross join lateral (
+            select max(rows.created_at) as registered_at, min(rows.created_at) as listed_at, (count(*) filter (where rows.status = 'paid'))::int as paid_endpoints,
+              count(*)::int as endpoints, min(rows.last_price) as price_from
             from (select ${routedEndpoints.status} as status, ${routedEndpoints.createdAt} as created_at, ${routedEndpoints.lastPrice} as last_price
               from ${routedEndpoints} where ${routedEndpoints.host} = chosen.host offset 0) as rows
           ) as every
-          on conflict (host) do nothing
-        )
-        select host from chosen order by host`);
-    });
-    const last = rows.at(-1)?.host;
-    const done = rows.length < batch;
-    await db.insert(statsAnswers).values({ key: backfillKey, answer: { after: last ?? after, done }, countedAt: clock.now() })
-      .onConflictDoUpdate({ target: statsAnswers.key, set: { answer: sql`excluded.answer`, countedAt: sql`excluded.counted_at` } });
+          where every.paid_endpoints > 0
+          on conflict (host) do update set registered_at = greatest(${paidHosts.registeredAt}, excluded.registered_at), listed_at = excluded.listed_at,
+            paid_endpoints = excluded.paid_endpoints, endpoints = excluded.endpoints, price_from = excluded.price_from`);
+      });
+    }
+    // Hosts of this window left to mend: the next call reads it again. A full window: on from its last endpoint. The newest
+    // reached: from a while before now, so an endpoint whose registration committed late is still read.
+    const left = (found?.stale ?? 0) > hosts.length;
+    const read = found?.read ?? 0;
+    const caughtUp = !left && read < fillWindowRows;
+    const next = left
+      ? from
+      : !caughtUp && found?.last
+        ? { createdAt: new Date(found.last.created_at), host: found.last.host, path: found.last.path }
+        : { createdAt: new Date(clock.now().getTime() - fillOverlapMs), host: '', path: '' };
+    if (next !== undefined) {
+      await db.insert(statsAnswers).values({ key: fillKey, answer: { createdAt: next.createdAt.toISOString(), host: next.host, path: next.path }, countedAt: clock.now() })
+        .onConflictDoUpdate({ target: statsAnswers.key, set: { answer: sql`excluded.answer`, countedAt: sql`excluded.counted_at` } });
+    }
 
-    return { hosts: rows.length, done };
+    return { fixed: hosts.length, read, caughtUp };
   },
 
   endpointFee: async (host, path) => {

@@ -116,6 +116,7 @@ export const createApp = ({
     counter: createStatsCounter({ db: statsPostgres.db, ways: createPaidWith(config).ways }),
     store: createStatsRepository({ db: statsPostgres.db }),
     routing,
+    logger,
     config,
     metrics: createPublicStatsMetrics(server.registry, clock),
     clock,

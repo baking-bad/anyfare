@@ -236,16 +236,16 @@ describe('the public numbers\' counts, next to the payments', () => {
     await jobs().recent();
   });
 
-  it('fill the rows of paid hosts registered before their table, a batch at a time each run, so the list shows them', async () => {
+  it('mend the rows of paid hosts registered without one, a batch of at most 100 at a time each run, so the list shows them', async () => {
     const routing = createRoutingRepository({ db: database.db, clock });
     const hosts = Array.from({ length: 3 }, (_, index) => `before-table-${index}.example.com`);
     await database.db.insert(db.routedEndpoints).values(hosts.map(host => ({ host, path: '/v1/x', lastPrice: 1_000n, createdAt: clock.now(), status: 'paid' as const })));
     await database.db.delete(db.paidHosts);
-    await database.db.delete(db.statsAnswers).where(sql`key = 'backfill:paid_hosts'`);
-    const batches: number[] = [];
-    const recording = { backfillPaidHosts: async (input: { readonly batch: number; readonly timeoutMs: number }) => {
-      const result = await routing.backfillPaidHosts({ ...input, batch: 2 });
-      batches.push(result.hosts);
+    await database.db.delete(db.statsAnswers).where(sql`key = 'fill:paid_hosts'`);
+    const batches: { batch: number; fixed: number }[] = [];
+    const recording = { fillPaidHosts: async (input: { readonly batch: number; readonly timeoutMs: number }) => {
+      const result = await routing.fillPaidHosts(input);
+      batches.push({ batch: input.batch, fixed: result.fixed });
 
       return result;
     } };
@@ -253,15 +253,21 @@ describe('the public numbers\' counts, next to the payments', () => {
     await statsJobs(database.db, config, clock, { routing: recording }).recent();
 
     expect(await count('paid_hosts', sql`host like 'before-table-%'`)).toBe(3);
-    // Two, then the last one, and done
-    expect(batches).toEqual([2, 1]);
+    expect(batches.every(each => each.batch === 100)).toBe(true);
     clock.advance(10_000);
     const listed = (await api.get<{ services: { host: string; status: string; calls: number }[] }>('/v1/services?q=before-table')).body;
     expect(listed.services.map(service => [service.host, service.status, service.calls])).toEqual(hosts.map(host => [host, 'paid', 0]));
-    // Done: a later run reads its mark alone
-    batches.length = 0;
-    await statsJobs(database.db, config, clock, { routing: recording }).recent();
-    expect(batches).toEqual([0]);
+  });
+
+  it('count all the same when the mending of paid hosts fails: a warn line, and the next run tries again', async () => {
+    const lines: { msg: string }[] = [];
+    const failing = { fillPaidHosts: async () => { throw new Error('canceling statement due to statement timeout'); } };
+    const logger = { warn: (_fields: unknown, msg: string) => lines.push({ msg }) };
+
+    const result = await statsJobs(database.db, config, clock, { routing: failing, logger: logger as never }).recent();
+
+    expect(result.services).toBeGreaterThan(0);
+    expect(lines).toEqual([{ msg: 'The paid hosts couldn\'t be mended in this run: the next run tries again' }]);
   });
 
   it('run each statement on its own: a call written between two is seen by the later one', async () => {
