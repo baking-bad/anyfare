@@ -37,7 +37,7 @@ export const SiteFooter = ({ consoleHref, base = '' }: { readonly consoleHref: s
           <h4>Connect</h4>
           <ul>
             <li><a href="https://x.com/3route_io">X</a></li>
-            <li><a href="mailto:hello@baking-bad.org">Email</a></li>
+            <li><a href="mailto:hello@bakingbad.dev">Email</a></li>
             <li><a href="https://github.com/baking-bad/anyfare">GitHub</a></li>
           </ul>
         </div>
