@@ -1,0 +1,66 @@
+/* The home page. Classes only: the content security policy allows no inline style. */
+
+/* ---------- Hero ---------- */
+
+.hero { padding-top: 96px; padding-bottom: 64px; }
+@media (min-width: 1024px) { .hero { padding-top: 128px; } }
+.hero .display { max-width: 920px; }
+.hero .lead { max-width: 640px; }
+.hero-check { max-width: 1080px; }
+/* The link field and the console button on one line, the same height */
+.check-row { display: flex; gap: 12px; align-items: stretch; }
+.check-row .check-box { flex: 1; min-width: 0; }
+.check-row .console-btn { height: auto; min-height: 64px; border-radius: 20px; padding: 0 24px; }
+.under-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+@media (max-width: 760px) { .check-row { flex-direction: column; } .check-row .console-btn { min-height: 48px; } }
+
+/* ---------- Live calls ---------- */
+
+.live-section { padding-top: 32px; padding-bottom: 64px; }
+.live-line { margin: 0 0 12px 4px; }
+.live-head { margin-bottom: 16px; }
+.live-total { gap: 2px; }
+.route-legend { font-weight: 500; }
+.legend-arrow { opacity: 0.6; }
+.feed .call-main { display: block; min-width: 0; }
+.feed .call-host { display: block; font-size: 15px; }
+.feed .call-path { display: block; font-size: 12px; }
+.live-error { padding: 12px; }
+
+/* ---------- Two ways to pay ---------- */
+
+.intents-link { color: var(--text); }
+.way-card { display: flex; flex-direction: column; gap: 16px; }
+.way-card > .row { flex-wrap: nowrap; align-items: flex-start; }
+.way-card .code { font-size: 12px; }
+.way-head { gap: 12px; }
+.way-notes { margin: 0; padding-left: 18px; gap: 4px; }
+
+/* ---------- Stats ---------- */
+
+.stats-head { margin-bottom: 48px; }
+.stats-intro { gap: 16px; max-width: 640px; }
+.stats-panel { background: rgb(255 255 255 / 0.04); }
+.stats-link { color: var(--inverse-text-secondary); }
+.stats-panel .chart .bar { fill: var(--white); }
+.stats-panel .chart text.axis { fill: var(--gray-400); }
+.stats-panel .chart .grid-line, .stats-panel .chart .base-line { stroke: rgb(255 255 255 / 0.1); }
+.stats-panel .barlist .track { background: rgb(255 255 255 / 0.08); }
+.stats-panel .icon-circle { background: rgb(255 255 255 / 0.08); }
+.stats-panel .empty { padding: 24px 0; }
+
+/* ---------- Top services ---------- */
+
+.top-intro { gap: 16px; max-width: 640px; }
+/* The whole row opens the service: the host's link stretches over it */
+table.t tr.click { position: relative; }
+table.t tr.click .row-link { text-decoration: none; }
+table.t tr.click .row-link::after { content: ""; position: absolute; inset: 0; }
+table.t tr.click:focus-within { background: var(--surface-row-hover); }
+
+/* ---------- For agents ---------- */
+
+.agents-split { align-items: start; gap: 48px; }
+
+/* An error state on the dark stats band keeps its text readable */
+.inverse-band .alert.danger { color: var(--white); }

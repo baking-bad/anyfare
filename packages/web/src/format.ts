@@ -32,3 +32,10 @@ export const ago = (moment: Date | number, now: number = Date.now()): string => 
 
   return `${Math.floor(seconds / 3600)}h ago`;
 };
+
+/** A dollar amount from the API's decimal string, such as "0.01". A value that isn't a number reads as a dash. */
+export const usdOf = (amount: string, digits?: number): string => {
+  const value = Number(amount);
+
+  return amount.trim() === '' || !Number.isFinite(value) ? '-' : usd(value, digits);
+};

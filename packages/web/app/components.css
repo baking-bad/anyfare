@@ -91,7 +91,7 @@ a.list-row:hover, .list-row.hover:hover { background: var(--surface-row-hover); 
 .chev { width: 16px; height: 16px; color: var(--text-tertiary); flex: none; }
 
 /* Tables inside a well */
-.table-scroll { overflow-x: auto; max-width: 100%; }
+.table-scroll { position: relative; overflow-x: auto; max-width: 100%; }
 .table-scroll:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 table.t { width: 100%; border-collapse: collapse; font-size: var(--text-sm); line-height: var(--leading-sm); }
 table.t th { text-align: left; font-weight: 500; color: var(--text-body); padding: 10px 16px; white-space: nowrap; }

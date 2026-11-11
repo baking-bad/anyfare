@@ -1,0 +1,46 @@
+import type { ApiResult, Reader } from './reader';
+import type { CallsPage, CallsQuery, LiveStats, ServicesPage, ServicesQuery, Stats } from './types';
+
+// The public read API's endpoints a page reads. `paths` builds each path once: the page reads it, and
+// the Agent view and the Markdown twin list it.
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const query = (params: Readonly<Record<string, string | number | undefined>>): string => {
+  const search = new URLSearchParams();
+  for (const [name, value] of Object.entries(params)) {
+    if (value !== undefined && value !== '')
+      search.set(name, String(value));
+  }
+  const text = search.toString();
+
+  return text === '' ? '' : `?${text}`;
+};
+
+export const paths = {
+  stats: '/v1/stats',
+  liveStats: '/v1/stats/live',
+  services: (q: ServicesQuery = {}): string => `/v1/services${query({ q: q.q, sort: q.sort, page: q.page, size: q.size })}`,
+  calls: (q: CallsQuery = {}): string => `/v1/calls${query({ paidWith: q.paidWith, service: q.service, endpoint: q.endpoint, status: q.status, page: q.page, size: q.size })}`,
+  // The stream takes the list's filters, and no page or size
+  callStream: (q: Omit<CallsQuery, 'page' | 'size'> = {}): string => `/v1/calls/stream${query({ paidWith: q.paidWith, service: q.service, endpoint: q.endpoint, status: q.status })}`,
+} as const;
+
+const isStats = (value: unknown): value is Stats =>
+  isRecord(value) && isRecord(value['calls']) && isRecord(value['volume']) && isRecord(value['buyers']) && isRecord(value['services'])
+  && isRecord(value['byPaidWith']) && Array.isArray(value['daily']);
+
+const isLiveStats = (value: unknown): value is LiveStats =>
+  isRecord(value) && isRecord(value['today']) && isRecord(value['last24h']);
+
+const isServicesPage = (value: unknown): value is ServicesPage => isRecord(value) && Array.isArray(value['services']);
+
+const isCallsPage = (value: unknown): value is CallsPage => isRecord(value) && Array.isArray(value['calls']);
+
+export const getStats = (read: Reader): Promise<ApiResult<Stats>> => read(paths.stats, isStats);
+
+export const getLiveStats = (read: Reader): Promise<ApiResult<LiveStats>> => read(paths.liveStats, isLiveStats);
+
+export const listServices = (read: Reader, q: ServicesQuery = {}): Promise<ApiResult<ServicesPage>> => read(paths.services(q), isServicesPage);
+
+export const listCalls = (read: Reader, q: CallsQuery = {}): Promise<ApiResult<CallsPage>> => read(paths.calls(q), isCallsPage);

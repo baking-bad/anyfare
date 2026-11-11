@@ -7,6 +7,7 @@ import './components.css';
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 
+import { SettingsProvider } from '../src/components/Settings';
 import { SiteFooter } from '../src/components/SiteFooter';
 import { SiteHeader } from '../src/components/SiteHeader';
 import { readSettings } from '../src/config';
@@ -32,7 +33,7 @@ export const viewport: Viewport = {
 
 const RootLayout = async ({ children }: { readonly children: ReactNode }) => {
   const nonce = await requestNonce();
-  const { consoleUrl } = readSettings();
+  const { consoleUrl, apiUrl, payUrl } = readSettings();
 
   return (
     <html lang="en" suppressHydrationWarning>
@@ -40,10 +41,12 @@ const RootLayout = async ({ children }: { readonly children: ReactNode }) => {
         <script nonce={nonce} suppressHydrationWarning dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body>
-        <a className="skip-link" href="#main">Skip to the content</a>
-        <SiteHeader consoleUrl={consoleUrl} />
-        <main id="main">{children}</main>
-        <SiteFooter consoleUrl={consoleUrl} />
+        <SettingsProvider value={{ apiUrl, payUrl, consoleUrl }}>
+          <a className="skip-link" href="#main">Skip to the content</a>
+          <SiteHeader consoleUrl={consoleUrl} />
+          <main id="main">{children}</main>
+          <SiteFooter consoleUrl={consoleUrl} />
+        </SettingsProvider>
       </body>
     </html>
   );

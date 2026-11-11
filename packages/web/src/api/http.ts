@@ -44,6 +44,8 @@ export interface ApiRequest {
   readonly body?: unknown;
   // A key for the Authorization header. It never goes in a URL.
   readonly key?: string;
+  // More request headers, such as the visitor's address a server read forwards
+  readonly headers?: Readonly<Record<string, string>>;
   readonly timeoutMs?: number;
   readonly fetch?: typeof fetch;
   // Called once when the read fails, before it throws: the server's readers log it. Code
@@ -54,7 +56,7 @@ export interface ApiRequest {
 /** Calls the Platform API at `apiUrl` and returns the JSON answer, or throws ApiError. */
 export const callApi = async <TResult>(
   apiUrl: string,
-  { method = 'GET', path, body, key, timeoutMs = defaultTimeoutMs, fetch: fetchFn = fetch, onFailure }: ApiRequest,
+  { method = 'GET', path, body, key, headers, timeoutMs = defaultTimeoutMs, fetch: fetchFn = fetch, onFailure }: ApiRequest,
 ): Promise<TResult> => {
   const started = performance.now();
   const failed = (status: number, code: string, cause?: string): void => onFailure?.({
@@ -66,6 +68,7 @@ export const callApi = async <TResult>(
       method,
       headers: {
         accept: 'application/json',
+        ...headers,
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         ...(key === undefined ? {} : { authorization: `Bearer ${key}` }),
       },
