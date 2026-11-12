@@ -16,6 +16,8 @@ describe('loadConfig', () => {
   it('has defaults', () => {
     expect(loadConfig({})).toEqual({
       payUrl: DEFAULT_PAY_URL,
+      apiUrl: 'https://api.anyfare.agents.bakingbad.dev',
+      siteUrl: 'https://anyfare.agents.bakingbad.dev',
       maxPayment: 20_000n,
       maxPaymentText: '$0.02',
       capFrom: 'MAX_PAYMENT_USD',
@@ -67,6 +69,50 @@ describe('loadConfig', () => {
   it('refuses a path, a query or a fragment in ANYFARE_PAY_URL', () => {
     for (const bad of ['https://pay.example/v1', 'https://pay.example/?a=b', 'https://pay.example?a=b', 'https://pay.example#x', 'https://pay.example/#']) {
       expect(stopOf(() => loadConfig({ ANYFARE_PAY_URL: bad })), bad).toContain('ANYFARE_PAY_URL');
+    }
+  });
+
+  it("finds Anyfare's API and site beside a pay host that starts with pay.", () => {
+    expect(loadConfig({ ANYFARE_PAY_URL: 'https://pay.anyfare.agents.bakingbad.dev' })).toMatchObject({
+      apiUrl: 'https://api.anyfare.agents.bakingbad.dev',
+      siteUrl: 'https://anyfare.agents.bakingbad.dev',
+    });
+    expect(loadConfig({ ANYFARE_PAY_URL: 'https://PAY.example.test:8443/' })).toMatchObject({
+      apiUrl: 'https://api.example.test:8443',
+      siteUrl: 'https://example.test:8443',
+    });
+  });
+
+  it('has no API and no site for any other pay host', () => {
+    for (const payUrl of ['http://127.0.0.1:8080', 'http://localhost:3000', 'https://anyfare.example.test', 'https://paying.example.test', 'https://api.pay.example.test']) {
+      expect(loadConfig({ ANYFARE_PAY_URL: payUrl }), payUrl).toMatchObject({ apiUrl: undefined, siteUrl: undefined });
+    }
+  });
+
+  it('takes ANYFARE_API_URL and ANYFARE_SITE_URL over the ones beside the pay host, each on its own', () => {
+    expect(loadConfig({ ANYFARE_API_URL: 'http://127.0.0.1:4000/', ANYFARE_SITE_URL: ' https://site.example.test ' })).toMatchObject({
+      payUrl: DEFAULT_PAY_URL,
+      apiUrl: 'http://127.0.0.1:4000',
+      siteUrl: 'https://site.example.test',
+    });
+    expect(loadConfig({ ANYFARE_PAY_URL: 'http://127.0.0.1:8080', ANYFARE_API_URL: 'http://localhost:4000' })).toMatchObject({
+      apiUrl: 'http://localhost:4000',
+      siteUrl: undefined,
+    });
+    expect(loadConfig({ ANYFARE_SITE_URL: 'https://site.example.test' })).toMatchObject({
+      apiUrl: 'https://api.anyfare.agents.bakingbad.dev',
+      siteUrl: 'https://site.example.test',
+    });
+    expect(loadConfig({ ANYFARE_API_URL: '  ' }).apiUrl).toBe('https://api.anyfare.agents.bakingbad.dev');
+  });
+
+  it('refuses a bad ANYFARE_API_URL or ANYFARE_SITE_URL and names it', () => {
+    const bad = ['http://api.example', 'ftp://api.example', 'api.example', 'https://user:pw@api.example', 'https://api.example/v1', 'https://api.example?a=b', 'https://api.example#x'];
+    for (const name of ['ANYFARE_API_URL', 'ANYFARE_SITE_URL']) {
+      for (const value of bad) {
+        expect(stopOf(() => loadConfig({ [name]: value })), `${name}=${value}`).toContain(name);
+        expect(stopOf(() => loadConfig({ ANYFARE_PAY_URL: 'http://127.0.0.1:8080', [name]: value })), `${name}=${value}`).toContain(name);
+      }
     }
   });
 });

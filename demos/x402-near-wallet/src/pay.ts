@@ -7,6 +7,8 @@
 
 import { encodePaymentSignatureHeader } from '@x402/core/http';
 import type { PaymentRequirements } from '@x402/core/types';
+import { findAnyfareCall, routedHost } from './anyfareCall.ts';
+import type { CallLimits, CallLookup } from './anyfareCall.ts';
 import { BALANCE_TIMEOUT_MS, nearText, readNearBalance, usdcText } from './balances.ts';
 import type { NearBalance } from './balances.ts';
 import type { AppOptions } from './cli.ts';
@@ -19,7 +21,7 @@ import { NEAR_NETWORK } from './networks.ts';
 import { chooseOption, readX402 } from './offers.ts';
 import { requestLine } from './request.ts';
 import type { HttpRequest } from './request.ts';
-import { answerLines, proofLines } from './result.ts';
+import { answerLines, proofLines, proofRows } from './result.ts';
 import { Stop, fromAtomic, usd } from './util.ts';
 import { NEAR_ACCOUNT_ID, NEAR_EXPLORER, readNearAccount, readNearWallet } from './wallet.ts';
 import type { NearWallet, RpcAddress } from './wallet.ts';
@@ -35,6 +37,8 @@ export interface PayLimits {
   readonly paidMs?: number;
   readonly signingMs?: number;
   readonly balanceMs?: number;
+  /** The lookup of a call paid through Anyfare. */
+  readonly anyfareCall?: CallLimits;
 }
 
 const NOTHING_PAID = 'Nothing paid.';
@@ -219,6 +223,49 @@ function proofOf(ctx: Context, proof: Proof, accountId: string, check: string): 
   return { rows, settled: true };
 }
 
+/** The lookup of a paid call on Anyfare, under way, and the site its receipt page is on. */
+interface CallSearch {
+  readonly site: string;
+  readonly found: Promise<CallLookup>;
+}
+
+/**
+ * The lookup of the call on Anyfare, started now: only for a paid request through Anyfare's pay host,
+ * whose proof names a NEAR transaction, when the settings give Anyfare's API and site. Never throws.
+ */
+function searchCall(ctx: Context, config: Config, call: HttpRequest, proof: Proof, accountId: string, limits: CallLimits | undefined): CallSearch | undefined {
+  try {
+    const { apiUrl, siteUrl } = config;
+    if (apiUrl === undefined || siteUrl === undefined || !isPayHost(call.url, config)) return undefined;
+    if ((proof.kind !== 'settled' && proof.kind !== 'pending') || !NEAR_EXPLORER.hash.test(proof.transaction)) return undefined;
+    const host = routedHost(call.url);
+    if (host === undefined) return undefined;
+    const query = { apiUrl, host, accountId, transaction: proof.transaction, ...(limits !== undefined && { limits }) };
+    return { site: siteUrl, found: findAnyfareCall(ctx.io.fetch, query) };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The call's ID and receipt page as the last rows of the proof, once the lookup ends; or one warning
+ * when it was not found. Never throws.
+ */
+async function showCall(ctx: Context, search: CallSearch | undefined): Promise<void> {
+  if (search === undefined) return;
+  try {
+    const found = await search.found;
+    if (found.kind === 'found') {
+      const { link } = ctx.style.styles;
+      ctx.print(proofRows(ctx.style, [['Anyfare call', found.id], ['Receipt', link(`${search.site}/calls/${found.id}`)]]));
+    } else {
+      ctx.warn(`Anyfare's receipt for this call was not found: ${found.reason}. The NEAR transaction above is the proof of the payment.`);
+    }
+  } catch {
+    // Only the call's rows are lost: the payment is reported as it is
+  }
+}
+
 /**
  * The answer's lines for the result block, and a warning when its body was too large to read whole.
  * Never throws: an answer that can't be shown is one warning, and the run goes on, since it may have
@@ -335,9 +382,13 @@ export async function payRequest(ctx: Context, config: Config, call: HttpRequest
   }
 
   // 10. The result, the proof, and the balance after. The proof and the line about the payment come
-  // whatever happens to the body: the answer is paid
-  const proof = proofOf(ctx, readProof(answer.headers.get('payment-response')), wallet.accountId, check);
+  // whatever happens to the body: the answer is paid. A call through Anyfare is looked up meanwhile,
+  // and its rows end the proof.
+  const read = readProof(answer.headers.get('payment-response'));
+  const proof = proofOf(ctx, read, wallet.accountId, check);
+  const search = searchCall(ctx, config, call, read, wallet.accountId, limits.anyfareCall);
   ctx.print([...showAnswer(ctx, answer, options.full), ...proofLines(style, proof.rows)]);
+  await showCall(ctx, search);
   ctx.print(style.done(proof.settled ? `You paid ${what}.` : `The API answered. Whether you paid ${what} is not known.`));
   const after = await readNearBalance(ctx.io.fetch, wallet.accountId, wallet.rpc, { limitMs: limits.balanceMs ?? BALANCE_TIMEOUT_MS, withNear: true });
   ctx.print(['', balanceAfterLine(ctx, before, after)]);

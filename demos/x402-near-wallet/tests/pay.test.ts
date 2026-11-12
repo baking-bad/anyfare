@@ -15,7 +15,7 @@ import { NEAR_USDC, startFakeApi } from './fakeApi.ts';
 import type { FakeAnswer, FakeApi, PaidFailure, Unpaid } from './fakeApi.ts';
 import { startFakeNearRpc } from './fakeNearRpc.ts';
 import type { FakeNearRpc } from './fakeNearRpc.ts';
-import { captureIo, expectNoKeyIn, localFetch, nearTestKey, waitUntil, withoutTimes } from './helpers.ts';
+import { captureIo, closedAddress, expectNoKeyIn, localFetch, nearTestKey, waitUntil, withoutTimes } from './helpers.ts';
 import type { IoOptions } from './helpers.ts';
 
 // Made up: the payer, the API's NEAR account, and the hosts the https URLs stand for
@@ -99,19 +99,22 @@ async function run(argv: readonly string[], env: Record<string, string> = wallet
   return result;
 }
 
-/** `payRequest` with its time limits set, for the cases that wait for one. */
+/** `payRequest` with its time limits set, for the cases that wait for one. Checks that no output holds a part of the key. */
 async function pay(line: readonly string[], limits: PayLimits, env: Record<string, string> = wallet()) {
   const io = captureIo(forwarding(), env);
   const ctx = createContext(io.io);
   let failure: unknown;
+  let code: number | undefined;
   try {
-    await payRequest(ctx, loadConfig(env), parseRequest(line), { yes: true, dryRun: false, full: false }, limits);
+    code = await payRequest(ctx, loadConfig(env), parseRequest(line), { yes: true, dryRun: false, full: false }, limits);
   } catch (error) {
     failure = error;
   } finally {
     ctx.close();
   }
-  return { failure, out: io.out(), err: io.err() };
+  const result = { code, failure, out: io.out(), err: io.err() };
+  expectNoKeyIn(`${result.out}\n${result.err}`, KEY, { known: api.settled.map((item) => item.transaction) });
+  return result;
 }
 
 const route = (path: string, unpaid: Unpaid, method = 'GET', paid?: FakeAnswer): void =>
@@ -801,5 +804,201 @@ describe('the balance after', () => {
     });
     expect(result.code).toBe(0);
     expect(result.out).toContain('\n\nBalance   0.990000 USDC · 0.1200 NEAR (the payment may not show yet)\n');
+  });
+});
+
+describe("the call on Anyfare, after a payment through Anyfare", () => {
+  // Made up: Anyfare's site. Its API is the fake's /v1/calls, set by ANYFARE_API_URL, since 127.0.0.1
+  // does not start with pay.
+  const SITE = 'https://anyfare.example.test';
+  const through = (change: Record<string, string> = {}): Record<string, string> => ({
+    ...wallet(),
+    ANYFARE_PAY_URL: api.url,
+    ANYFARE_API_URL: api.url,
+    ANYFARE_SITE_URL: SITE,
+    ...change,
+  });
+  const link = (): string => `${api.url}/api.example.test/v1/quote?symbol=BTC`;
+  const LIST = '/v1/calls?paidWith=near&host=api.example.test&size=10';
+  const warning = (reason: string): string => `Anyfare's receipt for this call was not found: ${reason}. The NEAR transaction above is the proof of the payment.\n`;
+  beforeEach(() => {
+    payable('/api.example.test/v1/quote', nearOption('10000', { payTo: 'pay.anyfare.near' }));
+  });
+
+  /** The proof's rows and what follows them, with the call's rows when given. */
+  const proofAndAfter = (tx: string, callRows: readonly string[] = []): string =>
+    [
+      ' Proof',
+      ` │ Transaction   ${tx}`,
+      ` │ Explorer      https://nearblocks.io/txns/${tx}`,
+      ' │ Network       near:mainnet',
+      ' │ Payer         alice.near',
+      ...callRows,
+      '✔ You paid 0.01 USDC on NEAR.',
+      '',
+      'Balance   0.980000 USDC (−0.01) · 0.1200 NEAR',
+      '',
+    ].join('\n');
+
+  it("ends the proof with the call's ID and its receipt page", async () => {
+    const result = await run([link(), '--yes'], through());
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+    const tx = api.settled[0]?.transaction ?? '';
+    const id = api.calls.list[0]?.id ?? '';
+    expect(id).toMatch(/^pay_[0-9a-f-]{36}$/);
+    expect(withoutTimes(result.out)).toBe(
+      [
+        '▸ The API asks   0.01 USDC on NEAR',
+        '  Pay to         pay.anyfare.near',
+        "  Gas            none: the API's facilitator pays it",
+        '  Valid for      300 blocks, about 3 minutes',
+        '  Your cap       $0.02 ✔',
+        '  Your balance   0.990000 USDC ✔',
+        '▸ Signing a transfer of 0.01 USDC to pay.anyfare.near',
+        `▸ Calling GET ${new URL(api.url).host}/api.example.test/v1/quote`,
+        ' Result · HTTP 200 · application/json · T s',
+        ' │ {',
+        ' │   "symbol": "BTC",',
+        ' │   "price": "made up"',
+        ' │ }',
+        proofAndAfter(tx, [` │ Anyfare call  ${id}`, ` │ Receipt       ${SITE}/calls/${id}`]),
+      ].join('\n'),
+    );
+    // Read after the payment, never before, and with nothing of the paid request in it
+    expect(api.callReads().map((read) => read.path)).toEqual([LIST, `/v1/calls/${id}`]);
+    expect(api.requests.findIndex((item) => item.path === LIST)).toBeGreaterThan(api.requests.indexOf(api.paidRequests()[0] as never));
+    for (const read of api.callReads()) expect(read.headers['payment-signature']).toBeUndefined();
+  });
+
+  it('takes the call of this payment only, not one of another payer, another transaction or an older one', async () => {
+    const later = (): string => new Date(Date.now() + 1_000).toISOString();
+    api.calls.onPaid = (call) => [
+      { ...call, id: 'pay_made-up-other-payer', payer: 'bob.near', at: later() },
+      { ...call, id: 'pay_made-up-other-transaction', transaction: 'MadeUpOtherTransaction111111111111111111111', at: later() },
+      { ...call, id: 'pay_made-up-older', at: new Date(Date.now() - 11 * 60_000).toISOString() },
+      call,
+    ];
+    const result = await run([link(), '--yes'], through());
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+    const id = api.calls.list.at(-1)?.id ?? '';
+    expect(result.out).toContain(`\n │ Anyfare call  ${id}\n │ Receipt       ${SITE}/calls/${id}\n✔ You paid 0.01 USDC on NEAR.\n`);
+    expect(api.callReads().map((read) => read.path)).toEqual([LIST, '/v1/calls/pay_made-up-other-transaction', `/v1/calls/${id}`]);
+  });
+
+  it('finds the call on the second try, when the list is empty at first', async () => {
+    api.calls.emptyLists = 1;
+    const result = await pay([link()], { anyfareCall: { pauseMs: 20 } }, through());
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+    const id = api.calls.list[0]?.id ?? '';
+    expect(result.out).toContain(proofAndAfter(api.settled[0]?.transaction ?? '', [` │ Anyfare call  ${id}`, ` │ Receipt       ${SITE}/calls/${id}`]));
+    expect(api.callReads().map((read) => read.path)).toEqual([LIST, LIST, `/v1/calls/${id}`]);
+  });
+
+  it.each<[string, () => Promise<{ env: Record<string, string>; reason: string }>, PayLimits['anyfareCall']]>([
+    [
+      'no call is listed after 3 tries',
+      async () => {
+        api.calls.onPaid = (call) => [{ ...call, payer: 'bob.near' }, { ...call, at: new Date(Date.now() - 11 * 60_000).toISOString() }];
+        return { env: through(), reason: 'no call with this transaction is listed yet' };
+      },
+      { pauseMs: 20 },
+    ],
+    [
+      'the API answers 500',
+      async () => {
+        api.calls.failure = 'status_500';
+        return { env: through(), reason: `${new URL(api.url).host} answered 500` };
+      },
+      undefined,
+    ],
+    [
+      'the API is down',
+      async () => {
+        const down = await closedAddress();
+        return { env: through({ ANYFARE_API_URL: down }), reason: `could not reach ${new URL(down).host}: ECONNREFUSED` };
+      },
+      undefined,
+    ],
+    [
+      'the API is slow',
+      async () => {
+        api.calls.failure = 'hang';
+        return { env: through(), reason: `${new URL(api.url).host} did not answer within 100 ms` };
+      },
+      { requestMs: 100 },
+    ],
+    [
+      'the whole lookup is slow',
+      async () => {
+        api.calls.failure = 'hang';
+        return { env: through(), reason: 'the lookup took more than 150 ms' };
+      },
+      { totalMs: 150 },
+    ],
+  ])('warns once when %s, and reports the payment as before, exit 0', async (_what, setUp, limits) => {
+    const { env, reason } = await setUp();
+    const result = await pay([link()], limits === undefined ? {} : { anyfareCall: limits }, env);
+    expect(result.failure).toBeUndefined();
+    expect(result.code).toBe(0);
+    expect(result.err).toBe(warning(reason));
+    expect(result.out).toContain(proofAndAfter(api.settled[0]?.transaction ?? ''));
+    expect(result.out).not.toContain('Anyfare call');
+    expect(api.paidRequests()).toHaveLength(1);
+  });
+
+  it('looks nothing up for an API that is not the pay host', async () => {
+    payable();
+    const result = await run([`${API}/v1/quote`, '--yes'], through());
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+    expect(result.out).toContain(proofAndAfter(api.settled[0]?.transaction ?? ''));
+    expect(api.callReads()).toEqual([]);
+  });
+
+  it.each(['ANYFARE_API_URL', 'ANYFARE_SITE_URL'])('looks nothing up when the settings give no %s', async (name) => {
+    // Not set, and 127.0.0.1 does not start with pay.: there is none
+    const result = await run([link(), '--yes'], through({ [name]: '' }));
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+    expect(result.out).toContain(proofAndAfter(api.settled[0]?.transaction ?? ''));
+    expect(api.callReads()).toEqual([]);
+  });
+
+  it.each(['no_receipt', 'unreadable_receipt', 'not_settled'] satisfies PaidFailure[])('looks nothing up for a paid answer with %s', async (failure) => {
+    api.nextFailure = failure;
+    const result = await run([link(), '--yes'], through());
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('✔ The API answered. Whether you paid 0.01 USDC on NEAR is not known.\n');
+    expect(result.err).not.toContain('Anyfare');
+    expect(api.callReads()).toEqual([]);
+  });
+
+  it('looks nothing up for a link whose path names no host, on a dry run, or for a free answer', async () => {
+    payable('/v1/quote', nearOption('10000', { payTo: 'pay.anyfare.near' }));
+    const noHost = await run([`${api.url}/v1/quote`, '--yes'], through());
+    expect(noHost.code).toBe(0);
+    expect(noHost.err).toBe('');
+    expect(noHost.out).toContain('✔ You paid 0.01 USDC on NEAR.\n');
+    const dryRun = await run([link(), '--dry-run'], through());
+    expect(dryRun.code).toBe(0);
+    expect(dryRun.err).toBe('');
+    route('/api.example.test/v1/free', { kind: 'answer', answer: { status: 200, body: '{}' } });
+    const free = await run([`${api.url}/api.example.test/v1/free`], through());
+    expect(free.out).toContain('✔ Free: nothing paid.\n');
+    expect(free.err).toBe('');
+    expect(api.callReads()).toEqual([]);
+  });
+
+  it('finds the API and the site beside a pay host that starts with pay.', async () => {
+    const result = await run([`${PAY}/api.example.test/v1/quote`, '--yes'], { ...wallet(), ANYFARE_PAY_URL: PAY });
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+    const id = api.calls.list[0]?.id ?? '';
+    // The fake's /v1/calls stands for https://api.example.test, beside https://pay.example.test
+    expect(result.out).toContain(` │ Anyfare call  ${id}\n │ Receipt       https://example.test/calls/${id}\n`);
+    expect(api.callReads().map((read) => read.path)).toEqual([LIST, `/v1/calls/${id}`]);
   });
 });

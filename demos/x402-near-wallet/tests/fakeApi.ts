@@ -1,10 +1,11 @@
 // A made-up x402 API on 127.0.0.1, set up per test. It answers by method and path: a free answer, a
 // 402 with x402 options, an MPP challenge only, or Anyfare's error envelope. A request with
 // PAYMENT-SIGNATURE is checked as a facilitator checks a NEAR payment, against the made-up NEAR RPC,
-// then settled, made up: nothing moves anywhere. Everything it answers is made up: the prices, the
-// accounts, the transactions and the answers.
+// then settled, made up: nothing moves anywhere. On its own path, /v1/calls, it also serves Anyfare's
+// list of finished calls and their receipts, with a call for each good payment. Everything it answers
+// is made up: the prices, the accounts, the transactions, the calls and the answers.
 
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -86,6 +87,37 @@ export interface Settled {
   readonly transaction: string;
 }
 
+/** A finished call as Anyfare lists it, and its receipt's buyer. Made up. */
+export interface FakeCall {
+  readonly id: string;
+  /** An ISO time. */
+  readonly at: string;
+  /** The API's host. */
+  readonly service: string;
+  readonly path: string;
+  readonly method: string;
+  readonly paidWith: string;
+  readonly payer: string;
+  readonly amount: string;
+  /** The receipt's `buyer.network` and `buyer.transaction`. */
+  readonly network: string;
+  readonly transaction: string;
+  /** Still settling: listed, and its receipt is a 404. */
+  readonly inFlight?: boolean;
+}
+
+/** Anyfare's public reads of finished calls: `GET /v1/calls` and `GET /v1/calls/<id>`. */
+export interface FakeCalls {
+  /** The calls, in the order they were added. */
+  readonly list: FakeCall[];
+  /** The calls that a good payment adds: by default its own call only. */
+  onPaid: (call: FakeCall) => readonly FakeCall[];
+  /** The next this many lists have no call in them: Anyfare writes a call a moment after its answer. */
+  emptyLists: number;
+  /** Every read fails: a 500, a redirect, or no answer at all. */
+  failure: 'status_500' | 'redirect' | 'hang' | undefined;
+}
+
 export interface FakeApi {
   /** `http://127.0.0.1:<port>`. */
   readonly url: string;
@@ -101,8 +133,12 @@ export interface FakeApi {
   /** The made-up NEAR chain a payment is checked against, and whose USDC a payment lowers. */
   chain: FakeNearRpc | undefined;
   route(route: FakeRoute): void;
+  /** Anyfare's calls, and how its reads of them answer. */
+  readonly calls: FakeCalls;
   /** The requests that carried PAYMENT-SIGNATURE. */
   paidRequests(): Recorded[];
+  /** The requests to /v1/calls and /v1/calls/<id>. */
+  callReads(): Recorded[];
   /** Forgets every route, request and payment. */
   reset(): void;
   close(): Promise<void>;
@@ -118,6 +154,7 @@ const canonical = (value: unknown): string =>
   );
 
 const DEFAULT_PAID: FakeAnswer = { status: 200, contentType: 'application/json', body: '{"symbol":"BTC","price":"made up"}' };
+const isCallRead = (path: string): boolean => path === '/v1/calls' || path.startsWith('/v1/calls?') || path.startsWith('/v1/calls/');
 const USED = 'This payment was already used. Request the resource again and sign a new one.';
 const IN_FLIGHT = "This payer has another NEAR payment in flight, which this one's nonce would collide with. Pay again once it has settled.";
 
@@ -131,6 +168,7 @@ export async function startFakeApi(): Promise<FakeApi> {
     chain: undefined as FakeNearRpc | undefined,
     hold: undefined as Promise<void> | undefined,
   };
+  const calls: FakeCalls = { list: [], onPaid: (call) => [call], emptyLists: 0, failure: undefined };
   let url = '';
 
   const send = (response: ServerResponse, answer: FakeAnswer): void => {
@@ -276,6 +314,23 @@ export async function startFakeApi(): Promise<FakeApi> {
       transaction: base58(randomBytes(32)),
     };
     settled.push(payment);
+    if (failure !== 'not_settled') {
+      // Anyfare's call, made up: the host is the first part of the path, as Anyfare routes it
+      const [, service = '', ...rest] = (request.url ?? '/').split('?')[0]?.split('/') ?? [];
+      const call: FakeCall = {
+        id: `pay_${randomUUID()}`,
+        at: new Date().toISOString(),
+        service,
+        path: `/${rest.join('/')}`,
+        method: request.method ?? 'GET',
+        paidWith: 'near',
+        payer: payment.payer,
+        amount: (Number(payment.amount) / 1_000_000).toString(),
+        network: 'near:mainnet',
+        transaction: payment.transaction,
+      };
+      calls.list.push(...calls.onPaid(call));
+    }
     // The made-up chain moves the made-up USDC
     const balance = state.chain?.balanceOf(payment.payer);
     if (balance !== undefined) state.chain?.setBalance(payment.payer, balance.usdc - BigInt(payment.amount), balance.near);
@@ -292,6 +347,62 @@ export async function startFakeApi(): Promise<FakeApi> {
     else void held.then(reply);
   };
 
+  /** The list of calls, newest first, and a call's receipt, as Anyfare's public API answers them. */
+  const callRead = (path: string, response: ServerResponse): void => {
+    if (calls.failure === 'hang') return;
+    if (calls.failure === 'status_500') return envelope(response, 500, 'internal_error', 'Made-up failure');
+    if (calls.failure === 'redirect') return send(response, { status: 302, contentType: null, body: '', headers: { location: `${url}/v1/calls` } });
+    const address = new URL(path, url);
+    if (address.pathname === '/v1/calls') {
+      const paidWith = address.searchParams.get('paidWith');
+      const host = address.searchParams.get('host');
+      const size = Number(address.searchParams.get('size') ?? '20');
+      const empty = calls.emptyLists > 0;
+      if (empty) calls.emptyLists -= 1;
+      const found = (empty ? [] : calls.list)
+        .filter((call) => (paidWith === null || call.paidWith === paidWith) && (host === null || call.service === host))
+        .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+      const listed = found.slice(0, size).map(({ id, at, service, path: callPath, method, paidWith: way, payer, amount }) => ({
+        id,
+        at,
+        service,
+        path: callPath,
+        method,
+        paidWith: way,
+        apiPaidWith: 'base',
+        payer,
+        amount,
+        status: 'paid',
+        apiStatus: 200,
+        ms: 120,
+      }));
+      return send(response, { status: 200, body: JSON.stringify({ calls: listed, page: 1, size, total: found.length, totalCapped: false }) });
+    }
+    const id = decodeURIComponent(address.pathname.slice('/v1/calls/'.length));
+    const call = calls.list.find((item) => item.id === id && item.inFlight !== true);
+    if (call === undefined) return envelope(response, 404, 'not_found', 'No finished call has this ID');
+    const receipt = {
+      id: call.id,
+      at: call.at,
+      status: 'paid',
+      apiStatus: 200,
+      service: call.service,
+      method: call.method,
+      path: call.path,
+      buyer: {
+        paidWith: call.paidWith,
+        network: call.network,
+        asset: 'USDC',
+        amount: call.amount,
+        payer: call.payer,
+        transaction: call.transaction,
+        explorerUrl: `https://nearblocks.io/txns/${call.transaction}`,
+        settledAt: call.at,
+      },
+    };
+    return send(response, { status: 200, body: JSON.stringify(receipt) });
+  };
+
   const server: Server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -302,6 +413,10 @@ export async function startFakeApi(): Promise<FakeApi> {
         if (value !== undefined) headers[name] = Array.isArray(value) ? value.join(', ') : value;
       }
       requests.push({ method: request.method ?? '', path, headers, body: Buffer.concat(chunks).toString('utf8') });
+      if (request.method === 'GET' && isCallRead(path)) {
+        callRead(path, response);
+        return;
+      }
       const route = routes.get(`${request.method ?? ''} ${path.split('?')[0] ?? ''}`);
       if (route === undefined) {
         send(response, { status: 404, contentType: 'text/plain', body: 'No made-up route here' });
@@ -331,6 +446,7 @@ export async function startFakeApi(): Promise<FakeApi> {
     set chain(value: FakeNearRpc | undefined) {
       state.chain = value;
     },
+    calls,
     holdNextPaid: () => {
       let release = (): void => {};
       state.hold = new Promise<void>((resolve) => {
@@ -342,6 +458,7 @@ export async function startFakeApi(): Promise<FakeApi> {
       routes.set(`${route.method} ${route.path}`, route);
     },
     paidRequests: () => requests.filter((item) => item.headers['payment-signature'] !== undefined),
+    callReads: () => requests.filter((item) => item.method === 'GET' && isCallRead(item.path)),
     reset: () => {
       routes.clear();
       requests.length = 0;
@@ -349,6 +466,10 @@ export async function startFakeApi(): Promise<FakeApi> {
       used.clear();
       state.nextFailure = undefined;
       state.hold = undefined;
+      calls.list.length = 0;
+      calls.onPaid = (call) => [call];
+      calls.emptyLists = 0;
+      calls.failure = undefined;
     },
     close: () =>
       new Promise<void>((resolve) => {

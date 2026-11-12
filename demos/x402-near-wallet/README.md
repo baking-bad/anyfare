@@ -2,7 +2,7 @@
 
 Pays x402 APIs in USDC from a NEAR wallet.
 
-**Every payment is real money on NEAR mainnet.** Read "What protects your money" before you pay. No paid call has run yet: see "Not built, not run".
+**Every payment is real money on NEAR mainnet.** Read "What protects your money" before you pay.
 
 ## What it does
 
@@ -52,10 +52,13 @@ Settings come from `.env`, then `.env.local`, then the shell. The last one wins.
 | `NEAR_RPC_URL` | The NEAR RPC to read and sign with | `https://rpc.mainnet.fastnear.com`, the SDK's own | Optional |
 | `MAX_PAYMENT_USD` | The cap, in dollars | `0.02` | Optional |
 | `ANYFARE_PAY_URL` | Where the Anyfare link points | `https://pay.anyfare.agents.bakingbad.dev` | Optional |
+| `ANYFARE_API_URL` | Anyfare's API. The app finds a call paid through Anyfare there | The pay host with `api.` in place of `pay.`: `https://api.anyfare.agents.bakingbad.dev` | Optional |
+| `ANYFARE_SITE_URL` | Anyfare's site, with each call's receipt page | The pay host without `pay.`: `https://anyfare.agents.bakingbad.dev` | Optional |
 
 - `NEAR_RPC_URL` must be https. Plain http is allowed for `localhost` and `127.0.0.1` only. It must be a mainnet RPC.
 - `MAX_PAYMENT_USD` is a plain amount above zero, with at most 6 decimals.
-- `ANYFARE_PAY_URL` has no path, query or fragment.
+- `ANYFARE_PAY_URL`, `ANYFARE_API_URL` and `ANYFARE_SITE_URL` must be https. Plain http is allowed for `localhost` and `127.0.0.1` only. They have no path, query or fragment.
+- `ANYFARE_API_URL` and `ANYFARE_SITE_URL` have a default only when the pay host starts with `pay.`. When either one has no value, the app does not look up the call.
 
 ## Commands
 
@@ -149,7 +152,8 @@ npm run demo -- --full https://api.github.com/zen
 ```
 
 - Do: run it. `--full` shows the whole answer.
-- Without it, the app shows at most 40 lines of at most 200 characters.
+- Without it, the app shows at most 80 lines of at most 200 characters.
+- Without it, a JSON array of more than 3 items shows its first item only, then one line `… N more items`. This is so at every depth. So a long list does not push the rest of the answer out of the 80 lines.
 - See: the answer, then `Free: nothing paid.` Exit code 0. A free API is never paid.
 
 ### `--help`
@@ -242,11 +246,14 @@ After a payment, the app shows a `Proof` block from the `PAYMENT-RESPONSE` heade
 - the NEAR explorer link;
 - the network;
 - the payer;
+- for a call through Anyfare: `Anyfare call`, the call's ID, and `Receipt`, the link to its receipt page;
 - then `You paid ...` and the balance after.
 
 More:
 
 - Without a proof that the payment settled, the app says `Whether you paid ... is not known` and warns.
+- The Anyfare call is found on Anyfare's API, by the payer and the transaction. It needs no key and costs nothing. The app waits for it 8 seconds at most.
+- When the call is not found, the app shows no Anyfare rows and warns why. The payment, the proof and the exit code stay the same.
 - Check your payments at `https://nearblocks.io/address/<your account>`.
 
 ## Exit codes
@@ -270,7 +277,8 @@ npm run typecheck
 
 ## Not built, not run
 
-- No paid call has run yet. Example output of a payment comes after a live run, with its date and time.
+- Paid so far: CoinMarketCap through Anyfare, twice, 0.01 USDC on NEAR each, on 2026-11-11 at 23:45 and 23:48 UTC. Anyfare's receipts: `https://anyfare.agents.bakingbad.dev/calls/pay_5a608872-b728-412e-a709-342625686cc9` and `https://anyfare.agents.bakingbad.dev/calls/pay_4c5711c0-8f08-4a5f-8d2e-60dc3e6f6c29`.
+- Not run yet: the evidence API, through Anyfare or directly. Example output comes after the live run, with its date and time.
 - It pays only USDC on NEAR. No Base, no Solana, no other network. No MPP.
 - It signs only the `exact` scheme and the `authorization` payment flow.
 - No agent part: it is a console app.

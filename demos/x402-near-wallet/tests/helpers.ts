@@ -2,6 +2,8 @@
 // that reaches 127.0.0.1 only, and the check that no output holds a part of a key.
 
 import { generateKeyPairSync } from 'node:crypto';
+import { createServer } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { PassThrough, Writable } from 'node:stream';
 import type { Io } from '../src/cli.ts';
 import type { Fetch } from '../src/http.ts';
@@ -68,6 +70,15 @@ export function captureIo(fetchFn: Fetch, env: Record<string, string> = {}, opti
     fetch: fetchFn,
   };
   return { io, out: () => out, err: () => err, stdin };
+}
+
+/** An address on 127.0.0.1 where nothing listens: a server's port, once it is closed. */
+export async function closedAddress(): Promise<string> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return `http://127.0.0.1:${port}`;
 }
 
 /** Waits until the check is true, polling often, and fails with `what` after `ms`. */

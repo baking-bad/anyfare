@@ -61,7 +61,10 @@ describe('the key', () => {
       rpc.setBalance(ACCOUNT, 990_000n, 1n);
     };
     const transactions: string[] = [];
+    const callIds: string[] = [];
     const url = `${API}/v1/quote`;
+    // Through Anyfare, with its calls looked up on the fake's /v1/calls
+    const throughAnyfare = (): Record<string, string> => ({ ANYFARE_PAY_URL: api.url, ANYFARE_API_URL: api.url, ANYFARE_SITE_URL: 'https://anyfare.example.test' });
 
     reset();
     // Free, failed and unreachable
@@ -130,10 +133,17 @@ describe('the key', () => {
         at({ kind: 'x402', accepts: [option()] }, '/v1/quote');
         at({ kind: 'x402', accepts: [option()] }, '/api.example.test/v1/quote');
         api.nextFailure = failure;
-        await run(payHost ? [`${api.url}/api.example.test/v1/quote`, '--yes'] : [url, '--yes', '--full'], payHost ? { ANYFARE_PAY_URL: api.url } : {});
+        await run(payHost ? [`${api.url}/api.example.test/v1/quote`, '--yes'] : [url, '--yes', '--full'], payHost ? throughAnyfare() : {});
         transactions.push(...api.settled.map((item) => item.transaction));
+        callIds.push(...api.calls.list.map((item) => item.id));
       }
     }
+    // A call on Anyfare that is not found
+    reset();
+    at({ kind: 'x402', accepts: [option()] }, '/api.example.test/v1/quote');
+    api.calls.failure = 'status_500';
+    await run([`${api.url}/api.example.test/v1/quote`, '--yes'], throughAnyfare());
+    transactions.push(...api.settled.map((item) => item.transaction));
     reset();
     at({ kind: 'x402', accepts: [option()] });
     await run([url], {}, { isTerminal: true, input: 'y\n' });
@@ -165,10 +175,12 @@ describe('the key', () => {
     expect(transactions.length).toBeGreaterThanOrEqual(6);
     const all = outputs.join('\n');
     expect(all).toContain('✔ You paid 0.01 USDC on NEAR.');
+    expect(all).toContain(' │ Anyfare call  pay_');
+    expect(all).toContain("Anyfare's receipt for this call was not found");
     expect(all).toContain('Could not sign the payment');
     expect(all).toContain('is not a mainnet RPC');
     // Public values are not parts of a key: the made-up transaction hashes, and the fakes' hosts
-    const known = [...transactions, ...(all.match(/127\.0\.0\.1:[0-9]+/g) ?? [])];
+    const known = [...transactions, ...callIds, ...(all.match(/127\.0\.0\.1:[0-9]+/g) ?? [])];
     // 12 characters: shorter slices match random base58 hashes in the output by chance
     expectNoKeyIn(all, KEY, { slice: 12, known });
   });

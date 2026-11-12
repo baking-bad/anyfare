@@ -66,6 +66,8 @@ Settings (from .env, then .env.local, then the shell; the last one wins):
   NEAR_RPC_URL       optional, must be https
   MAX_PAYMENT_USD    the most to pay for one call (default 0.02)
   ANYFARE_PAY_URL    where the Anyfare link points (default https://pay.anyfare.agents.bakingbad.dev)
+  ANYFARE_API_URL    where a call paid through Anyfare is found (default: the pay host, api. for pay.)
+  ANYFARE_SITE_URL   where its receipt page is (default: the pay host without pay.)
 
 Exit codes:
   0  answered, paid or free

@@ -141,7 +141,7 @@ function bodyOf(bytes: Uint8Array): unknown {
 }
 
 /** At most `limit` bytes of a body. The rest is left unread, and its stream cancelled. */
-async function readBody(response: Response, limit: number): Promise<{ readonly bytes: Uint8Array; readonly truncated: boolean }> {
+export async function readBody(response: Response, limit: number): Promise<{ readonly bytes: Uint8Array; readonly truncated: boolean }> {
   if (response.body === null) return { bytes: new Uint8Array(), truncated: false };
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
