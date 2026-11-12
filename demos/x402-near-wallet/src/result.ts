@@ -7,8 +7,10 @@ import type { Answer } from './http.ts';
 import type { Style } from './style.ts';
 
 /** Lines shown, and characters a line, unless `--full`. */
-export const MAX_LINES = 40;
+export const MAX_LINES = 80;
 export const MAX_WIDTH = 200;
+/** A JSON array with more items than this shows its first item only, unless `--full`. */
+export const MAX_ITEMS = 3;
 /** JSON nested deeper than this is shown as its own text: its indent alone would be too long. */
 export const MAX_DEPTH = 64;
 const PROOF_LABEL_WIDTH = 14;
@@ -59,26 +61,44 @@ export function textLines(text: string, limit: number): BodyLines {
 
 const space = (char: string): boolean => char === ' ' || char === '\t' || char === '\n' || char === '\r';
 
+/** An object or an array that is open, while its text is read. */
+interface Open {
+  /** `}` or `]`. */
+  readonly close: string;
+  /** The commas read at its own level so far: its items are one more. */
+  commas: number;
+  /** Where its second item begins: the lines made and counted before it, and its line so far. */
+  mark?: { readonly lines: number; readonly total: number; readonly line: string };
+}
+
 /**
  * The first `limit` lines of valid JSON indented by 2 spaces, as `JSON.stringify(value, null, 2)`
  * writes it, and how many lines it has; `undefined` for text that is not JSON, or that is nested
  * deeper than `MAX_DEPTH`. Its own text is kept: a number keeps every digit, and a string its escapes.
  * One pass, and lines past the limit are only counted.
+ *
+ * With `fold`, an array of more than `MAX_ITEMS` items, at any depth, shows its first item, then one
+ * line `… <n> more items`. Its second and third items are written as they come, and taken back at a
+ * fourth: the work stays linear in the text.
  */
-export function prettyLines(text: string, limit: number): BodyLines | undefined {
+export function prettyLines(text: string, limit: number, fold = false): BodyLines | undefined {
   const lines: string[] = [];
   let total = 0;
   let line = '';
-  let depth = 0;
+  const open: Open[] = [];
+  // The folded array whose items past the first are being read and not written
+  let skipping: Open | undefined;
   const building = (): boolean => lines.length < limit;
   const add = (part: string): void => {
-    if (building()) line += part;
+    if (skipping === undefined && building()) line += part;
   };
   const end = (next: string): void => {
+    if (skipping !== undefined) return;
     if (building()) lines.push(line);
     total += 1;
     line = building() ? next : '';
   };
+  const indent = (): string => '  '.repeat(open.length);
   for (let at = 0; at < text.length; at += 1) {
     const char = text.charAt(at);
     if (char === '"') {
@@ -95,25 +115,42 @@ export function prettyLines(text: string, limit: number): BodyLines | undefined 
         add(`${char}${pair}`);
         at = next;
       } else {
-        depth += 1;
-        if (depth > MAX_DEPTH) return undefined;
+        if (open.length >= MAX_DEPTH) return undefined;
+        open.push({ close: pair, commas: 0 });
         add(char);
-        end('  '.repeat(depth));
+        end(indent());
       }
     } else if (char === '}' || char === ']') {
-      depth -= 1;
-      if (depth < 0) return undefined;
-      end(`${'  '.repeat(depth)}${char}`);
+      const closed = open.pop();
+      if (closed === undefined || closed.close !== char) return undefined;
+      if (closed === skipping) {
+        skipping = undefined;
+        add(`… ${closed.commas} more item${closed.commas === 1 ? '' : 's'}`);
+      }
+      end(`${indent()}${char}`);
     } else if (char === ',') {
-      add(',');
-      end('  '.repeat(depth));
+      const items = open.at(-1);
+      if (items === undefined) return undefined;
+      items.commas += 1;
+      const folding = fold && skipping === undefined && items.close === ']';
+      if (folding && items.commas === MAX_ITEMS && items.mark !== undefined) {
+        // A fourth item: the second and third are taken back, and the rest only counted
+        lines.length = items.mark.lines;
+        total = items.mark.total;
+        line = items.mark.line;
+        skipping = items;
+      } else {
+        add(',');
+        end(indent());
+        if (folding && items.commas === 1) items.mark = { lines: lines.length, total, line };
+      }
     } else if (char === ':') {
       add(': ');
     } else if (!space(char)) {
       add(char);
     }
   }
-  if (depth !== 0) return undefined;
+  if (open.length !== 0) return undefined;
   if (building()) lines.push(line);
   total += 1;
   // Not nested past MAX_DEPTH, so the parser's work is bounded too
@@ -164,11 +201,14 @@ function bodyText(bytes: Uint8Array, type: string | undefined): string | undefin
   return isText(type) ? new TextDecoder().decode(bytes) : undefined;
 }
 
-/** The body's lines, pretty JSON or the text as it is; its own text when pretty-printing fails in any way. */
-function bodyLines(text: string, limit: number): BodyLines {
+/**
+ * The body's lines, pretty JSON or the text as it is; its own text when pretty-printing fails in any
+ * way. `fold` shows long JSON arrays by their first item.
+ */
+function bodyLines(text: string, limit: number, fold: boolean): BodyLines {
   const trimmed = withoutLastBreaks(text);
   try {
-    const pretty = prettyLines(trimmed, limit);
+    const pretty = prettyLines(trimmed, limit, fold);
     if (pretty !== undefined) return pretty;
   } catch {
     // Shown as its own text below
@@ -187,7 +227,8 @@ type Shown = Pick<Answer, 'status' | 'headers' | 'bytes' | 'ms'>;
 
 /**
  * The answer's part of the block: a header with the status, the media type and the time; the body
- * under a bar, at most 40 lines of at most 200 characters unless `full`. Never throws.
+ * under a bar. Unless `full`: at most 80 lines of at most 200 characters, and a JSON array of more
+ * than 3 items shows its first item and how many more. Never throws.
  */
 export function answerLines(style: Style, answer: Shown, options: Pick<ResultOptions, 'full'>): string[] {
   const { title, bar } = style.styles;
@@ -208,7 +249,7 @@ export function answerLines(style: Style, answer: Shown, options: Pick<ResultOpt
     } else if (text === undefined) {
       lines.push(row(`${answer.bytes.length} bytes of ${type ?? 'unknown type'}, not shown`));
     } else {
-      const body = bodyLines(text, options.full ? Number.POSITIVE_INFINITY : MAX_LINES);
+      const body = bodyLines(text, options.full ? Number.POSITIVE_INFINITY : MAX_LINES, !options.full);
       for (const line of body.lines) {
         const clean = cleanLine(line);
         lines.push(row(options.full ? clean : cut(clean)));
@@ -222,11 +263,16 @@ export function answerLines(style: Style, answer: Shown, options: Pick<ResultOpt
   return lines;
 }
 
-/** The proof's part of the block: its rows, labels padded to 14. None when there are no rows. */
+/** Rows of the proof under its bar, labels padded to 14, without its title: for rows that come later. */
+export function proofRows(style: Style, rows: readonly (readonly [string, string])[]): string[] {
+  const { bar, label } = style.styles;
+  return rows.map(([name, value]) => ` ${bar('│')} ${label(name.padEnd(PROOF_LABEL_WIDTH))}${value}`);
+}
+
+/** The proof's part of the block: its title and rows. None when there are no rows. */
 export function proofLines(style: Style, proof: readonly (readonly [string, string])[]): string[] {
   if (proof.length === 0) return [];
-  const { title, bar, label } = style.styles;
-  return [title(' Proof'), ...proof.map(([name, value]) => ` ${bar('│')} ${label(name.padEnd(PROOF_LABEL_WIDTH))}${value}`)];
+  return [style.styles.title(' Proof'), ...proofRows(style, proof)];
 }
 
 /** The whole result block: the answer, then the proof's rows when given. Never throws. */
