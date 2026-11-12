@@ -87,6 +87,15 @@ export const RotationProvider = ({ children }: { readonly children: ReactNode })
     setShown(undefined);
     if (how === 'kept')
       toast('New master key made');
+    // The dialog that had the focus is gone: it goes back to the Rotate button, or to the page's heading when that is gone too
+    setTimeout(() => {
+      const target = document.querySelector<HTMLElement>('.key-row .btn') ?? document.querySelector<HTMLElement>('main h1');
+      if (target === null)
+        return;
+      if (target.tabIndex < 0)
+        target.tabIndex = -1;
+      target.focus();
+    }, 0);
   };
 
   const value = useMemo(() => ({ rotate, running }), [rotate, running]);

@@ -168,7 +168,7 @@ export const TopupView = ({ shown, onNew, focusRef }: { readonly shown: ShownTop
   const kind = viewOf(topup, now);
   const badge = topupBadge(topup.status);
   const line = lines[kind];
-  const message = topup.message !== null && kind !== 'timeUp' && (line === undefined || !saysTheSame(topup.message, line)) ? topup.message : undefined;
+  const message = topup.message !== null && kind !== 'timeUp' && kind !== 'incomplete' && (line === undefined || !saysTheSame(topup.message, line)) ? topup.message : undefined;
 
   return (
     <div className="split topup-split">

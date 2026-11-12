@@ -179,8 +179,16 @@ export const TopupPage = ({ amount, amountUnused = false }: { readonly amount?: 
     setFocusRound(round => round + 1);
   };
 
+  // "New top-up" leaves the view the focus was in: the amount field takes it, once the form is there
+  const [formRound, setFormRound] = useState(0);
+  useEffect(() => {
+    if (formRound > 0)
+      document.getElementById('topup-amount')?.focus();
+  }, [formRound]);
+
   const showForm = (): void => {
     setChosen({ kind: 'form' });
+    setFormRound(round => round + 1);
     // The form says which top-up is in progress: from a fresh read
     newestAgain();
   };

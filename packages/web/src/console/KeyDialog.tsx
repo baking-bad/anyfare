@@ -126,6 +126,7 @@ export const KeyDialog = ({ mode, onClose, onChanged }: {
 
     return (
       <Dialog
+        key="shown"
         title="Copy the key now"
         icon="key"
         tone="brand"
@@ -145,6 +146,7 @@ export const KeyDialog = ({ mode, onClose, onChanged }: {
 
   return (
     <Dialog
+      key="form"
       title={mode.kind === 'new' ? 'New payment key' : `Limits of "${keyName(mode.key)}"`}
       icon="key"
       tone="brand"

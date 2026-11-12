@@ -12,7 +12,7 @@
 // with none, so the console must find the old key refused and say so; sign up in a tab that blocks storage, and close the
 // dialog; and open the console in a new browser, which must not know the key. The fake's `/_test/rotate` switch shapes
 // the rotation's answers. The last steps make payment keys on the Keys page: the key is on the page only while its
-// dialog shows it, in no storage, cookie or address, and gone from the page's HTML after "I saved it" and on `pagehide`.
+// dialog shows it, in no storage, cookie or address, and gone from the page's HTML after "I saved it" and on `pagehide`. The last step opens the menu of every key's row at five widths, and each item must be hit-testable.
 // Then Top up: a link's amount signed out and after sign-in, a link's other text never shown, a top-up through each
 // status (the fake's `/_test/topup` switch) with the address checked against the API's, a reload that brings it back,
 // a POST whose answer is dropped or lost (`/_test/create`) and never sent again, and the time to pay running out; one
@@ -445,6 +445,53 @@ export const checkKey = async ({ console: consoleUrl, api, session }, log = line
     for (const place of paymentKeyHeld(another))
       fail(`a payment key is in ${place} after pagehide`);
     await travelled([master, payment, another], 'after the payment keys');
+
+    log('12b. The menu of every key, at every width: each item can be hit, whatever row it opens from');
+    // Seven keys beside the four the fake starts with; each row's menu is opened and every item is tested where a finger lands
+    for (let index = 0; index < 3; index += 1) {
+      const made = await ask(`${api}/v1/keys`, { method: 'POST', headers: { authorization: `Bearer ${master}`, 'content-type': 'application/json', [ownMark]: '1' }, body: JSON.stringify({ label: `menu agent ${index}`, dailyBudget: '1' }) });
+      if (made.status !== 201)
+        throw new Error('The fake API refused to make a key for the menu check');
+    }
+    const menuHits = () => inPage(`(async () => {
+      const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const buttons = [...document.querySelectorAll('button[aria-haspopup="menu"]')].filter(button => button.getAttribute('aria-label')?.startsWith('Menu of the key'));
+      const found = [];
+      for (const [row, button] of buttons.entries()) {
+        button.scrollIntoView({ block: 'center' });
+        // The scroll event of that move comes a frame later, and a scroll closes a menu
+        await wait(250);
+        button.click();
+        await wait(100);
+        const items = [...document.querySelectorAll('[role="menuitem"]')];
+        if (items.length !== 3) found.push({ row, why: 'the menu has ' + items.length + ' items' });
+        for (const item of items) {
+          const box = item.getBoundingClientRect();
+          const [x, y] = [box.left + box.width / 2, box.top + box.height / 2];
+          const inside = x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
+          const hit = document.elementFromPoint(x, y);
+          if (!inside || hit === null || !(hit === item || item.contains(hit))) found.push({ row, why: item.textContent + ' is not hit at its center' + (inside ? '' : ' (outside the window)') });
+        }
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await wait(50);
+        if (document.querySelectorAll('[role="menu"]').length !== 0) found.push({ row, why: 'Escape did not close the menu' });
+        if (document.activeElement !== button) found.push({ row, why: 'the focus did not return to the button' });
+      }
+      return JSON.stringify({ rows: buttons.length, found });
+    })()`);
+    for (const width of [1440, 1024, 768, 641, 390]) {
+      must(['set', 'viewport', String(width), '700'], 'Setting the window');
+      must(['open', `${consoleUrl}/keys`], 'Opening Keys');
+      must(['wait', '--text', 'menu agent 2'], 'Waiting for the keys');
+      must(['wait', '500'], 'Waiting for the list');
+      const result = menuHits();
+      if (result === undefined || result.rows < 6)
+        fail(`${width} px: the menus could not be tested`);
+      else
+        for (const item of result.found)
+          fail(`${width} px, row ${item.row}: ${item.why}`);
+    }
+    must(['set', 'viewport', '1440', '900'], 'Setting the window');
 
     // The top-ups of the account, as the fake has them, read with the key outside the browser
     const topupsOf = async key => (await (await ask(`${api}/v1/topups?limit=20`, { headers: { authorization: `Bearer ${key}`, [ownMark]: '1' } })).json()).topups ?? [];

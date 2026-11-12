@@ -88,12 +88,8 @@ export const KeysPage = () => {
   const toast = useToast();
   const [keys, again] = useRead(() => listKeys(apiUrl));
   const [open, setOpen] = useState<Open | undefined>(undefined);
-  const [menus, setMenus] = useState(0);
   const now = Date.now();
   const ordered = keys.state === 'ok' ? keysInOrder(keys.value) : [];
-  // A menu that is open needs room under the last row, inside the table's box
-  const menuOpen = menus > 0;
-  const trackMenu = (isOpen: boolean): void => setMenus(count => Math.max(0, count + (isOpen ? 1 : -1)));
 
   return (
     <div className="stack-lg">
@@ -113,7 +109,7 @@ export const KeysPage = () => {
           </div>
         </div>
       ) : (
-        <div className={menuOpen ? 'keys-table menu-open' : 'keys-table'}>
+        <div className="keys-table">
           <DataTable label="Keys">
             <thead className="stack-head">
               <tr><th>Key</th><th>Today</th><th className="r">Per call</th><th className="r">Allowance left</th><th>Expires</th><th className="r"><span className="sr-only">Actions</span></th></tr>
@@ -147,7 +143,6 @@ export const KeysPage = () => {
                       {revoked ? <Badge>Revoked</Badge> : (
                         <KeyMenu
                           keyRecord={item}
-                          onOpen={trackMenu}
                           onLimits={() => setOpen({ kind: 'form', mode: { kind: 'limits', key: item } })}
                           onRevoke={() => setOpen({ kind: 'revoke', key: item })}
                         />

@@ -119,6 +119,7 @@ export const Frame = ({ masked, children }: { readonly masked: MaskedKey; readon
   return (
     <div className="console-frame">
       <aside ref={drawer} id="console-nav" className={open ? 'sidebar open' : 'sidebar'} aria-label="Console" tabIndex={-1}>
+        <button type="button" className="drawer-close" aria-label="Close the menu" onClick={() => setOpen(false)}><Icon name="x" /></button>
         <SiteLogo siteUrl={siteUrl} />
         <nav className="side-nav" aria-label="Console">
           {ownItems.map(item => (

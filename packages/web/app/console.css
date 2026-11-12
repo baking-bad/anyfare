@@ -192,7 +192,6 @@ button.card.choice:disabled { cursor: progress; }
 /* ---------- Keys ---------- */
 
 .keys-table .t-wrap { min-width: 0; }
-.keys-table.menu-open .table-scroll { min-height: 232px; }
 .key-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; max-width: 240px; }
 .key-name .row-sub { font-size: 12px; }
 .key-budget { flex-wrap: nowrap; gap: 10px; }
@@ -206,7 +205,7 @@ table.t tr.quiet .budget i { background: var(--text-tertiary); }
 .keys-actions { position: sticky; right: 0; background: var(--surface-card); width: 1%; }
 table.t tr:hover .keys-actions { background: var(--surface-row-hover); }
 .key-menu { position: relative; display: inline-flex; }
-.key-menu .menu { right: 0; top: calc(100% + 4px); min-width: 190px; }
+.menu.key-menu-float { position: fixed; top: 0; left: 0; min-width: 190px; z-index: 60; }
 .menu button.danger-item { color: var(--danger-text); }
 .key-form .field .hint { font-size: var(--text-xs); }
 .key-form input[type="date"] { min-height: 40px; }
@@ -246,8 +245,6 @@ table.t tr.click:focus-within { background: var(--surface-row-hover); }
   .well-title { padding-top: 0; padding-bottom: 0; }
   .well-title > span:first-child { padding: 12px 0; }
 }
-/* The cell of an open menu paints above the cells of the rows under it */
-.keys-actions:has(.menu), .keys-actions:focus-within { z-index: 6; }
 /* The export line leaves room for its Copy button */
 .dialog .code-block .code { padding-right: 80px; }
 /* The host is a block, so its ellipsis cuts it inside the link, whatever its length */
@@ -391,4 +388,18 @@ table.t tr.topup-row .c-link { width: 1%; }
   table.t tr.topup-row { grid-template-areas: "sent amount" "date status" "link link"; }
   table.t tr.topup-row .c-link { grid-area: link; width: auto; text-align: right; }
   table.t tr.topup-row .c-link:empty { display: none; }
+}
+
+/* The drawer's own close button, at its top right: 44 px, shown where the sidebar is a drawer */
+.drawer-close { display: none; }
+@media (max-width: 1279px) {
+  .drawer-close { display: inline-flex; align-items: center; justify-content: center; position: absolute; top: 8px; right: 8px; width: 44px; height: 44px; border: 0; border-radius: var(--radius-xl);
+    background: transparent; color: var(--inverse-text-nav); cursor: pointer; }
+  .drawer-close:hover { background: var(--inverse-wash); color: var(--white); }
+  .drawer-close svg { width: 20px; height: 20px; }
+}
+@media (pointer: coarse), (max-width: 760px) { .tok-search { height: 46px; } }
+/* The Copy button above a code block: its invisible tap area is a little more than 44 px, so a touch 22 px off its middle still lands on it */
+@media (pointer: coarse), (max-width: 760px) {
+  .code-block .copy .btn.sm::before { width: max(100%, 48px); height: 48px; }
 }

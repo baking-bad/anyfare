@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import { Icon } from '../components/Icon';
 import { copyText } from './clipboard';
@@ -10,25 +11,42 @@ import type { PaymentKey } from './api';
 
 /**
  * The menu at the end of a key's row: Change limits, Copy key id, Revoke. Arrow keys move in it; Escape and a click
- * outside close it, and the focus goes back to its button. `onOpen` tells the table a menu is open, so its box can leave room.
+ * outside, a scroll and a resize close it, and the focus goes back to its button. The menu is drawn on the page's body,
+ * `position: fixed`, placed from the button's rectangle (below it and right-aligned, above it when there is no room
+ * below, and inside the window), so no box of the table can cut it.
  */
-export const KeyMenu = ({ keyRecord, onLimits, onRevoke, onOpen }: {
+export const KeyMenu = ({ keyRecord, onLimits, onRevoke }: {
   readonly keyRecord: PaymentKey;
   readonly onLimits: () => void;
   readonly onRevoke: () => void;
-  readonly onOpen: (open: boolean) => void;
 }) => {
   const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const toast = useToast();
+
+  // Placed before it is painted: below the button, right-aligned, flipped above when there is no room, kept in the window
+  useLayoutEffect(() => {
+    const box = menu.current;
+    const anchor = button.current;
+    if (!open || box === null || anchor === null)
+      return;
+    const rect = anchor.getBoundingClientRect();
+    const [width, height] = [box.offsetWidth, box.offsetHeight];
+    const margin = 8;
+    const left = Math.max(margin, Math.min(rect.right - width, window.innerWidth - width - margin));
+    const below = rect.bottom + 4;
+    const top = below + height <= window.innerHeight - margin ? below : Math.max(margin, rect.top - 4 - height);
+    box.style.setProperty('left', `${left}px`);
+    box.style.setProperty('top', `${top}px`);
+  }, [open]);
 
   useEffect(() => {
     if (!open)
       return undefined;
-    onOpen(true);
-    const items = (): HTMLElement[] => [...root.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []];
-    items()[0]?.focus();
+    const items = (): HTMLElement[] => [...menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []];
+    items()[0]?.focus({ preventScroll: true });
+    const close = (): void => setOpen(false);
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         setOpen(false);
@@ -45,19 +63,22 @@ export const KeyMenu = ({ keyRecord, onLimits, onRevoke, onOpen }: {
       }
     };
     const onPointer = (event: PointerEvent): void => {
-      if (!root.current?.contains(event.target as Node))
+      const target = event.target as Node;
+      if (!menu.current?.contains(target) && !button.current?.contains(target))
         setOpen(false);
     };
     document.addEventListener('keydown', onKey);
     document.addEventListener('pointerdown', onPointer);
+    // A scroll of the page or of any box in it, and a resize, move the button from under the menu
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
 
     return () => {
-      onOpen(false);
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('pointerdown', onPointer);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
     };
-    // `onOpen` is a new function on every render of the page; the menu's own state is what asks for the effect
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   // The focus goes to the button first, so the dialog that follows hands it back there when it closes
@@ -74,7 +95,7 @@ export const KeyMenu = ({ keyRecord, onLimits, onRevoke, onOpen }: {
   };
 
   return (
-    <div ref={root} className="key-menu">
+    <div className="key-menu">
       <button
         ref={button}
         type="button"
@@ -86,13 +107,14 @@ export const KeyMenu = ({ keyRecord, onLimits, onRevoke, onOpen }: {
       >
         <Icon name="dots" />
       </button>
-      {open ? (
-        <div className="menu" role="menu" aria-label={`Key ${keyName(keyRecord)}`}>
+      {open ? createPortal(
+        <div ref={menu} className="menu key-menu-float" role="menu" aria-label={`Key ${keyName(keyRecord)}`}>
           <button type="button" role="menuitem" onClick={() => choose(onLimits)}><Icon name="settings" />Change limits</button>
           <button type="button" role="menuitem" onClick={() => void copyId()}><Icon name="copy" />Copy key id</button>
           <div className="sep" role="none" />
           <button type="button" role="menuitem" className="danger-item" onClick={() => choose(onRevoke)}><Icon name="trash" />Revoke</button>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
