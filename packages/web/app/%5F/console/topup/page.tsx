@@ -10,12 +10,15 @@ export const dynamic = 'force-dynamic';
 
 /**
  * Top up. The proxy hands over a top-up link's amount as a number, or the flag that the link's amount was not used;
- * the amount is checked again here, and goes to the page as a number. No other part of the query is read.
+ * the amount is checked again here, and goes to the page as a number. An `amount` that is here but is no amount was
+ * not used either, whatever carried it. No other part of the query is read.
  */
 const Topup = async ({ searchParams }: { readonly searchParams: Promise<Record<string, string | string[] | undefined>> }) => {
   const params = await searchParams;
+  const amount = topupAmount(params[amountParam]);
+  const present = params[amountParam] !== undefined;
 
-  return <ConsolePage page="topup" amount={topupAmount(params[amountParam])} amountUnused={params[amountUnusedParam] === '1'} />;
+  return <ConsolePage page="topup" amount={amount} amountUnused={params[amountUnusedParam] === '1' || (present && amount === undefined)} />;
 };
 
 export default Topup;

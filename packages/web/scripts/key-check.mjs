@@ -475,8 +475,20 @@ export const checkKey = async ({ console: consoleUrl, api, session }, log = line
         throw new Error('The tab is hidden, so the page reads nothing again: run this check alone');
     };
 
-    log('13. A top-up link, signed out: only its amount shows, and after sign-in Top up opens with it');
+    const unusedSaid = () => pageText().includes('The amount in the link was not used');
+
+    log('13. A top-up link, signed out: only its amount shows, a bad one says it was not used, and after sign-in Top up opens with it');
     must(['eval', 'sessionStorage.clear(); "cleared"'], 'Signing out');
+    for (const query of ['amount=abc', 'amount=0']) {
+      must(['open', `${consoleUrl}/topup?${query}`], `Opening ${query} signed out`);
+      must(['wait', '--text', 'Sign in or create an account'], 'Waiting for the sign-in view');
+      if (!unusedSaid())
+        fail(`signed out, ${query}: the sign-in view doesn't say the link's amount was not used`);
+    }
+    must(['open', `${consoleUrl}/topup?note=x`], 'Opening a link with no amount signed out');
+    must(['wait', '--text', 'Sign in or create an account'], 'Waiting for the sign-in view');
+    if (unusedSaid() || pageText().includes('from the link'))
+      fail('signed out, no amount: the sign-in view speaks of a link\'s amount');
     must(['open', `${consoleUrl}/topup?amount=5`], 'Opening the top-up link');
     must(['wait', '--text', 'Sign in or create an account'], 'Waiting for the sign-in view');
     if (!pageText().includes('After you sign in, Top up opens with $5.00 from the link.'))
@@ -498,6 +510,24 @@ export const checkKey = async ({ console: consoleUrl, api, session }, log = line
         fail(`a link's query shows on Top up: ${text}`);
     if (inPage('JSON.stringify(document.documentElement.outerHTML.includes("alert(1)"))') !== false)
       fail('a link\'s markup is in the page\'s HTML');
+    // Every amount that is there but is no amount says so, by a full load and by the router; no amount says nothing
+    for (const query of ['amount=abc', 'amount=0', 'amount=1e9']) {
+      must(['open', `${consoleUrl}/topup?${query}`], `Opening ${query}`);
+      must(['wait', '#topup-amount'], 'Waiting for the form');
+      if (!unusedSaid())
+        fail(`signed in, ${query}: Top up doesn't say the link's amount was not used`);
+    }
+    must(['open', `${consoleUrl}/`], 'Opening the Overview');
+    must(['wait', '--text', 'Available'], 'Waiting for the Overview');
+    inPage('(() => { window.next?.router?.push("/topup?amount=abc"); return JSON.stringify(true); })()');
+    must(['wait', '#topup-amount'], 'Waiting for Top up, reached by the router');
+    if (!unusedSaid())
+      fail('signed in, reached by the router: Top up doesn\'t say the link\'s amount was not used');
+    must(['open', `${consoleUrl}/topup?note=x`], 'Opening a link with no amount');
+    // With no amount the page may bring back an open top-up instead of the form
+    must(['wait', '#topup-amount, #topup-status'], 'Waiting for Top up');
+    if (unusedSaid() || pageText().includes('from the link'))
+      fail('signed in, no amount: Top up speaks of a link\'s amount');
 
     log('15. A top-up: the address is the API\'s, each status shows in turn, and a reload brings the open one back');
     must(['open', `${consoleUrl}/topup?amount=5`], 'Opening Top up');

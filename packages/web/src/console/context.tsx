@@ -3,7 +3,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { useSettings } from '../components/Settings';
-import { ConsoleApiError, readAccount, readBalance, RefusedTargetError, type Account, type Balance } from './api';
+import { ConsoleApiError, listTopups, readAccount, readBalance, RefusedTargetError, type Account, type Balance, type Topup } from './api';
+import { documentPage, startPolling, timers } from './topup/poll';
+import { isOpenStatus } from './topup/view';
 
 // What every console page shares: where the console and the public site live, and, while signed in, the reads the
 // frame makes once (the balance and the account). The reads live in the frame, so signing out drops them with it.
@@ -92,21 +94,59 @@ export const problemText = (error: unknown): string => {
   return error.message;
 };
 
+/** The account's newest top-ups, as the frame reads them: the Overview's list and the top-up on its way. */
+export interface LatestTopups {
+  readonly topups: readonly Topup[];
+  readonly next: string | null;
+}
+
 export interface ConsoleData {
   readonly balance: Read<Balance>;
   readonly account: Read<Account>;
+  readonly topups: Read<LatestTopups>;
   readonly readBalanceAgain: () => void;
   readonly readAccountAgain: () => void;
+  readonly readTopupsAgain: () => void;
 }
+
+/** How many of the newest top-ups the frame reads. */
+export const latestTopupsSize = 5;
+
+/** How often the frame reads the balance and the newest top-ups again while a top-up is on its way. */
+export const onItsWayRefreshMs = 15_000;
+
+/** The newest top-up that is still on its way (getting an address, waiting, too little, converting), when the read has one. */
+export const topupOnItsWay = (topups: Read<LatestTopups>): Topup | undefined =>
+  topups.state === 'ok' ? topups.value.topups.find(topup => isOpenStatus(topup.status)) : undefined;
 
 const DataContext = createContext<ConsoleData | undefined>(undefined);
 
-/** The frame's reads: the balance and the account, once each when the frame opens, and again when asked. */
+/**
+ * The frame's reads: the balance, the account and the newest top-ups, once each when the frame opens, and again when
+ * asked. While a top-up is on its way, the balance and the top-ups are read again every 15 seconds while the tab is
+ * visible, and at once when it shows again, so the Overview and the sidebar don't go stale.
+ */
 export const ConsoleDataProvider = ({ children }: { readonly children: ReactNode }) => {
   const { apiUrl } = useSettings();
   const [balance, readBalanceAgain] = useRead(() => readBalance(apiUrl));
   const [account, readAccountAgain] = useRead(() => readAccount(apiUrl));
-  const value = useMemo(() => ({ balance, account, readBalanceAgain, readAccountAgain }), [balance, account, readBalanceAgain, readAccountAgain]);
+  const [topups, readTopupsAgain] = useRead(() => listTopups(apiUrl, latestTopupsSize));
+  const onItsWay = topupOnItsWay(topups) !== undefined;
+  useEffect(() => {
+    if (!onItsWay)
+      return undefined;
+
+    return startPolling({
+      read: async () => {
+        readTopupsAgain();
+        readBalanceAgain();
+      },
+      onRead: () => undefined,
+      onFail: () => undefined,
+      done: () => false,
+    }, documentPage, timers, onItsWayRefreshMs);
+  }, [onItsWay, readTopupsAgain, readBalanceAgain]);
+  const value = useMemo(() => ({ balance, account, topups, readBalanceAgain, readAccountAgain, readTopupsAgain }), [balance, account, topups, readBalanceAgain, readAccountAgain, readTopupsAgain]);
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 };

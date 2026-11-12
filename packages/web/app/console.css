@@ -64,6 +64,14 @@
 .bal-card .skeleton { background: rgb(255 255 255 / 0.1); }
 .bal-problem { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; font-size: var(--text-sm); color: var(--inverse-text-nav); }
 .bal-card .btn.bal-again { background: rgb(255 255 255 / 0.1); color: var(--white); }
+/* A top-up on its way, under the balance: a link to Top up */
+.bal-pending { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 6px 10px; border-radius: var(--radius-xl); background: rgb(255 255 255 / 0.06);
+  color: var(--inverse-text); font-size: 12px; line-height: 16px; font-weight: 600; text-decoration: none; min-width: 0; }
+.bal-pending:hover { background: rgb(255 255 255 / 0.1); }
+.bal-pending-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.bal-pending .spinner { width: 12px; height: 12px; color: var(--green-500); }
+@media (pointer: coarse), (max-width: 760px) { .bal-pending { min-height: 44px; } }
+.overview-topup .link { white-space: nowrap; }
 .bal-card .btn.bal-topup { width: 100%; background: var(--green-500); color: var(--black); }
 .bal-card .btn.bal-topup:hover { background: var(--green-400); }
 .bal-card :focus-visible { outline-color: var(--white); }
@@ -295,6 +303,9 @@ table.t tr.click:focus-within { background: var(--surface-row-hover); }
 .topup-split { align-items: start; }
 /* The view takes the focus when it opens: it keeps the card's own line, and the ring only for the keyboard */
 .topup-card:focus { outline: 1px solid var(--border); outline-offset: -1px; }
+/* Scrolled to, the card leaves room above it for the console's top bar */
+.topup-card { scroll-margin-top: 88px; }
+@media (max-width: 760px) { .topup-card { scroll-margin-top: 72px; } }
 .topup-card:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .topup-head { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
 .topup-badge { margin: 0; font-size: inherit; line-height: 1; }

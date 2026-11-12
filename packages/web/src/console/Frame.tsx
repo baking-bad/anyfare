@@ -13,7 +13,10 @@ import { usdOf } from '../format';
 import { AccountMenu } from './AccountMenu';
 import { useFocusTrap } from './components/focus';
 import { SiteLogo } from './components/SiteLogo';
-import { useConsoleData, useConsolePlaces } from './context';
+import { RailIcon } from '../components/Rail';
+import { Spinner } from '../components/Spinner';
+import { topupOnItsWay, useConsoleData, useConsolePlaces } from './context';
+import { topupBadge } from './topup/status';
 import { isPositive, moneyParts } from './format';
 import { pageAtPath, pageOf, pathOf, type ConsolePageName } from './pages';
 import type { MaskedKey } from './session';
@@ -44,7 +47,23 @@ const subscribeNarrow = (notify: () => void): (() => void) => {
 
 const useNarrow = (): boolean => useSyncExternalStore(subscribeNarrow, () => matchMedia(narrowQuery).matches, () => false);
 
-/** The balance at the foot of the sidebar: what is available, what is held for calls in flight, and Top up. */
+/** The top-up on its way, under the balance: the token, the amount and its status, and a spinner, as a link to Top up. Nothing when there is none, or the read failed. */
+const OnItsWay = () => {
+  const { topups } = useConsoleData();
+  const topup = topupOnItsWay(topups);
+  if (topup === undefined)
+    return null;
+
+  return (
+    <Link className="bal-pending" href="/topup">
+      <RailIcon rail={topup.network} token={topup.token} />
+      <span className="bal-pending-text">{topup.amount} {topup.token}, {topupBadge(topup.status).label.toLowerCase()}</span>
+      <Spinner />
+    </Link>
+  );
+};
+
+/** The balance at the foot of the sidebar: what is available, what is held for calls in flight, a top-up on its way, and Top up. */
 const BalanceCard = () => {
   const { balance, readBalanceAgain } = useConsoleData();
 
@@ -67,6 +86,7 @@ const BalanceCard = () => {
           {isPositive(balance.value.held) ? <small>{usdOf(balance.value.held)} held for calls in flight</small> : null}
         </div>
       )}
+      <OnItsWay />
       <Button size="sm" href="/topup" className="bal-topup"><Icon name="plus" />Top up</Button>
     </div>
   );

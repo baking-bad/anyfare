@@ -48,6 +48,17 @@ describe('usdOf', () => {
     expect(usdOf('0.0044')).toBe('$0.0044');
     expect(usdOf('0')).toBe('$0');
     expect(usdOf('18.42')).toBe('$18.42');
+    // Down: the digits are cut, never rounded up
+    expect(usdOf('2.99814')).toBe('$3.00');
+    expect(usdOf('2.99814', 'down')).toBe('$2.99');
+    expect(usdOf('19.999999', 'down')).toBe('$19.99');
+    expect(usdOf('1234.5', 'down')).toBe('$1,234.50');
+    expect(usdOf('3', 'down')).toBe('$3.00');
+    expect(usdOf('0.012349', 'down')).toBe('$0.0123');
+    expect(usdOf('0.9999', 'down')).toBe('$0.999');
+    expect(usdOf('0.0000001', 'down')).toBe('<$0.000001');
+    expect(usdOf('0', 'down')).toBe('$0');
+    expect(usdOf(null, 'down')).toBe('-');
     expect(usdOf(null)).toBe('-');
     expect(usdOf('')).toBe('-');
     expect(usdOf('abc')).toBe('-');

@@ -48,10 +48,11 @@ interface Created {
 
 /**
  * The sign-in view. It shows in place of any console page while no one is signed in, on that page's own address, and
- * that page shows once the person signs in. `amount` is a top-up link's amount; `notice` says the stored key stopped
+ * that page shows once the person signs in. `amount` is a top-up link's amount, and `amountUnused` says the link had one
+ * that was not used; `notice` says the stored key stopped
  * working. There is no form: nothing here can post to the site, even before the page's script runs.
  */
-export const SignIn = ({ amount, notice }: { readonly amount?: number | undefined; readonly notice?: SessionNotice | undefined }) => {
+export const SignIn = ({ amount, amountUnused = false, notice }: { readonly amount?: number | undefined; readonly amountUnused?: boolean; readonly notice?: SessionNotice | undefined }) => {
   const { apiUrl } = useSettings();
   const { siteUrl } = useConsolePlaces();
   const view = useView();
@@ -159,6 +160,15 @@ export const SignIn = ({ amount, notice }: { readonly amount?: number | undefine
             <p className="muted">No email. No password. One master key.</p>
             {amount === undefined ? null : <p className="small">After you sign in, Top up opens with <b>{usd(amount)}</b> from the link.</p>}
           </div>
+          {amountUnused ? (
+            <div className="alert warning" role="status">
+              <Icon name="alert" />
+              <div className="stack tight">
+                <span className="t">The amount in the link was not used</span>
+                <span>It wasn&apos;t a number from $1 to $1,000. After you sign in, enter the amount on Top up yourself.</span>
+              </div>
+            </div>
+          ) : null}
           {notice === 'expired' ? (
             <div className="alert warning" role="alert">
               <Icon name="alert" />

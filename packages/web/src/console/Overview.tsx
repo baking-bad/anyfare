@@ -11,12 +11,13 @@ import { Icon } from '../components/Icon';
 import { useSettings } from '../components/Settings';
 import { Skeleton } from '../components/Skeleton';
 import { usd, usdOf } from '../format';
-import { isTopupsOff, listKeys, listPayments, listTopups } from './api';
-import { problemText, useConsoleData, useConsolePlaces, useRead } from './context';
+import { isTopupsOff, listKeys, listPayments } from './api';
+import { problemText, topupOnItsWay, useConsoleData, useConsolePlaces, useRead } from './context';
 import { isPositive } from './format';
 import { isActive, keyName, spentToday } from './keys';
 import { PaymentHead, PaymentRow } from './PaymentRow';
 import { useSession } from './session';
+import { networkName, topupBadge } from './topup/status';
 import { TopupHead, TopupRow } from './topup/TopupRow';
 
 const listLength = 5;
@@ -31,18 +32,20 @@ const SkeletonRows = ({ columns }: { readonly columns: number }) => (
 );
 
 /**
- * The Overview: the banner of a sign-up's free Credits (in this visit only), the balance with Top up and New key, what
- * the keys spent today, the last payments and the last top-ups. Each part reads on its own, and one that fails
+ * The Overview: the banner of a sign-up's free Credits (in this visit only), the balance with Top up and New key, a
+ * top-up on its way, what the keys spent today, the last payments and the last top-ups (the frame's read, which the
+ * sidebar shares). Each part reads on its own, and one that fails
  * leaves the others as they are.
  */
 export const Overview = () => {
   const session = useSession();
   const { apiUrl } = useSettings();
   const { siteUrl } = useConsolePlaces();
-  const { balance, readBalanceAgain } = useConsoleData();
+  // The newest top-ups are the frame's read, shared with the sidebar
+  const { balance, readBalanceAgain, topups, readTopupsAgain: topupsAgain } = useConsoleData();
   const [keys, keysAgain] = useRead(() => listKeys(apiUrl));
   const [payments, paymentsAgain] = useRead(() => listPayments(apiUrl, { limit: listLength }));
-  const [topups, topupsAgain] = useRead(() => listTopups(apiUrl, listLength));
+  const onItsWay = topupOnItsWay(topups);
   const keyNames = useMemo(() => new Map(keys.state === 'ok' ? keys.value.map(item => [item.id, keyName(item)] as const) : []), [keys]);
   const now = Date.now();
   const freeCredits = session.status === 'signedIn' ? session.freeCredits : undefined;
@@ -77,6 +80,18 @@ export const Overview = () => {
           <div className="row">
             <Button size="lg" href="/topup"><Icon name="wallet" />Top up</Button>
             <Button size="lg" variant="secondary" href="/keys"><Icon name="plus" />New key</Button>
+          </div>
+        </div>
+      )}
+      {onItsWay === undefined ? null : (
+        <div className="alert info overview-topup" role="status">
+          <Icon name="clock" />
+          <div className="stack tight">
+            <span className="t">A top-up is on its way</span>
+            <span>
+              {onItsWay.amount} {onItsWay.token} on {networkName(onItsWay.network)}. {topupBadge(onItsWay.status).label}.{' '}
+              <Link className="link" href="/topup">Open it</Link>
+            </span>
           </div>
         </div>
       )}

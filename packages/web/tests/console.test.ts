@@ -544,6 +544,9 @@ describe('what the sign-in view says', () => {
   it('says a top-up link\'s amount from the number, and why the stored key was dropped', () => {
     expect(render({ amount: 5 })).toContain('After you sign in, Top up opens with <b>$5.00</b> from the link.');
     expect(render({ amount: 1000 })).toContain('<b>$1,000.00</b>');
+    // A link whose amount was not used says so before sign-in too; no amount says nothing
+    expect(render({ amountUnused: true })).toContain('The amount in the link was not used');
+    expect(render({})).not.toMatch(/was not used|from the link/);
     expect(render({ notice: 'expired' })).toContain(expiredNotice);
     const lost = render({ notice: 'lost' });
     expect(lost).toContain('The master key was changed, but the new one didn&#x27;t reach this browser');

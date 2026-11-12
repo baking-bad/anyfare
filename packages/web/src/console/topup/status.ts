@@ -34,10 +34,13 @@ const networkNames: Readonly<Record<string, string>> = {
 export const networkName = (network: string): string =>
   Object.hasOwn(networkNames, network) ? networkNames[network]! : network === '' ? network : `${network[0]!.toUpperCase()}${network.slice(1)}`;
 
-/** The Credits column: "+$19.99" when credited, "≈ $19.99" from the estimate while it is open, nothing (null) otherwise. */
+/**
+ * The Credits column: "+$19.99" when credited, cut and never rounded up ("+$2.99" for 2.99814), "≈ $19.99" from the
+ * estimate while it is open, nothing (null) otherwise.
+ */
 export const topupCredits = (topup: Topup): { readonly text: string; readonly tone: 'added' | 'estimate' } | null => {
   if (topup.status === 'credited' && topup.credited !== null)
-    return { text: `+${usdOf(topup.credited)}`, tone: 'added' };
+    return { text: `+${usdOf(topup.credited, 'down')}`, tone: 'added' };
   if ((topup.status === 'quoting' || topup.status === 'waiting' || topup.status === 'processing' || topup.status === 'incomplete') && topup.estimatedCredits !== null)
     return { text: `≈ ${usdOf(topup.estimatedCredits)}`, tone: 'estimate' };
 

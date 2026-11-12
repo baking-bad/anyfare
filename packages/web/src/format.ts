@@ -68,9 +68,30 @@ export const ago = (moment: Date | number, now: number = Date.now()): string => 
   return new Date(time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 };
 
-/** A dollar amount from the API's decimal string, such as "0.01". A missing value, or one that isn't a number, reads as a dash. */
-export const usdOf = (amount: string | null): string => {
-  const value = Number(amount);
+/**
+ * The digits `usd` shows of a decimal string, cut rather than rounded: two decimals from $1 up, three significant digits
+ * under it. "2.99814" is "2.99", "0.012349" is "0.0123". A string that isn't a plain decimal is left as it is.
+ */
+const cutDigits = (amount: string): string => {
+  const parts = /^(-?)(\d+)(?:\.(\d+))?$/.exec(amount.trim());
+  if (parts === null)
+    return amount;
+  const [, sign = '', whole = '0', fraction = ''] = parts;
+  if (/[1-9]/.test(whole))
+    return `${sign}${whole}.${fraction.slice(0, 2)}`;
+  const first = fraction.search(/[1-9]/);
 
-  return amount === null || amount.trim() === '' || !Number.isFinite(value) ? '-' : usd(value);
+  return first === -1 ? '0' : `${sign}0.${fraction.slice(0, first + 3)}`;
+};
+
+/**
+ * A dollar amount from the API's decimal string, such as "0.01". A missing value, or one that isn't a number, reads as a
+ * dash. `down` cuts the digits `usd` would round, so an amount never reads as more than it is: "2.99814" is "$2.99".
+ */
+export const usdOf = (amount: string | null, rounding: 'nearest' | 'down' = 'nearest'): string => {
+  const value = Number(amount);
+  if (amount === null || amount.trim() === '' || !Number.isFinite(value))
+    return '-';
+
+  return usd(rounding === 'down' ? Number(cutDigits(amount)) : value);
 };

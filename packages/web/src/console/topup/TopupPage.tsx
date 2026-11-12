@@ -73,6 +73,12 @@ export const openingView = (link: FormLink, newest: Read<{ readonly topups: read
   return first !== undefined && isOpenStatus(first.status) && newest.state === 'ok' ? { kind: 'topup', topup: first, readAt: newest.value.readAt, confirmed: false } : { kind: 'form' };
 };
 
+/**
+ * Whether the top of a card at `top` (from the window's top) is in view: below the room the top bar needs (`margin`, the
+ * card's `scroll-margin-top`) and in the upper part of the window. A card in view is not scrolled to.
+ */
+export const cardInView = (top: number, margin: number, windowHeight: number): boolean => top >= margin && top <= windowHeight * 0.6;
+
 /** What the page shows after a read of top-up `topup.id`: that answer, when that top-up is on screen; otherwise what it showed. */
 export const afterRead = (shown: Shown | undefined, topup: Topup, at: number): Shown | undefined =>
   shown?.kind === 'topup' && shown.topup.id === topup.id ? { kind: 'topup', topup, readAt: at, confirmed: true } : shown;
@@ -89,7 +95,7 @@ export const afterFailedRead = (shown: Shown | undefined, id: string, at: number
  */
 export const TopupPage = ({ amount, amountUnused = false }: { readonly amount?: number | undefined; readonly amountUnused?: boolean }) => {
   const { apiUrl } = useSettings();
-  const { readBalanceAgain } = useConsoleData();
+  const { readBalanceAgain, readTopupsAgain } = useConsoleData();
   const link: FormLink = amount !== undefined ? { kind: 'used', amount } : amountUnused ? { kind: 'unused' } : { kind: 'none' };
   const [options, optionsAgain] = useRead(() => readTopupOptions(apiUrl));
   const [newest, newestAgain] = useRead(async () => ({ ...await listTopups(apiUrl, restoreListSize), readAt: Date.now() }));
@@ -137,7 +143,8 @@ export const TopupPage = ({ amount, amountUnused = false }: { readonly amount?: 
     }, documentPage, timers, pollMs, true);
   }, [apiUrl, openId, polled]);
 
-  // A status that changes on screen reads the list again; a top-up that is credited reads the balance again
+  // A status that changes on screen reads the list again, and the frame's newest top-ups, so the sidebar's line goes at
+  // once when it is final; a top-up that is credited reads the balance again
   const seen = useRef<{ readonly id: string; readonly status: string } | undefined>(undefined);
   useEffect(() => {
     if (openId === undefined || openStatus === undefined)
@@ -147,16 +154,19 @@ export const TopupPage = ({ amount, amountUnused = false }: { readonly amount?: 
     if (before?.id !== openId || before.status === openStatus)
       return;
     setListRound(round => round + 1);
+    readTopupsAgain();
     if (openStatus === 'credited')
       readBalanceAgain();
-  }, [openId, openStatus, readBalanceAgain]);
+  }, [openId, openStatus, readBalanceAgain, readTopupsAgain]);
 
-  // The view of a top-up that was just opened comes into sight and takes the focus
+  // The view of a top-up that was just opened takes the focus, and comes into sight only when it is out of it
   useEffect(() => {
-    if (focusRound === 0)
+    const box = viewBox.current;
+    if (focusRound === 0 || box === null)
       return;
-    viewBox.current?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
-    viewBox.current?.focus({ preventScroll: true });
+    if (!cardInView(box.getBoundingClientRect().top, Number.parseFloat(getComputedStyle(box).scrollMarginTop) || 0, innerHeight))
+      box.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    box.focus({ preventScroll: true });
   }, [focusRound]);
 
   // A snapshot (a row, the newest top-up, a new one offered later) opens unconfirmed: its address waits for its own read
@@ -193,6 +203,8 @@ export const TopupPage = ({ amount, amountUnused = false }: { readonly amount?: 
       }
       setCursors(firstPage);
       setListRound(round => round + 1);
+      // The sidebar shows the new top-up on its way
+      readTopupsAgain();
       // The person may have opened another top-up while this one was made: theirs stays, and this one is offered
       if (shownNow.current?.kind !== 'form') {
         setReady(result.topup);

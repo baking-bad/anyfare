@@ -6,7 +6,7 @@ import { CopyButton } from '../src/components/CopyButton';
 import { SettingsProvider } from '../src/components/Settings';
 import { agentPageOf, curlOfPage } from '../src/console/agentRequests';
 import { ConsoleApiError, createTopup, createTopupTimeoutMs, listTopups, readTopup, readTopupOptions, topupOf, type Topup, type TopupOptions } from '../src/console/api';
-import { ConsoleDataProvider, ConsolePlacesProvider } from '../src/console/context';
+import { ConsoleDataProvider, ConsolePlacesProvider, latestTopupsSize, onItsWayRefreshMs, topupOnItsWay } from '../src/console/context';
 import { resetSessionForTests, signIn } from '../src/console/session';
 import { amountAfterPick, checkAmount, linkFill, plainDecimal, sameAmount, underMinimum } from '../src/console/topup/amounts';
 import { apiRequests, createSender, isUnanswered, matchOf, recoveryListSize, refusalOf, requestAddress } from '../src/console/topup/create';
@@ -15,7 +15,7 @@ import { defaultChoice, filterChoices, isDollarToken, tokenChoices, tokenParam, 
 import { pollMs, startPolling, type PollClock, type PollPage } from '../src/console/topup/poll';
 import { QrCode, qrModules, qrPath } from '../src/console/topup/QrCode';
 import { TopupForm } from '../src/console/topup/TopupForm';
-import { afterFailedRead, afterRead, listPageSize, openingView, restoreListSize } from '../src/console/topup/TopupPage';
+import { afterFailedRead, afterRead, cardInView, listPageSize, openingView, restoreListSize } from '../src/console/topup/TopupPage';
 import { TopupRow, topupTransactionLink } from '../src/console/topup/TopupRow';
 import { TopupView } from '../src/console/topup/TopupView';
 import { countdownText, isOpenStatus, saysTheSame, showsAddress, stepMarks, timeLeft, topupStatuses, utcClock, viewOf } from '../src/console/topup/view';
@@ -690,8 +690,30 @@ describe('the list of top-ups', () => {
     expect(credited).toContain(`href="https://nearblocks.io/txns/${hash}"`);
     expect(credited).toContain('>NearBlocks<');
     expect(row(topupOfTest())).not.toContain('nearblocks');
+    // Credits added are cut, never rounded up past what was credited
+    expect(row(topupOfTest({ status: 'credited', credited: '2.99814' }))).toContain('+$2.99');
+    expect(row(topupOfTest({ status: 'credited', credited: '2.99814' }))).not.toContain('$3.00');
     expect(topupTransactionLink({ status: 'credited', transaction: 'not a hash!' })).toBeUndefined();
     expect(topupTransactionLink({ status: 'waiting', transaction: hash })).toBeUndefined();
+  });
+});
+
+describe('a top-up on its way, in the frame', () => {
+  it('is the newest of the frame\'s top-ups that is still open, and none when the read failed or holds none', () => {
+    const list = (topups: Topup[]) => ({ state: 'ok' as const, value: { topups, next: null } });
+
+    expect(topupOnItsWay(list([topupOfTest({ id: 'top_done', status: 'credited' }), topupOfTest({ id: 'top_open', status: 'processing' }), topupOfTest({ id: 'top_older' })]))?.id).toBe('top_open');
+    expect(topupOnItsWay(list([topupOfTest({ status: 'expired' }), topupOfTest({ status: 'quote_failed' })]))).toBeUndefined();
+    expect(topupOnItsWay({ state: 'failed', error: new ConsoleApiError(503, 'topups_unavailable', 'off') })).toBeUndefined();
+    expect(topupOnItsWay({ state: 'loading' })).toBeUndefined();
+    expect([latestTopupsSize, onItsWayRefreshMs]).toEqual([5, 15_000]);
+  });
+
+  it('scrolls to the card only when it is out of view', () => {
+    expect(cardInView(120, 88, 900)).toBe(true);
+    expect(cardInView(40, 88, 900)).toBe(false);
+    expect(cardInView(-300, 88, 900)).toBe(false);
+    expect(cardInView(700, 88, 900)).toBe(false);
   });
 });
 

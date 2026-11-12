@@ -60,7 +60,7 @@ export const ConsolePage = ({ page, amount, amountUnused = false }: {
   if (session.status === 'unknown')
     return null;
   if (session.status === 'signedOut')
-    return <SignIn amount={page === 'topup' ? amount : undefined} notice={session.notice} />;
+    return <SignIn amount={page === 'topup' ? amount : undefined} amountUnused={page === 'topup' && amountUnused} notice={session.notice} />;
   if (leave)
     return <div className="console-leaving"><Spinner label="Opening the Overview" /></div>;
   if (view === 'agent')
