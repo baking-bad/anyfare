@@ -85,8 +85,11 @@ describe('migrateDatabase', () => {
   });
 
   it('tries again when Postgres makes it a deadlock\'s victim: a registration read the routed endpoints, and wrote while an index was built', async () => {
-    const journal = JSON.parse(await readFile(path.join(migrationsFolder, 'meta', '_journal.json'), 'utf8')) as { entries: { tag: string }[] };
-    expect(journal.entries.at(-1)!.tag).toBe('0011_paid_hosts');
+    const journal = JSON.parse(await readFile(path.join(migrationsFolder, 'meta', '_journal.json'), 'utf8')) as { entries: { tag: string; when: number }[] };
+    const at = journal.entries.findIndex(entry => entry.tag === '0011_paid_hosts');
+    expect(at).toBeGreaterThan(0);
+    // 0011 and the migrations after it are applied again
+    const later = journal.entries.slice(at);
     const pending = await createTestDatabase();
     const lines: Record<string, unknown>[] = [];
     const capturing = createLogger({ level: 'warn' }, { write: (line: string) => lines.push(JSON.parse(line) as Record<string, unknown>) });
@@ -94,10 +97,10 @@ describe('migrateDatabase', () => {
     await registration.connect();
     try {
       // As before 0011, with enough endpoints that its index takes a moment to build: its table and index gone, the
-      // time's index back, and it not applied
-      await pending.db.execute(sql.raw(`drop table paid_hosts; drop index routed_endpoints_catalog_idx;
+      // time's index back, the refills of 0012 gone, and neither applied
+      await pending.db.execute(sql.raw(`drop table refills; drop table paid_hosts; drop index routed_endpoints_catalog_idx;
         create index routed_endpoints_created_idx on routed_endpoints using btree (created_at);
-        delete from drizzle.__drizzle_migrations where created_at = (select max(created_at) from drizzle.__drizzle_migrations);
+        delete from drizzle.__drizzle_migrations where created_at >= ${later[0]!.when};
         insert into routed_endpoints (host, path, created_at, status)
           select 'host-' || (i % 5000) || '.example.com', '/v1/path/' || i, now() - (i || ' seconds')::interval, 'paid' from generate_series(1, 200000) as i`));
       // A registration reads the table: it holds its share of it until it commits
@@ -119,7 +122,7 @@ describe('migrateDatabase', () => {
       const written = registration.query(`insert into routed_endpoints (host, path, created_at, status) values ('host-1.example.com', '/v1/new', now(), 'paid')`)
         .then(() => registration.query('commit'));
 
-      expect(await run).toBe(1);
+      expect(await run).toBe(later.length);
       await written;
       expect(lines.map(line => [line['msg'], line['code']])).toEqual([['A migration was a deadlock\'s victim: it tries again after a pause', '40P01']]);
       const { rows: [applied] } = await pending.db.execute<{ table: string | null; index: string | null; old: string | null }>(sql`select

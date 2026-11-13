@@ -661,11 +661,12 @@ describe('the routed endpoints\' key', () => {
 describe('the migrations that list checked endpoints and paid hosts', () => {
   it('make a table of their own for the paid hosts, and the catalog\'s index of the whole key, taking no exclusive lock of another table', async () => {
     const journal = JSON.parse(await readFile(path.join(migrationsFolder, 'meta', '_journal.json'), 'utf8')) as { entries: { tag: string }[] };
-    const last = journal.entries.at(-1)!.tag;
-    const text = await readFile(path.join(migrationsFolder, `${last}.sql`), 'utf8');
+    // Later migrations may follow it
+    const tag = '0011_paid_hosts';
+    const text = await readFile(path.join(migrationsFolder, `${tag}.sql`), 'utf8');
     const statements = text.split('--> statement-breakpoint').map(part => part.trim()).filter(part => part !== '');
 
-    expect(last).toMatch(/^0011_paid_hosts$/);
+    expect(journal.entries.map(entry => entry.tag)).toContain(tag);
     // An index built takes a share lock of its table: writes wait for it, reads don't. The old index's drop, the one
     // exclusive lock, comes last, so it is held only to the commit.
     expect(statements.map(statement => statement.split('(', 1)[0]!.trim())).toEqual([
@@ -679,8 +680,9 @@ describe('the migrations that list checked endpoints and paid hosts', () => {
     try {
       const journal = JSON.parse(await readFile(path.join(migrationsFolder, 'meta', '_journal.json'), 'utf8')) as { entries: { tag: string }[] };
       const tags = journal.entries.map(entry => entry.tag);
+      // Later migrations may follow it: only those before it are applied first
       const at = tags.findIndex(tag => tag.endsWith('_checked_endpoints'));
-      expect(at).toBe(tags.length - 2);
+      expect(at).toBeGreaterThan(0);
       expect((await readdir(migrationsFolder)).filter(name => name.endsWith('.sql'))).toHaveLength(tags.length);
       const apply = async (tag: string): Promise<void> => {
         const text = await readFile(path.join(migrationsFolder, `${tag}.sql`), 'utf8');

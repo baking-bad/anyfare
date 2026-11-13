@@ -49,3 +49,7 @@ export { createTopupRepository } from './topupRepository.js';
 export type {
   NewTopup, PolledTopupStatus, Topup, TopupCredit, TopupPage, TopupPoll, TopupQuote, TopupQuoteFailure, TopupRefund, TopupRepository, TopupRepositoryOptions,
 } from './topupRepository.js';
+export { createRefillRepository, refillRecordedBy, refillReference } from './refillRepository.js';
+export type {
+  NewRefill, Refill, RefillAnswer, RefillBooking, RefillFinish, RefillRepository, RefillRepositoryOptions, RefillTransfer,
+} from './refillRepository.js';

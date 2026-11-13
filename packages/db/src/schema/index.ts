@@ -7,3 +7,4 @@ export * from './calls.js';
 export * from './treasury.js';
 export * from './topups.js';
 export * from './stats.js';
+export * from './refills.js';
