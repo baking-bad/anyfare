@@ -2,7 +2,7 @@
 
 A console app that calls three paid APIs through Anyfare. It is for developers and for agents that want to see a paid call from start to end.
 
-Anyfare is a payment router for AI agents. This README is the only document of the app. Where the README and the code differ, the code is right.
+Anyfare is a payment router for AI agents: see [the main README](../../README.md). This README is the only document of the app. Where the README and the code differ, the code is right.
 
 **Every paid call is real money on mainnet.** Read "What protects your money" before you pay.
 
@@ -74,8 +74,7 @@ You choose one with `--pay`. Each way needs its own settings in `.env.local`.
 - The defaults are the hosted demo:
   - `https://api.anyfare.agents.bakingbad.dev` (the Platform API: accounts, keys, balance, top-ups)
   - `https://pay.anyfare.agents.bakingbad.dev` (the proxy: quotes and paid calls)
-- **Not deployed yet on 2026-11-09.** Until it is, use a local Anyfare.
-- To use a local Anyfare, set `ANYFARE_API_URL` and `ANYFARE_PAY_URL` in `.env.local` or in the shell.
+- To use a local Anyfare, set `ANYFARE_API_URL` and `ANYFARE_PAY_URL` in `.env.local` or in the shell. How to run one: [docs/run-locally.md](../../docs/run-locally.md).
 - The app also reads each API's own unpaid answer, and the NEAR and Tempo RPCs when it signs. Reads send no payment.
 - It reads your wallets' balances from the NEAR, Base and Tempo RPCs. These are reads only. Nothing is signed or sent for them.
 
@@ -202,13 +201,13 @@ Run every command from `demos/cli-client`. Add `--` after `npm run demo`, so npm
 - Without a terminal, `--yes` is required.
 - Every `call` is paid. What it costs:
 
-| Call | Price the API asked | Checked |
-|---|---|---|
-| CoinMarketCap, `BTC/USD` | $0.01 (10000 atomic USDC on Base) | 2026-11-09 |
-| 3Route, 1 USDC to WETH on Base | $0.001 (1000 atomic USDC on Base). Its OpenAPI document gives a dynamic price, $0.00001 to $0.001 | 2026-11-09 |
-| The evidence API | 0.001 USDC on NEAR | 2026-11-09 |
+| Call | Price the API asked, as an example |
+|---|---|
+| CoinMarketCap, `BTC/USD` | $0.01 (10000 atomic USDC on Base) |
+| 3Route, 1 USDC to WETH on Base | $0.001 (1000 atomic USDC on Base). Its OpenAPI document gives a dynamic price, $0.00001 to $0.001 |
+| The evidence API | 0.001 USDC on NEAR |
 
-- Anyfare's fee: 0 on 2026-11-09 (its production config).
+- Anyfare's fee on the hosted demo: 0.
 - Prices change. The app always prints the live ones, from the APIs' 402s and Anyfare's quote.
 - With `--pay tempo`, add a network fee of at most $0.01 in USDC.e. The cap covers the price and that fee together.
 
@@ -285,6 +284,7 @@ Run every command from `demos/cli-client`. Add `--` after `npm run demo`, so npm
 - Solana as a way to pay. Anyfare takes x402 on Solana, and `@x402/svm` would add it to this app. Not built.
 - 3Route's `batch-settlement` option. Anyfare pays `exact` options only.
 - A top-up from the app's own wallet. The person sends a top-up from a wallet of theirs.
+- No agent part in this app: it is a console app. An agent can drive it: see [`demos/agent`](../agent).
 
 ## How it works
 

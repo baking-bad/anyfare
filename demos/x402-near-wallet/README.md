@@ -2,6 +2,8 @@
 
 Pays x402 APIs in USDC from a NEAR wallet.
 
+It is one of the demos of Anyfare, a payment router for AI agents: see [the main README](../../README.md).
+
 **Every payment is real money on NEAR mainnet.** Read "What protects your money" before you pay.
 
 ## What it does
@@ -25,7 +27,7 @@ Terms used in this README:
 2. Install the packages, in this folder:
 
 ```
-npm install
+npm ci
 ```
 
 3. Make a separate NEAR account for this app. Put about 0.05 USDC on it: native USDC on NEAR, the contract `17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1`. Why a separate account: you risk only what it holds.
@@ -64,7 +66,7 @@ Settings come from `.env`, then `.env.local`, then the shell. The last one wins.
 
 Every command runs from this folder. After `--`, `npm run demo` passes the words to the app.
 
-The app always shows the live price from the API's 402. It never uses a price from its code. Costs below were checked on 2026-11-11, unpaid.
+The app always shows the live price from the API's 402. It never uses a price from its code. The costs below are examples.
 
 ### Interactive mode
 
@@ -109,7 +111,7 @@ npm run demo -- 'https://pay.anyfare.agents.bakingbad.dev/pro-api.coinmarketcap.
 - Do: run it in a terminal with the key set.
 - See: the cost, the payee, how long the payment is valid, your cap and your balance.
 - Then the question `Pay 0.01 USDC on NEAR? [y/N]`. The answer is "no" unless you type `y` or `yes`.
-- The cost was 0.01 USDC on NEAR on 2026-11-11. It is paid to `pay.anyfare.near`. It is valid for 300 blocks, about 3 minutes.
+- The cost was 0.01 USDC on NEAR. It is paid to `pay.anyfare.near`. It is valid for 300 blocks, about 3 minutes.
 - After `y`: the answer, the proof, `You paid 0.01 USDC on NEAR.` and the new balance.
 - Without a terminal and without `--yes`, the app stops and pays nothing.
 
@@ -131,9 +133,9 @@ npm run demo -- --yes -X POST --json '{"accountId":"anyfare.near"}' https://pay.
 
 - Do: run it with the key set. **This pays.** It does not ask.
 - See: the plan, then the signing, the call, the answer, the proof and the new balance.
-- The cost was 0.001 USDC on NEAR on 2026-11-11, paid to `pay.anyfare.near`. The answer is a NEAR account's balance at a final block.
+- The cost was 0.001 USDC on NEAR, paid to `pay.anyfare.near`. The answer is a NEAR account's balance at a final block.
 - `--yes` and `--dry-run` together are refused.
-- The same request sent straight to `https://merchant-near.mikedotexe.com/v1/evidence/account`, without Anyfare, asks 0.001 USDC on NEAR to `count.mike.near` (2026-11-11). The app can pay it, but no such payment has run yet: not verified.
+- The same request sent straight to `https://merchant-near.mikedotexe.com/v1/evidence/account`, without Anyfare, asks 0.001 USDC on NEAR to `count.mike.near`. The app can pay it, but no such payment has run yet: not verified.
 
 ### `--max`
 
@@ -201,7 +203,7 @@ The app pays nothing and exits with code 3. It says `Not supported:` and why.
 - A USDC option on NEAR is not signed when: it has no amount above zero, its recipient is not a NEAR account, it has no time limit or one above 300 seconds, or its payment flow is not `authorization`.
 - The first five cases also print the Anyfare link. The last case does not: the fault is in the option, so another route would not help.
 - No link is printed for a link that is already on the Anyfare host, nor for plain http.
-- Checked on 2026-11-11: CoinMarketCap's own link, `https://pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest?symbol=BTC&convert=USD`, takes USDC on Base and 4 tokens on BNB Chain. It takes no NEAR. The app says "Not supported", prints the Anyfare link and exits with code 3.
+- CoinMarketCap's own link, `https://pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest?symbol=BTC&convert=USD`, takes USDC on Base and 4 tokens on BNB Chain. It takes no NEAR. The app says "Not supported", prints the Anyfare link and exits with code 3.
 
 ```
 npm run demo -- 'https://pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest?symbol=BTC&convert=USD'
@@ -215,7 +217,7 @@ The link is the pay host, then `/`, then your URL without `https://`.
 - The Anyfare link: `https://pay.anyfare.agents.bakingbad.dev/pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest?symbol=BTC&convert=USD`
 - For a request with options, the app prints the whole request with only the URL changed. You can paste it back.
 - Why Anyfare: it is the same request. You pay in USDC on NEAR. Anyfare pays the API the way the API takes.
-- Checked on 2026-11-11: the Anyfare link above takes 0.01 USDC on NEAR, paid to `pay.anyfare.near`.
+- The Anyfare link above takes 0.01 USDC on NEAR, paid to `pay.anyfare.near`.
 
 ## What protects your money
 
@@ -281,5 +283,5 @@ npm run typecheck
 - Not run yet: the evidence API, through Anyfare or directly. Example output comes after the live run, with its date and time.
 - It pays only USDC on NEAR. No Base, no Solana, no other network. No MPP.
 - It signs only the `exact` scheme and the `authorization` payment flow.
-- No agent part: it is a console app.
+- No agent part in this app: it is a console app. An agent can drive it: see [`demos/agent`](../agent).
 - The interactive mode keeps no line history.
