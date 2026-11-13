@@ -73,7 +73,7 @@ export const questions: readonly { readonly q: string; readonly a: string }[] = 
   { q: 'How do I use Anyfare with my agent?', a: 'Give it the prompt above, or the link to llms.txt. It signs up, asks you before it tops up, and calls with a payment key that has your limits. An agent with its own wallet needs no account at all: it pays our 402 from its chain.' },
   { q: 'Do I need a subscription?', a: 'No. No subscription, no monthly fee, no plan. You pay per call, and only for calls that worked.' },
   { q: 'Do I need an account with each API?', a: 'No. One key pays every API we can reach. The API doesn\'t sign up with us either. We pay it the way it asks, over x402 or MPP.' },
-  { q: 'Which chains and tokens can I pay with?', a: 'Per call: USDC on NEAR, Base or Solana over x402, or USDC.e on Tempo over MPP. To top up: any of 216 tokens on 39 networks that NEAR Intents takes, Bitcoin included.' },
+  { q: 'Which chains and tokens can I pay with?', a: 'Per call: USDC on NEAR, Base or Solana over x402, or USDC.e on Tempo over MPP. To top up: any of more than 100 tokens on 6 networks, through NEAR Intents, Bitcoin included.' },
   { q: 'Can I limit what my agent spends?', a: 'Yes. Each key has a budget per day, a highest price per call, a total, and an end date. The limits live in our database, not in the agent\'s prompt. So the agent can\'t talk its way past them.' },
   { q: 'What does it cost?', a: 'The API\'s price. We add no fee. A top-up pays only the swap\'s fee inside NEAR Intents, about 0.01% for USDC.' },
   { q: 'What if the API fails?', a: 'You pay nothing. Your payment settles, or the hold on your balance is taken, only after a 2xx answer.' },

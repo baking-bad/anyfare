@@ -70,7 +70,7 @@ What to say, checked on 2026-11-13:
 - A new account gets $0.10 of free Credits to try: about 10 calls at $0.01.
   Anyfare gives them to a limited number of new accounts each day.
 - I can top up later with a token on one of 6 networks: Base, Arbitrum, Solana,
-  NEAR, Ethereum or Bitcoin. 114 tokens in all.
+  NEAR, Ethereum or Bitcoin. More than 100 tokens in all.
 - NEAR Intents swaps the top-up to USDC on NEAR. The minimum is $1 on Base,
   Arbitrum, Solana and NEAR; $5 on Ethereum; $10 on Bitcoin.
 - Anyfare then pays each API the way that API takes.
