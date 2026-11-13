@@ -60,7 +60,7 @@ const Receipt = async ({ params }: Params) => {
       }}
     >
       <section className="band">
-        <div className="container ruled page-pad receipt-container">
+        <div className="container ruled page-pad">
           {result.ok
             ? <ReceiptView receipt={result.value} siteUrl={settings.siteUrl} />
             : <ReceiptUnavailable />}

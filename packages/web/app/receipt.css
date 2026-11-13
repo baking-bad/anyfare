@@ -1,7 +1,5 @@
 /* The receipt page. Classes only: the content security policy allows no inline style. */
 
-/* The page is 1040 px wide, its gutters included */
-.receipt-container { max-width: 1040px; }
 .receipt-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .receipt-title { gap: 8px; }
 .receipt-title .balance { margin: 0; font-weight: inherit; }
@@ -28,7 +26,8 @@
 .route-big .coin > i.net { background: var(--gray-500); }
 .route-big .coin.near:not(.pair) > i, .route-big .coin.near > i.net { background: var(--green-500); color: var(--black); }
 
-.detail-grid { display: grid; gap: 16px 24px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+/* Columns of 200 px or more, and at most 4, so the 8 fields fill whole rows on a wide page. 72 px is the 3 gaps between 4 columns */
+.detail-grid { display: grid; gap: 16px 24px; grid-template-columns: repeat(auto-fit, minmax(max(200px, calc((100% - 72px) / 4)), 1fr)); }
 .detail-grid .wide { grid-column: span 2; }
 /* The receipt id has a row of its own and stays on one line; a very narrow screen scrolls it inside its box */
 .detail-grid .full { grid-column: 1 / -1; }
