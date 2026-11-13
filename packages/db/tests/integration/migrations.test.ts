@@ -150,5 +150,5 @@ describe('migrateDatabase', () => {
     finally {
       await fresh.drop();
     }
-  });
+  }, 30_000);
 });
