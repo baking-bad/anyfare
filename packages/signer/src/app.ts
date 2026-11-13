@@ -312,7 +312,18 @@ export const createApp = ({
   // NEAR hot wallet, or refuses. Its answer, and an unknown outcome, are answered again for the same ID.
   server.app.post<{ Body: RefillBody }>('/internal/v1/refills', { onRequest: authenticate, schema: { body: refillBodySchema } }, async (request, reply) => {
     const { refillId, asset, amount } = request.body;
-    const result = await refiller.refill({ refillId, asset, amount: BigInt(amount) as MicroUsd }, request.log);
+    let result;
+    try {
+      result = await refiller.refill({ refillId, asset, amount: BigInt(amount) as MicroUsd }, request.log);
+    }
+    catch (error) {
+      // A refusal says why beside its error, so the workers can tell a short hot wallet from the other refusals
+      if (!(error instanceof SigningRefusedError))
+        throw error;
+      recordErrorCode(request, error.code);
+
+      return reply.status(errorStatuses.signing_refused).send({ error: { code: error.code, message: error.message }, reason: error.reason });
+    }
     if (result.kind === 'sent')
       return result.answer;
     const code = result.kind === 'failed' ? 'refill_failed' : 'refill_unknown';

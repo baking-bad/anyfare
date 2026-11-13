@@ -288,7 +288,8 @@ describe('a refill refused before anything is sent', () => {
     const high = await refill('10000001');
 
     expect(low).toMatchObject({ status: 422, body: { error: { code: 'signing_refused', message: 'A refill is from 1 to 10 USD' } } });
-    expect(high).toMatchObject({ status: 422, body: { error: { code: 'signing_refused' } } });
+    // The reason goes beside the error, so the workers can tell the refusals apart
+    expect(high.body).toEqual({ error: { code: 'signing_refused', message: 'A refill is from 1 to 10 USD' }, reason: 'refill_amount' });
     expect(lastLine('Refused a refill')).toMatchObject({ level: 30, refillId: high.refillId, reason: 'refill_amount', result: 'refused' });
     expect(await recordOf(low.refillId)).toBeNull();
     expect(await spentToday('base-usdc')).toBe(0n);
@@ -337,7 +338,8 @@ describe('a refill refused before anything is sent', () => {
     const { status, body, refillId } = await refill('10000000');
 
     expect({ status, body }).toEqual({
-      status: 422, body: { error: { code: 'signing_refused', message: 'The quote\'s amountOut, 1000000000, is more than 200 basis points above the 10000000 asked for' } },
+      status: 422,
+      body: { error: { code: 'signing_refused', message: 'The quote\'s amountOut, 1000000000, is more than 200 basis points above the 10000000 asked for' }, reason: 'quote_rejected' },
     });
     expect(lastLine('Refused a refill')).toMatchObject({ refillId, reason: 'quote_rejected' });
     expect(await spentToday('base-usdc')).toBe(0n);
@@ -403,7 +405,7 @@ describe('a refill refused before anything is sent', () => {
     const { status, body, refillId } = await refill('5000000');
 
     expect(status).toBe(422);
-    expect(body['error']).toMatchObject({ code: 'signing_refused', message: expect.stringContaining('move some from the NEAR treasury') });
+    expect(body).toEqual({ error: { code: 'signing_refused', message: expect.stringContaining('move some from the NEAR treasury') }, reason: 'source_low' });
     expect(lastLine('Refused a refill')).toMatchObject({ level: 40, refillId, reason: 'source_low', alert: true });
     expect(await spentToday('base-usdc')).toBe(0n);
     expect(await recordOf(refillId)).toBeNull();
