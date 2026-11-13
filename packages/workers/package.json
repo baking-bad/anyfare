@@ -31,6 +31,7 @@
   },
   "devDependencies": {
     "@anyfare/api": "0.1.0",
+    "@anyfare/signer": "0.1.0",
     "@anyfare/testing": "0.1.0"
   }
 }

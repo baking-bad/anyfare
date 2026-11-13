@@ -20,6 +20,8 @@ import { createOneClickClient } from '@anyfare/topups';
 
 import { createApp, type WorkersServer } from '../../src/app.js';
 import { holdExpiryLockId } from '../../src/holdExpiry.js';
+import { rebalancingIntervalMs, rebalancingLockId } from '../../src/rebalancing.js';
+import { createRefillSigner } from '../../src/signerClient.js';
 import { checkEachFacilitator, defaultMetricsPort, readEvmRpcUrls, readNearRpcUrls, startWorkers } from '../../src/start.js';
 import { createEvmBalanceReader, createSolanaBalanceReader } from '../../src/treasury/readers.js';
 
@@ -283,6 +285,65 @@ describe('the top-up status job', () => {
     expect(await app.scheduler.runNow('treasury_balances')).toBe('success');
 
     expect(await metricsOf(app)).toMatch(/^treasury_balance_usd\{wallet="treasury:near",asset="near-usdc"\} 2$/m);
+  });
+});
+
+describe('the rebalancing job', () => {
+  // Made-up Signer wallets, which rebalancing needs named
+  const wallets = { base: `0x${'3'.repeat(40)}`, solana: encodeBase58(Buffer.alloc(32, 7)), near: 'hot.anyfare.testnet' };
+  const signerEnv = { SIGNER_URL: 'http://127.0.0.1:8083', SIGNER_SECRET: 'rebalancing-signer-secret-0123456789' };
+  // The example config with rebalancing on, or off, and the startup checks off
+  const envWith = (enabled: boolean, env: Record<string, string> = {}): Record<string, string> => ({
+    ...exampleConfig,
+    CONFIG: Buffer.from(JSON.stringify({
+      ...JSON.parse(Buffer.from(quietStartup, 'base64').toString('utf8')) as object, signer: { wallets }, rebalancing: { enabled },
+    })).toString('base64'),
+    DATABASE_URL: database.url.expose(),
+    HOST: '127.0.0.1',
+    METRICS_PORT: '0',
+    ...env,
+  });
+  const warning = 'Rebalancing is on, but the workers can\'t reach the Signer: no refills';
+
+  it('runs while rebalancing is on, with a Signer and a 1Click client, every rebalancing.intervalSeconds', async () => {
+    const on = await loadPlatformConfig({ env: envWith(true) });
+    const oneClick = createOneClickClient({ url: 'http://127.0.0.1:8085', timeoutMs: 2_000 });
+    const signer = createRefillSigner({ url: signerEnv.SIGNER_URL, secret: Secret.from(signerEnv.SIGNER_SECRET) });
+
+    expect(createApp({ config: on, logger: silent, postgres: database.postgres, oneClick, signer }).jobs).toContain('rebalancing');
+    expect(createApp({ config: on, logger: silent, postgres: database.postgres, oneClick }).jobs).not.toContain('rebalancing');
+    expect(createApp({ config: on, logger: silent, postgres: database.postgres, signer }).jobs).not.toContain('rebalancing');
+    expect(createApp({ config, logger: silent, postgres: database.postgres, oneClick, signer }).jobs).not.toContain('rebalancing');
+    expect(rebalancingIntervalMs(on)).toBe(300_000);
+    expect(rebalancingLockId).toBe(7_301_746_214);
+  });
+
+  it('warns once at start when rebalancing is on without SIGNER_URL or SIGNER_SECRET, and starts the job with both, never logging the secret', async () => {
+    for (const missing of ['SIGNER_URL', 'SIGNER_SECRET'] as const) {
+      const { lines, logger } = capture();
+      const env = envWith(true, signerEnv);
+      delete env[missing];
+
+      const app = await startWorkers({ env, logger });
+      await app.close();
+
+      expect(lines.filter(line => line['msg'] === warning)).toEqual([expect.objectContaining({ level: 40, missing: [missing] })]);
+      expect(lines.find(line => line['msg'] === 'Started')).toMatchObject({ jobs: startedJobs });
+    }
+
+    const { lines, logger } = capture();
+    const app = await startWorkers({ env: envWith(true, signerEnv), logger });
+    await app.close();
+
+    expect(lines.find(line => line['msg'] === 'Started')).toMatchObject({ jobs: [...startedJobs.slice(0, 6), 'rebalancing', ...startedJobs.slice(6)] });
+    expect(lines.filter(line => line['msg'] === warning)).toEqual([]);
+    expect(JSON.stringify(lines)).not.toContain(signerEnv.SIGNER_SECRET);
+
+    // Off: the Signer isn't read, and nothing warns
+    const off = capture();
+    await (await startWorkers({ env: envWith(false), logger: off.logger })).close();
+    expect(off.lines.find(line => line['msg'] === 'Started')).toMatchObject({ jobs: startedJobs });
+    expect(off.lines.filter(line => line['msg'] === warning)).toEqual([]);
   });
 });
 

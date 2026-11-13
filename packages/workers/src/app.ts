@@ -3,8 +3,8 @@ import {
 } from '@anyfare/common';
 import { createPaidWith, treasuryWallets, type BalanceReader, type PlatformConfig } from '@anyfare/core';
 import {
-  createLedger, createPaymentRepository, createRoutingRepository, createStatsCounter, createStatsRepository, createTopupRepository, createTreasuryRepository,
-  type Postgres,
+  createLedger, createPaymentRepository, createRefillRepository, createRoutingRepository, createStatsCounter, createStatsRepository, createTopupRepository,
+  createTreasuryRepository, type Postgres,
 } from '@anyfare/db';
 import { createFacilitatorLookup, type Facilitator, type MppSettlementCheck } from '@anyfare/payments';
 import type { OneClickClient } from '@anyfare/topups';
@@ -14,9 +14,11 @@ import {
   createAllStats, createPublicStatsMetrics, createRecentStats, publicStatsAllIntervalMs, publicStatsAllJobName, publicStatsAllLockId, publicStatsIntervalMs,
   publicStatsJobName, publicStatsLockId,
 } from './publicStats.js';
+import { createRebalancing, createRebalancingMetrics, rebalancingIntervalMs, rebalancingJobName, rebalancingLockId } from './rebalancing.js';
 import { createRoutingLossMetrics, createRoutingLosses, routingLossesIntervalMs, routingLossesJobName, routingLossesLockId } from './routingLosses.js';
 import { createScheduler, type Job, type JobOutcome, type Scheduler } from './scheduler.js';
 import { createSettlementFollowUp, settlementFollowUpIntervalMs, settlementFollowUpJobName, settlementFollowUpLockId } from './settlementFollowUp.js';
+import type { RefillSigner } from './signerClient.js';
 import { createTopupStatus, createTopupStatusMetrics, pollsTopups, topupStatusIntervalMs, topupStatusJobName, topupStatusLockId } from './topupStatus.js';
 import {
   createReconciliationJob, createTreasuryBalancesJob, createTreasuryMetrics, reconciliationIntervalMs, reconciliationJobName, reconciliationLockId,
@@ -35,7 +37,7 @@ export interface WorkersDependencies {
   readonly clock?: Clock;
   // Job schedules. Default: Node's timers.
   readonly timers?: Timers;
-  // Ledger and reconciliation IDs. Default: random UUIDs.
+  // Ledger, reconciliation and refill IDs. Default: random UUIDs.
   readonly ids?: IdGenerator;
   // The enabled facilitators, for the settlement follow-up. Default: none, so x402 payments wait.
   readonly facilitators?: readonly Facilitator[];
@@ -46,8 +48,11 @@ export interface WorkersDependencies {
   // Balance readers per chain. The treasury jobs run only with one.
   readonly balanceReaders?: { readonly evm?: BalanceReader; readonly solana?: BalanceReader; readonly near?: BalanceReader };
   // The 1Click API of NEAR Intents, which the top-up status job polls. The job runs only with it, while
-  // the top-ups section names a recipient and an asset, on or off.
+  // the top-ups section names a recipient and an asset, on or off. The rebalancing job follows refills through it.
   readonly oneClick?: OneClickClient;
+  // The Signer's refills, from SIGNER_URL and SIGNER_SECRET. The rebalancing job runs only with it and a
+  // 1Click client, while rebalancing is on.
+  readonly signer?: RefillSigner;
 }
 
 export interface WorkersServer extends MetricsServer {
@@ -74,8 +79,9 @@ const outcomeOf = <TCounts extends { readonly [Name in keyof TCounts]: number }>
  * Workers have no public listener. Health, readiness (Postgres), and metrics share the metrics port.
  * Jobs start with the listener and stop before it closes: hold expiry, the settlement follow-up, routing
  * losses, the public numbers' two counts, once every other job due within their interval has run once,
- * with the top-ups section configured and a 1Click client, the top-up status job, and with a balance
- * reader, the treasury's balance monitor and the daily reconciliation.
+ * with the top-ups section configured and a 1Click client, the top-up status job, with rebalancing on, a
+ * Signer and a 1Click client, the rebalancing job, and with a balance reader, the treasury's balance
+ * monitor and the daily reconciliation.
  */
 export const createApp = ({
   config,
@@ -90,6 +96,7 @@ export const createApp = ({
   nearHeight,
   balanceReaders,
   oneClick,
+  signer,
 }: WorkersDependencies): WorkersServer => {
   const server = createMetricsServer({
     logger,
@@ -180,6 +187,28 @@ export const createApp = ({
       intervalMs: topupStatusIntervalMs,
       // Polls that changed nothing, and swaps still under way, aren't news
       run: async () => outcomeOf(await topupStatus(), ['credited', 'refunded', 'failed', 'review', 'stuck']),
+    });
+  }
+
+  // Reads the Signer's hot wallets with the treasury's readers. A target whose chain has none is skipped each run.
+  if (config.rebalancing.enabled && signer && oneClick) {
+    const rebalancing = createRebalancing({
+      refills: createRefillRepository({ db: postgres.db, clock, ids }),
+      signer,
+      oneClick,
+      readerFor: readerFor(balanceReaders ?? {}),
+      config,
+      metrics: createRebalancingMetrics(server.registry),
+      clock,
+      ids,
+      logger,
+    });
+    jobs.push({
+      name: rebalancingJobName,
+      lockId: rebalancingLockId,
+      intervalMs: rebalancingIntervalMs(config),
+      // Polls that changed nothing, and asks left for the next run, aren't news
+      run: async stopping => outcomeOf(await rebalancing(stopping), ['succeeded', 'refunded', 'review', 'created', 'sent', 'unknown', 'failed', 'notSent']),
     });
   }
 

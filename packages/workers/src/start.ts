@@ -11,6 +11,7 @@ import { createOneClickClient } from '@anyfare/topups';
 import { NEAR_RPC_URLS } from '@x402/near';
 
 import { createApp } from './app.js';
+import { createRefillSigner, type RefillSigner } from './signerClient.js';
 import { pollsTopups } from './topupStatus.js';
 import { createEvmBalanceReader, createNearBalanceReader, createSolanaBalanceReader, type NearBalanceReader } from './treasury/readers.js';
 
@@ -170,19 +171,30 @@ export const startWorkers = async ({ env, logger }: AppContext): Promise<Running
   };
 
   // The top-up status job polls 1Click whenever the top-ups section names a recipient and an asset, on
-  // or off, so open top-ups are still credited after new ones are switched off. With the key the config
-  // names: one that isn't set stops the start.
+  // or off, so open top-ups are still credited after new ones are switched off, and the rebalancing job
+  // while rebalancing is on. With the key the config names: one that isn't set stops the start.
   const { topups } = config;
-  const oneClick = pollsTopups(config)
+  const oneClick = pollsTopups(config) || config.rebalancing.enabled
     ? createOneClickClient({ url: topups.url, apiKey: topups.apiKey === undefined ? undefined : readSecret(topups.apiKey, env), timeoutMs: topups.timeoutMs })
     : undefined;
+  // Rebalancing asks the Signer for refills, at SIGNER_URL with SIGNER_SECRET, as the proxy does. Without
+  // either, the job doesn't run.
+  let signer: RefillSigner | undefined;
+  if (config.rebalancing.enabled) {
+    const signerUrl = env['SIGNER_URL']?.trim();
+    const signerSecret = env['SIGNER_SECRET'];
+    if (signerUrl && signerSecret)
+      signer = createRefillSigner({ url: signerUrl, secret: readSecret('SIGNER_SECRET', env) });
+    else
+      logger.warn({ missing: [...signerUrl ? [] : ['SIGNER_URL'], ...signerSecret ? [] : ['SIGNER_SECRET']] }, 'Rebalancing is on, but the workers can\'t reach the Signer: no refills');
+  }
 
   const postgres = createPostgres({ url: databaseUrl, logger });
   // The public numbers' two counts each hold their lock's session and one statement's connection at most
   const statsPostgres = createPostgres({ url: databaseUrl, logger, maxConnections: statsConnections });
   const server = createApp({
     config, logger, postgres, statsPostgres, facilitators, balanceReaders, ...mppCheck ? { mppCheck } : {}, ...near ? { nearHeight: () => near.height() } : {},
-    ...oneClick ? { oneClick } : {},
+    ...oneClick ? { oneClick } : {}, ...signer ? { signer } : {},
   });
   let port;
   try {

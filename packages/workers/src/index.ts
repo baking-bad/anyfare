@@ -30,3 +30,11 @@ export {
 export type { ReconciliationOptions, TreasuryBalancesOptions, TreasuryMetrics } from './treasury/jobs.js';
 export { createEvmBalanceReader, createNearBalanceReader, createSolanaBalanceReader, NearRpcError, readerFor, SolanaRpcError } from './treasury/readers.js';
 export type { NearBalanceReader } from './treasury/readers.js';
+export {
+  alertRepeatMs, bookingAmounts, createRebalancing, createRebalancingMetrics, decideRefill, firstRefillPollMs, pendingAfterDeadlineMs, pollStepOf,
+  RebalancingFailedError, rebalancingIntervalMs, rebalancingJobName, rebalancingLockId, refillAnswerOf, refusalPauseMs, requestedLimitMs, stuckRequestedMs,
+  underFloorAlertMs, unfinishedAlertMs,
+} from './rebalancing.js';
+export type { RebalancingMetrics, RebalancingOptions, RebalancingResult, RefillDecision, RefillPollStep } from './rebalancing.js';
+export { createRefillSigner, refillPath, refillTimeoutMs, signerRefillOf } from './signerClient.js';
+export type { RefillRequest, RefillSigner, SignerRefill, SignerTransfer } from './signerClient.js';
