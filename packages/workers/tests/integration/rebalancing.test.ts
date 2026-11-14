@@ -197,23 +197,48 @@ const statusBody = async (depositAddress: string): Promise<Record<string, any>> 
 const transfers = async (reference: string) => createTreasuryRepository({ db: database.db }).findTransfer(reference);
 
 describe('when rebalancing is off', () => {
-  it('does nothing at all, not even with a refill due for a poll', async () => {
+  // The config is loaded before the tests run, not before they are listed
+  const off = () => ({ ...config, rebalancing: { ...config.rebalancing, enabled: false } });
+
+  it('asks for no refill and reads no wallet', async () => {
+    expect(await run({ config: off() })).toMatchObject({ polled: 0, created: 0, askedAgain: 0, alerts: 0, errors: 0 });
+
+    expect(asks).toEqual([]);
+    expect(reads).toEqual([]);
+    expect(await rowsOf()).toEqual([]);
+    expect(await registry.metrics()).not.toContain('rebalancing_refills_total{');
+  });
+
+  // The refills here end refunded: the ledger, which the tests below read whole, stays as it was
+  it('still follows a refill that was sent before to its end', async () => {
     await run();
     const refill = await only();
+    expect(refill.status).toBe('sent');
+    oneClick.setStatus(refill.depositAddress!, 'REFUNDED', { refundFee: '1000' });
     clock.advance(hourMs);
-    logs.length = 0;
     reads.length = 0;
-    const requests = oneClick.requests.length;
-    const off = { ...config, rebalancing: { ...config.rebalancing, enabled: false } };
 
-    expect(await run({ config: off })).toMatchObject({ polled: 0, created: 0, askedAgain: 0, alerts: 0, errors: 0 });
+    expect(await run({ config: off() })).toMatchObject({ polled: 1, refunded: 1, created: 0, askedAgain: 0, errors: 0 });
+
+    // No second ask of the Signer, no balance read, and no new refill for the wallet still under its floor
+    expect(asks).toHaveLength(1);
+    expect(reads).toEqual([]);
+    expect(await only()).toMatchObject({ id: refill.id, status: 'refunded' });
+    expect(linesOf('A refill was refunded to the NEAR hot wallet: nothing was booked')).toHaveLength(1);
+  });
+
+  it('follows a sent refill without a Signer too', async () => {
+    await run();
+    const refill = await only();
+    oneClick.setStatus(refill.depositAddress!, 'REFUNDED', { refundFee: '1000' });
+    clock.advance(hourMs);
+    reads.length = 0;
+
+    expect(await run({ signer: undefined })).toMatchObject({ polled: 1, refunded: 1, created: 0, askedAgain: 0, errors: 0 });
 
     expect(asks).toHaveLength(1);
     expect(reads).toEqual([]);
-    expect(oneClick.requests).toHaveLength(requests);
-    expect(await only()).toEqual(refill);
-    expect(logs).toEqual([]);
-    expect(await registry.metrics()).not.toContain('rebalancing_refills_total{');
+    expect(await only()).toMatchObject({ id: refill.id, status: 'refunded' });
   });
 });
 

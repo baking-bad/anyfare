@@ -50,8 +50,8 @@ export interface WorkersDependencies {
   // The 1Click API of NEAR Intents, which the top-up status job polls. The job runs only with it, while
   // the top-ups section names a recipient and an asset, on or off. The rebalancing job follows refills through it.
   readonly oneClick?: OneClickClient;
-  // The Signer's refills, from SIGNER_URL and SIGNER_SECRET. The rebalancing job runs only with it and a
-  // 1Click client, while rebalancing is on.
+  // The Signer's refills, from SIGNER_URL and SIGNER_SECRET. The rebalancing job asks for refills only
+  // with it, while rebalancing is on. Without it, the job still follows the refills already sent.
   readonly signer?: RefillSigner;
 }
 
@@ -191,10 +191,11 @@ export const createApp = ({
   }
 
   // Reads the Signer's hot wallets with the treasury's readers. A target whose chain has none is skipped each run.
-  if (config.rebalancing.enabled && signer && oneClick) {
+  // Whether or not rebalancing is on: refills already sent are still followed and booked after it is switched off.
+  if (oneClick) {
     const rebalancing = createRebalancing({
       refills: createRefillRepository({ db: postgres.db, clock, ids }),
-      signer,
+      ...signer ? { signer } : {},
       oneClick,
       readerFor: readerFor(balanceReaders ?? {}),
       config,

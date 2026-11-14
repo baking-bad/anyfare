@@ -28,7 +28,7 @@ export const stuckRequestedMs = 10 * minuteMs;
 export const underFloorAlertMs = hourMs;
 // How often an alert about the same refill or target repeats while it lasts
 export const alertRepeatMs = hourMs;
-// How long after its quote's deadline 1Click may still be waiting for a refill's deposit
+// How long after a refill's deadline, the one the Signer asked 1Click for, 1Click may still be waiting for its deposit
 export const pendingAfterDeadlineMs = 72 * hourMs;
 /**
  * The longest a refill stays `requested` and asked again: the Signer keeps an ID's record 7 days, and a
@@ -163,7 +163,8 @@ export const createRebalancingMetrics = (registry: Registry): RebalancingMetrics
 
 export interface RebalancingOptions {
   readonly refills: Pick<RefillRepository, 'create' | 'findLatest' | 'listInFlight' | 'recordAnswer' | 'listDue' | 'claimPoll' | 'recordPoll' | 'finish' | 'book'>;
-  readonly signer: RefillSigner;
+  // Undefined: no refill is asked for, and the refills already sent are still followed
+  readonly signer?: RefillSigner;
   readonly oneClick: Pick<OneClickClient, 'status'>;
   // The balance reader for an asset's chain. Undefined: none, and its targets are skipped.
   readonly readerFor: (asset: Asset) => BalanceReader | undefined;
@@ -225,14 +226,15 @@ const whereOf = (refill: Refill) => ({
 
 /**
  * The rebalancing job: keeps the Signer's hot wallets on Base and Solana between their floor and
- * target, by asking the Signer for refills paid from its NEAR hot wallet through 1Click. Nothing when
- * rebalancing is off. One run, in order:
+ * target, by asking the Signer for refills paid from its NEAR hot wallet through 1Click. With
+ * rebalancing off, or without the Signer, steps 2 to 4 are left out: nothing is asked of the Signer, and
+ * what it already sent is still followed, booked and alerted on. One run, in order:
  *
  * 1. Follows the sent and unknown refills that are due through 1Click's status for their deposit
  *    address. SUCCESS books the refill, in one transaction with the ledger's treasury transfer;
- *    REFUNDED ends it, and nothing is booked; FAILED, PENDING_DEPOSIT 72 hours past the quote's
- *    deadline, and an address 1Click doesn't know past that deadline flag it for review. Anything
- *    else, or 1Click not answering, polls it again later.
+ *    REFUNDED ends it, and nothing is booked; FAILED, PENDING_DEPOSIT 72 hours past the refill's
+ *    deadline, and an address 1Click doesn't know past that deadline flag it for review. The deadline
+ *    is the one the Signer asked 1Click for. Anything else, or 1Click not answering, polls it again later.
  * 2. Asks the Signer again for each refill still `requested`, with the same ID: its first answer never
  *    arrived, and the Signer answers what it did then, without sending twice.
  * 3. For each target without a refill in flight, reads the Signer's wallet on the target's chain, and
@@ -257,8 +259,8 @@ export const createRebalancing = ({
       polled: 0, succeeded: 0, refunded: 0, review: 0, created: 0, askedAgain: 0, sent: 0, unknown: 0, failed: 0, notSent: 0, inProgress: 0, noAnswer: 0,
       unavailable: 0, unread: 0, alerts: 0, errors: 0,
     };
-    if (!rebalancing.enabled)
-      return counts;
+    // Off, or no Signer to ask: only what was already sent is followed
+    const asks = rebalancing.enabled && signer !== undefined;
 
     const assetNamed = (name: string): Asset | undefined => config.assets.find(asset => asset.name === name);
     const moved = (refill: Pick<Refill, 'asset'>, status: RefillStatus): void => metrics.refills.inc({ asset: refill.asset, status });
@@ -431,6 +433,8 @@ export const createRebalancing = ({
 
     // 2 and 4. One ask of the Signer, and its answer kept. `again`: the ID was asked before.
     const ask = async (refill: Refill, again: boolean): Promise<void> => {
+      if (!signer)
+        return;
       const answer = await signer.refill({ refillId: refill.id, asset: refill.asset, amount: refill.amount });
       const kept = refillAnswerOf(answer, new Date(clock.now().getTime() + firstRefillPollMs), again);
       const fields = { refillId: refill.id, asset: refill.asset, amount: formatUsd(refill.amount) };
@@ -535,7 +539,7 @@ export const createRebalancing = ({
 
     // 2. Ask again for requested refills. Their assets get no other ask this run.
     const askedAgain = new Set<string>();
-    const requested = (await refills.listInFlight()).filter(refill => refill.status === 'requested');
+    const requested = asks ? (await refills.listInFlight()).filter(refill => refill.status === 'requested') : [];
     await each(requested, async refill => {
       askedAgain.add(refill.asset);
       // Past the Signer's memory of the ID a re-ask could send again: an operator decides
@@ -605,7 +609,7 @@ export const createRebalancing = ({
       await ask(created, false);
     };
     // A config without a source is refused while rebalancing is on
-    if (rebalancing.source)
+    if (asks && rebalancing.source)
       await each(rebalancing.targets, decide, target => ({ asset: target.asset.name, step: 'decide' }));
 
     // 5. Alerts, once an hour each while it lasts
@@ -630,7 +634,9 @@ export const createRebalancing = ({
       if (refill.status === 'requested') {
         alert(`refill:${refill.id}`, refill.createdAt.getTime() + stuckRequestedMs, () => logger.error({
           ...whereOf(refill), createdAt: refill.createdAt.toISOString(), alert: true,
-        }, 'A refill has waited over 10 minutes for the Signer\'s answer: it is asked again each run'));
+        }, asks
+          ? 'A refill has waited over 10 minutes for the Signer\'s answer: it is asked again each run'
+          : 'A refill waits for the Signer\'s answer, and no refill is asked for now: turn rebalancing on, so the Signer is asked again'));
       }
       else if ((refill.status === 'sent' || refill.status === 'unknown') && refill.sentAt !== undefined) {
         alert(`refill:${refill.id}`, refill.sentAt.getTime() + unfinishedAlertMs, () => logger.error({

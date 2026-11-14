@@ -181,7 +181,7 @@ export interface PlatformConfig {
   // at topups.url. When enabled, source is set, there is at least one target, and the platform config
   // names the Signer's wallet on NEAR and on each target's chain.
   readonly rebalancing: {
-    // Off: the Signer refuses every refill, and the workers' job does nothing
+    // Off: the Signer refuses every refill, and the workers' job only follows the refills already sent
     readonly enabled: boolean;
     // The registry asset refills are paid with, on a NEAR network
     readonly source: Asset | undefined;

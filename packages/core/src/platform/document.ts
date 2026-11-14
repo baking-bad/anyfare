@@ -170,7 +170,7 @@ export interface RebalancingTargetDocument {
 }
 
 export interface RebalancingDocument {
-  // Default: false. Off, the Signer refuses every refill, and the workers' job does nothing.
+  // Default: false. Off, the Signer refuses every refill, and the workers' job only follows the refills already sent.
   readonly enabled?: boolean;
   // The registry asset refills are paid with: one on a NEAR network, held by signer.wallets.near
   readonly source?: string;

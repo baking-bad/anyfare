@@ -30,8 +30,11 @@ const base = 'eip155:84532';
 const solana = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 const silent = createLogger({ level: 'silent' });
 const allJobs = ['hold_expiry', 'settlement_follow_up', 'routing_losses', 'public_stats', 'public_stats_all', 'treasury_balances', 'reconciliation'];
-// What startWorkers runs on the example config: its top-ups section names a recipient and an asset, so the status job runs though top-ups are off
-const startedJobs = ['hold_expiry', 'settlement_follow_up', 'routing_losses', 'public_stats', 'public_stats_all', 'topup_status', 'treasury_balances', 'reconciliation'];
+// What startWorkers runs on the example config: its top-ups section names a recipient and an asset, so the status job runs though top-ups are off,
+// and with its 1Click client the rebalancing job, which follows the refills already sent though rebalancing is off
+const startedJobs = [
+  'hold_expiry', 'settlement_follow_up', 'routing_losses', 'public_stats', 'public_stats_all', 'topup_status', 'rebalancing', 'treasury_balances', 'reconciliation',
+];
 
 let config: PlatformConfig;
 let database: TestDatabase;
@@ -215,7 +218,7 @@ describe('the top-up status job', () => {
     const app = createApp({ config, logger: silent, postgres: database.postgres, oneClick: client });
 
     expect(config.topups).toMatchObject({ enabled: false, recipient: 'treasury.anyfare.testnet', asset: expect.objectContaining({ name: 'near-usdc' }) });
-    expect(app.jobs).toEqual(['hold_expiry', 'settlement_follow_up', 'routing_losses', 'public_stats', 'public_stats_all', 'topup_status']);
+    expect(app.jobs).toEqual(['hold_expiry', 'settlement_follow_up', 'routing_losses', 'public_stats', 'public_stats_all', 'topup_status', 'rebalancing']);
     expect(await app.scheduler.runNow('topup_status')).toBe('success');
     const text = await metricsOf(app);
     expect(text).toContain('workers_job_runs_total{job="topup_status",result="success"} 1');
@@ -305,15 +308,16 @@ describe('the rebalancing job', () => {
   });
   const warning = 'Rebalancing is on, but the workers can\'t reach the Signer: no refills';
 
-  it('runs while rebalancing is on, with a Signer and a 1Click client, every rebalancing.intervalSeconds', async () => {
+  it('runs with a 1Click client, on or off and with or without a Signer, every rebalancing.intervalSeconds', async () => {
     const on = await loadPlatformConfig({ env: envWith(true) });
     const oneClick = createOneClickClient({ url: 'http://127.0.0.1:8085', timeoutMs: 2_000 });
     const signer = createRefillSigner({ url: signerEnv.SIGNER_URL, secret: Secret.from(signerEnv.SIGNER_SECRET) });
 
     expect(createApp({ config: on, logger: silent, postgres: database.postgres, oneClick, signer }).jobs).toContain('rebalancing');
-    expect(createApp({ config: on, logger: silent, postgres: database.postgres, oneClick }).jobs).not.toContain('rebalancing');
+    // Without a Signer, or switched off, it asks for no refill and still follows the ones already sent
+    expect(createApp({ config: on, logger: silent, postgres: database.postgres, oneClick }).jobs).toContain('rebalancing');
+    expect(createApp({ config, logger: silent, postgres: database.postgres, oneClick, signer }).jobs).toContain('rebalancing');
     expect(createApp({ config: on, logger: silent, postgres: database.postgres, signer }).jobs).not.toContain('rebalancing');
-    expect(createApp({ config, logger: silent, postgres: database.postgres, oneClick, signer }).jobs).not.toContain('rebalancing');
     expect(rebalancingIntervalMs(on)).toBe(300_000);
     expect(rebalancingLockId).toBe(7_301_746_214);
   });
@@ -335,7 +339,7 @@ describe('the rebalancing job', () => {
     const app = await startWorkers({ env: envWith(true, signerEnv), logger });
     await app.close();
 
-    expect(lines.find(line => line['msg'] === 'Started')).toMatchObject({ jobs: [...startedJobs.slice(0, 6), 'rebalancing', ...startedJobs.slice(6)] });
+    expect(lines.find(line => line['msg'] === 'Started')).toMatchObject({ jobs: startedJobs });
     expect(lines.filter(line => line['msg'] === warning)).toEqual([]);
     expect(JSON.stringify(lines)).not.toContain(signerEnv.SIGNER_SECRET);
 

@@ -171,8 +171,9 @@ export const startWorkers = async ({ env, logger }: AppContext): Promise<Running
   };
 
   // The top-up status job polls 1Click whenever the top-ups section names a recipient and an asset, on
-  // or off, so open top-ups are still credited after new ones are switched off, and the rebalancing job
-  // while rebalancing is on. With the key the config names: one that isn't set stops the start.
+  // or off, so open top-ups are still credited after new ones are switched off. The rebalancing job
+  // follows its refills through the same client, on or off. With the key the config names: one that
+  // isn't set stops the start.
   const { topups } = config;
   const oneClick = pollsTopups(config) || config.rebalancing.enabled
     ? createOneClickClient({ url: topups.url, apiKey: topups.apiKey === undefined ? undefined : readSecret(topups.apiKey, env), timeoutMs: topups.timeoutMs })
