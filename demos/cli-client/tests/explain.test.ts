@@ -238,7 +238,7 @@ describe('explainLines', () => {
     expect(marked[0]).toContain('0.001 USDC on NEAR');
     expect(marked[0]).toContain('the only option it can pay');
     expect(out).toContain("▸ Anyfare's quote, from the routing link's 402");
-    expect(out).toContain("GET /_/check probes with GET and no body");
+    expect(out).toContain('This app asks GET /_/check for GET calls only');
     expect(out).toMatch(/The API's price\s+\$0\.001 in USDC on NEAR/);
     expect(out).toMatch(/Anyfare's fee\s+\$0\.001/);
     expect(out).toMatch(/You pay\s+\$0\.002/);

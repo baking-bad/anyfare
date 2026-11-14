@@ -55,7 +55,7 @@ export async function readPlan(input: {
       ? await attempt(() => checkQuote(fetchFn, config.payUrl, call.url))
       : ({
           kind: 'skipped',
-          note: "GET /_/check probes with GET and no body, so it can't quote a POST call. The price comes from Anyfare's own 402 above.",
+          note: "This app asks GET /_/check for GET calls only. For a POST call, the price comes from Anyfare's own 402 above, for this request and its body.",
         } as const);
   const anyfare = await attempt(() => readUnpaid(fetchFn, link, call));
   return { prepared, config, link, api, check, anyfare };
