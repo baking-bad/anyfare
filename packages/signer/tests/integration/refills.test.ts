@@ -183,6 +183,9 @@ describe('a refill through 1Click', () => {
     // 30 minutes from now
     expect(Date.parse(String(sent['deadline'])) - Date.now()).toBeGreaterThan(29 * 60_000);
     expect(Date.parse(String(sent['deadline'])) - Date.now()).toBeLessThanOrEqual(30 * 60_000);
+    // The answer carries that deadline, not the quote's own, when the deposit address goes inactive
+    expect(body['quoteDeadline']).toBe(sent['deadline']);
+    expect(body['quoteDeadline']).not.toBe(oneClick.quotes().at(-1)!.quote.deadline);
     // One transaction to the token: storage_deposit for the new address at the token's minimum, then ft_transfer of amountIn with 1 yoctoNEAR
     expect(rpc.directTransactions).toHaveLength(before.transactions + 1);
     const transaction = rpc.directTransactions.at(-1)!;
@@ -474,7 +477,7 @@ describe('a refill whose transaction was sent', () => {
     expect(unknown.body).toEqual({
       error: { code: 'refill_unknown', message: 'The refill\'s transaction may have gone through: follow 1Click\'s status for its deposit address' },
       outcome: 'unknown', transactionHash: transaction.hash, depositAddress: oneClick.quotes().at(-1)!.quote.depositAddress, amountIn: '5000501', amountOut: '5000000',
-      quoteDeadline: oneClick.quotes().at(-1)!.quote.deadline, correlationId: oneClick.quotes().at(-1)!.correlationId,
+      quoteDeadline: oneClick.quotes().at(-1)!.quoteRequest['deadline'], correlationId: oneClick.quotes().at(-1)!.correlationId,
     });
     // It did move: the reservation stays
     expect(rpc.balanceOf(usdc, hotWallet)).toBe(funded - 5_000_501n);

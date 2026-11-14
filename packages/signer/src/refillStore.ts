@@ -17,6 +17,8 @@ export interface RefillAnswer {
   readonly depositAddress: string;
   readonly amountIn: string;
   readonly amountOut: string;
+  // The deadline the Signer asked 1Click for: a swap unfinished by then is refunded. Not the quote's own
+  // deadline, which is when the deposit address goes inactive, days later.
   readonly quoteDeadline: string;
   readonly correlationId: string;
   readonly transactionHash: string;
@@ -31,6 +33,7 @@ export interface RefillUnknown {
   readonly depositAddress: string;
   readonly amountIn: string;
   readonly amountOut: string;
+  // As in RefillAnswer: the deadline the Signer asked for
   readonly quoteDeadline: string;
   readonly correlationId: string;
 }

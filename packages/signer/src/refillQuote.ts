@@ -67,8 +67,8 @@ export const isRefillFeeWithin = ({ amountIn, amountOut, amount, sourceDecimals,
 };
 
 /**
- * How long before its deadline a quote may still be paid. A transfer that lands after the deadline is
- * refunded, so a quote about to expire would only cost a wasted refill.
+ * How long before its deadline a quote may still be paid. The quote's deadline is when 1Click's deposit
+ * address goes inactive, well after the deadline we asked for: a transfer to an inactive address may be lost.
  */
 export const quoteDeadlineMarginMs = 2 * 60_000;
 

@@ -71,17 +71,19 @@ let signerUrl: string;
 let closeSigner: () => Promise<void>;
 
 // What the Signer does: a real EXACT_OUTPUT quote to our wallet, and the transfer it sent
-const quoteFor = async (ask: SignerAsk) => client.quote({
+const quoteFor = async (ask: SignerAsk, deadline: string) => client.quote({
   dry: false, swapType: 'EXACT_OUTPUT', slippageTolerance: 50, originAsset: `nep141:${testnetNearUsdcAddress}`, depositType: 'ORIGIN_CHAIN',
   destinationAsset: destinations[ask.body.asset]!, amount: ask.body.amount, refundTo: hotWallet, refundType: 'ORIGIN_CHAIN',
   recipient: ask.body.asset === 'base-usdc' ? baseWallet : solanaWallet, recipientType: 'DESTINATION_CHAIN',
-  deadline: new Date(clock.now().getTime() + 30 * minuteMs).toISOString(), depositMode: 'SIMPLE',
+  deadline, depositMode: 'SIMPLE',
 });
 const transferOf = async (ask: SignerAsk) => {
-  const quote = await quoteFor(ask);
+  // The Signer answers the deadline it asked for, not the quote's own, which is 72 hours later
+  const deadline = new Date(clock.now().getTime() + 30 * minuteMs).toISOString();
+  const quote = await quoteFor(ask, deadline);
 
   return {
-    depositAddress: quote.quote.depositAddress, amountIn: quote.quote.amountIn, amountOut: quote.quote.amountOut, quoteDeadline: quote.quote.deadline,
+    depositAddress: quote.quote.depositAddress, amountIn: quote.quote.amountIn, amountOut: quote.quote.amountOut, quoteDeadline: deadline,
     correlationId: quote.correlationId, transactionHash: encodeBase58(randomBytes(32)), quote: quote.raw,
   };
 };
@@ -232,7 +234,7 @@ describe('a new refill', () => {
     const refill = await only();
     expect(refill).toMatchObject({
       id: ask!.body.refillId, asset: 'solana-usdc', sourceAsset: 'near-usdc', amount: 5_000_000n, status: 'sent', depositAddress: quote.quote.depositAddress,
-      amountIn: BigInt(quote.quote.amountIn), amountOut: 5_000_000n, quoteDeadline: new Date(quote.quote.deadline), correlationId: quote.correlationId,
+      amountIn: BigInt(quote.quote.amountIn), amountOut: 5_000_000n, quoteDeadline: new Date(Date.parse(noon) + 30 * minuteMs), correlationId: quote.correlationId,
       nearTransactionHash: expect.any(String), quote: JSON.parse(JSON.stringify(quote)), nextPollAt: new Date(Date.parse(noon) + 10_000), sentAt: new Date(noon),
     });
     expect(linesOf('A hot wallet is under its floor: the Signer is asked for a refill')).toEqual([expect.objectContaining({
@@ -383,12 +385,10 @@ describe('following a refill through 1Click', () => {
       expect(await nextPoll()).toBe(10_000);
       clock.advance(10_000);
     }
-    // Then every minute until the quote's deadline, and every 5 minutes after it
+    // Then every 5 minutes: the deadline, 30 minutes after it was sent, has passed
+    expect(deadline).toBe(Date.parse(noon) + 30 * minuteMs);
     oneClick.setStatus(refill.depositAddress!, 'PENDING_DEPOSIT');
     clock.set(new Date(Date.parse(noon) + 2 * hourMs));
-    await run();
-    expect(await nextPoll()).toBe(minuteMs);
-    clock.set(new Date(deadline + hourMs));
     await run();
     expect(await nextPoll()).toBe(5 * minuteMs);
     clock.set(new Date(deadline + pendingAfterDeadlineMs - 5 * minuteMs));

@@ -311,6 +311,8 @@ export const createRefiller = ({
     let outcome: NearTransferOutcome;
     let amountIn: bigint;
     let amountOut: bigint;
+    // When 1Click starts to refund a swap that hasn't finished: the deadline we ask for
+    let payBy: string;
     try {
       // 3. The amount, then its reservation against the day's cap for the asset, by Redis's clock
       if (amount < rebalancing.leastPerRefill || amount > rebalancing.mostPerRefill)
@@ -326,6 +328,7 @@ export const createRefiller = ({
       // 4. A real quote: exactly the amount, delivered to our own wallet, refunded to the NEAR hot wallet
       const [origin, destination] = await Promise.all([assetIdOf(needs.tokens, source, 'near'), assetIdOf(needs.tokens, target.asset, target.blockchain)]);
       const atomicAmount = refillAtomicAmount(amount, target.asset.decimals);
+      payBy = new Date(clock.now().getTime() + rebalancing.deadlineMinutes * 60_000).toISOString();
       const request: OneClickQuoteRequest & { readonly dry: false } = {
         dry: false,
         swapType: 'EXACT_OUTPUT',
@@ -338,7 +341,7 @@ export const createRefiller = ({
         refundType: 'ORIGIN_CHAIN',
         recipient,
         recipientType: 'DESTINATION_CHAIN',
-        deadline: new Date(clock.now().getTime() + rebalancing.deadlineMinutes * 60_000).toISOString(),
+        deadline: payBy,
         depositMode: 'SIMPLE',
       };
       try {
@@ -400,7 +403,7 @@ export const createRefiller = ({
     }
 
     const facts = {
-      depositAddress: answer.quote.depositAddress, amountIn: amountIn.toString(), amountOut: amountOut.toString(), quoteDeadline: answer.quote.deadline,
+      depositAddress: answer.quote.depositAddress, amountIn: amountIn.toString(), amountOut: amountOut.toString(), quoteDeadline: payBy,
       correlationId: answer.correlationId,
     };
     // 1Click's cost in USD, for the line
