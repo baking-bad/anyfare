@@ -132,8 +132,8 @@ describe('config/production.yaml', () => {
     const { rebalancing } = config;
 
     expect(rebalancing).toMatchObject({
-      enabled: false, leastPerRefill: 1_000_000n, mostPerRefill: 10_000_000n, mostPerAssetPerDay: 20_000_000n, maxFeeBps: 200, slippageBps: 50, deadlineMinutes: 30,
-      intervalSeconds: 300,
+      enabled: false, sourceFloor: 1_000_000n, leastPerRefill: 1_000_000n, mostPerRefill: 10_000_000n, mostPerAssetPerDay: 20_000_000n, maxFeeBps: 200, slippageBps: 50,
+      deadlineMinutes: 30, intervalSeconds: 300,
     });
     expect(rebalancing.source).toBe(findAsset(config, 'near-usdc'));
     expect(rebalancing.targets.map(target => [target.asset.name, target.asset.network.id, target.blockchain, target.floor, target.target])).toEqual([

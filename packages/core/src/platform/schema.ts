@@ -106,6 +106,7 @@ export const platformConfigSchema: SchemaObject = {
     rebalancing: object({
       enabled: boolean,
       source: assetName,
+      sourceFloor: usdAmount,
       leastPerRefill: usdAmount,
       mostPerRefill: usdAmount,
       mostPerAssetPerDay: usdAmount,

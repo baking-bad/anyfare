@@ -122,6 +122,8 @@ topups:
 rebalancing:
   enabled: false
   source: near-usdc
+  # In USD: a refill never leaves the NEAR hot wallet with less, because that wallet pays APIs on NEAR too
+  sourceFloor: "1"
   # In USD: the least and the most per refill, and the most per target asset per UTC day
   leastPerRefill: "1"
   mostPerRefill: "10"

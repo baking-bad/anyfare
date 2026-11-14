@@ -41,9 +41,10 @@ export const platformDefaults = {
   },
   // Rebalancing: off unless the deployment turns it on. Refills of $1 to $10, at most $20 per target
   // asset a day, a 2% cost at most, 0.5% slippage, 30 minutes before 1Click refunds, a check every 5
-  // minutes. No source and no targets: the deployment names them.
+  // minutes. Nothing kept back in the NEAR hot wallet. No source and no targets: the deployment names them.
   rebalancing: {
     enabled: false,
+    sourceFloor: '0',
     leastPerRefill: '1',
     mostPerRefill: '10',
     mostPerAssetPerDay: '20',

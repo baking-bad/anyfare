@@ -185,6 +185,8 @@ export interface PlatformConfig {
     readonly enabled: boolean;
     // The registry asset refills are paid with, on a NEAR network
     readonly source: Asset | undefined;
+    // What a refill must leave of the source in the NEAR hot wallet, which also pays APIs on NEAR
+    readonly sourceFloor: MicroUsd;
     readonly leastPerRefill: MicroUsd;
     readonly mostPerRefill: MicroUsd;
     // Per target asset per UTC day, counting what leaves the NEAR hot wallet

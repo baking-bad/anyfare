@@ -174,6 +174,8 @@ export interface RebalancingDocument {
   readonly enabled?: boolean;
   // The registry asset refills are paid with: one on a NEAR network, held by signer.wallets.near
   readonly source?: string;
+  // In USD: what a refill must leave in the NEAR hot wallet, which also pays APIs on NEAR. Default: "0".
+  readonly sourceFloor?: string;
   // In USD: the least and the most one refill may be, and the most per target asset per UTC day.
   // Defaults: "1", "10", "20".
   readonly leastPerRefill?: string;

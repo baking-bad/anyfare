@@ -139,6 +139,7 @@ rebalancing:
   enabled: false                # Default: false. Off, the Signer refuses every refill. When true, signer.wallets
                                 # must name near and each target's chain, and source and one target are required
   source: near-usdc             # The registry asset refills are paid with: one on NEAR, held by signer.wallets.near
+  sourceFloor: "0"              # Default: "0". In USD: what a refill must leave in the NEAR hot wallet, which also pays APIs on NEAR
   leastPerRefill: "1"           # Default: "1". In USD, more than 0
   mostPerRefill: "10"           # Default: "10". At least leastPerRefill
   mostPerAssetPerDay: "20"      # Default: "20". Per target asset per UTC day, at least mostPerRefill

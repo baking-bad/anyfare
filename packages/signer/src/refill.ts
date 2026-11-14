@@ -369,10 +369,14 @@ export const createRefiller = ({
         reservation = { ...reservation, amount: reservation.amount + beyond };
       }
 
-      // 6. The hot wallet holds amountIn
+      // 6. The hot wallet holds amountIn, and keeps rebalancing.sourceFloor for what it pays itself
       const balance = await fromChain(() => needs.transfer.balanceOf(source.address, near.accountId), log);
       if (balance < amountIn)
         refuse(`The NEAR hot wallet holds less ${source.name} than the quote's amountIn: move some from the NEAR treasury to it`, 'source_low');
+      if (balance - amountIn < refillAtomicAmount(rebalancing.sourceFloor, source.decimals)) {
+        refuse(`The refill would leave the NEAR hot wallet under rebalancing.sourceFloor, ${formatUsd(rebalancing.sourceFloor)} USD of ${source.name}: `
+          + 'move some from the NEAR treasury to it', 'source_low');
+      }
 
       // 7. The payer's lease: the transaction uses the key's nonce, as the hot wallet's x402 payments do
       const lease: NearLease = { accountId: near.accountId, quoteId: refillLeaseQuoteId(refillId) };

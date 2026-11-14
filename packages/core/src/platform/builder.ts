@@ -225,6 +225,7 @@ const checkRebalancing = (
       add(['rebalancing', 'source'], 'must be an asset on a NEAR network: refills are paid from the NEAR hot wallet');
   }
 
+  checkAmount(['rebalancing', 'sourceFloor'], rebalancing.sourceFloor ?? defaults.sourceFloor);
   const least = checkAmount(['rebalancing', 'leastPerRefill'], rebalancing.leastPerRefill ?? defaults.leastPerRefill);
   const most = checkAmount(['rebalancing', 'mostPerRefill'], rebalancing.mostPerRefill ?? defaults.mostPerRefill);
   const perDay = checkAmount(['rebalancing', 'mostPerAssetPerDay'], rebalancing.mostPerAssetPerDay ?? defaults.mostPerAssetPerDay);
@@ -374,6 +375,7 @@ export const buildPlatformConfig = (document: PlatformConfigDocument, locator?: 
     rebalancing: {
       enabled: document.rebalancing?.enabled ?? rebalancing.enabled,
       source: assets.find(asset => asset.name === document.rebalancing?.source),
+      sourceFloor: usd(document.rebalancing?.sourceFloor, rebalancing.sourceFloor),
       leastPerRefill: usd(document.rebalancing?.leastPerRefill, rebalancing.leastPerRefill),
       mostPerRefill: usd(document.rebalancing?.mostPerRefill, rebalancing.mostPerRefill),
       mostPerAssetPerDay: usd(document.rebalancing?.mostPerAssetPerDay, rebalancing.mostPerAssetPerDay),

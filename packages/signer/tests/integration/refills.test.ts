@@ -415,6 +415,25 @@ describe('a refill refused before anything is sent', () => {
     expect(sends()).toBe(0);
   });
 
+  it('refuses a refill that would leave the NEAR hot wallet under rebalancing.sourceFloor, and sends one that leaves exactly it', async () => {
+    const keeping = appWith({ config: await configWith({ sourceFloor: '2' }) });
+    // $5 costs 5.000501 USDC: one atomic unit short of leaving $2
+    rpc.setBalance(usdc, hotWallet, 7_000_500n);
+
+    const { status, body, refillId } = await refill('5000000', { on: keeping });
+
+    expect(status).toBe(422);
+    expect(body).toEqual({ error: { code: 'signing_refused', message: expect.stringContaining('under rebalancing.sourceFloor, 2 USD') }, reason: 'source_low' });
+    expect(lastLine('Refused a refill')).toMatchObject({ level: 40, refillId, reason: 'source_low', alert: true });
+    expect(await spentToday('base-usdc')).toBe(0n);
+    expect(await recordOf(refillId)).toBeNull();
+    expect(sends()).toBe(0);
+
+    rpc.setBalance(usdc, hotWallet, 7_000_501n);
+    expect((await refill('5000000', { on: keeping })).status).toBe(200);
+    expect(rpc.balanceOf(usdc, hotWallet)).toBe(2_000_000n);
+  });
+
   it('answers payer_busy while a NEAR payment holds the payer\'s lease, then refills under the same ID once it is released', async () => {
     const store = createRedisNearPayerStore({ redis });
     const payment = { accountId: hotWallet, quoteId: 'pay_in_flight' };

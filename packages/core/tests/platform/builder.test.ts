@@ -91,8 +91,8 @@ describe('buildPlatformConfig', () => {
     expect(config.freeCredits).toEqual({ enabled: false, amount: 100_000n, perIp: { requests: 3, windowSeconds: 86_400 }, maxPerDay: undefined });
     expect(config.topups).toMatchObject({ enabled: false, url: 'https://1click.chaindefuser.com', asset: undefined, networks: [] });
     expect(config.rebalancing).toEqual({
-      enabled: false, source: undefined, leastPerRefill: 1_000_000n, mostPerRefill: 10_000_000n, mostPerAssetPerDay: 20_000_000n, maxFeeBps: 200, slippageBps: 50,
-      deadlineMinutes: 30, intervalSeconds: 300, targets: [],
+      enabled: false, source: undefined, sourceFloor: 0n, leastPerRefill: 1_000_000n, mostPerRefill: 10_000_000n, mostPerAssetPerDay: 20_000_000n, maxFeeBps: 200,
+      slippageBps: 50, deadlineMinutes: 30, intervalSeconds: 300, targets: [],
     });
   });
 
@@ -534,12 +534,13 @@ describe('rebalancing', () => {
 
   it('take the values the document sets', () => {
     const config = buildPlatformConfig(on({
-      leastPerRefill: '0.5', mostPerRefill: '0.5', mostPerAssetPerDay: '0.5', maxFeeBps: 0, slippageBps: 500, deadlineMinutes: 240, intervalSeconds: 60,
-      targets: [target('solana-usdc', '0', '0.000001')],
+      sourceFloor: '2.5', leastPerRefill: '0.5', mostPerRefill: '0.5', mostPerAssetPerDay: '0.5', maxFeeBps: 0, slippageBps: 500, deadlineMinutes: 240,
+      intervalSeconds: 60, targets: [target('solana-usdc', '0', '0.000001')],
     }));
 
     expect(config.rebalancing).toMatchObject({
-      leastPerRefill: 500_000n, mostPerRefill: 500_000n, mostPerAssetPerDay: 500_000n, maxFeeBps: 0, slippageBps: 500, deadlineMinutes: 240, intervalSeconds: 60,
+      sourceFloor: 2_500_000n, leastPerRefill: 500_000n, mostPerRefill: 500_000n, mostPerAssetPerDay: 500_000n, maxFeeBps: 0, slippageBps: 500, deadlineMinutes: 240,
+      intervalSeconds: 60,
     });
     expect(config.rebalancing.targets.map(item => [item.asset.name, item.floor, item.target])).toEqual([['solana-usdc', 0n, 1n]]);
   });
