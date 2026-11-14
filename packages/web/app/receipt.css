@@ -6,11 +6,13 @@
 .receipt-tabs .tab-panel { margin-top: 24px; }
 .receipt .break { overflow-wrap: anywhere; }
 
-.route-map { display: grid; grid-template-columns: 1fr 48px 1fr 48px 1fr; align-items: center; gap: 0; }
+/* The three boxes take the tallest one's height, so their tops and bottoms line up. The arrows stay in the middle,
+   and so does the route in our box: it sits on the arrows' line */
+.route-map { display: grid; grid-template-columns: 1fr 48px 1fr 48px 1fr; align-items: stretch; gap: 0; }
 .route-map .node { padding: 20px; border-radius: var(--radius-2xl); background: var(--surface-card); outline: 1px solid var(--border); outline-offset: -1px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.route-map .node.us { background: var(--inverse-bg); color: var(--inverse-text); outline: 0; }
+.route-map .node.us { justify-content: center; background: var(--inverse-bg); color: var(--inverse-text); outline-color: var(--inverse-border); }
 .route-map .node.us .muted { color: var(--inverse-text-secondary); }
-.route-map .link-line { height: 2px; background: var(--border-strong); position: relative; }
+.route-map .link-line { align-self: center; height: 2px; background: var(--border-strong); position: relative; }
 .route-map .link-line::after { content: ""; position: absolute; right: -2px; top: -4px; border: 5px solid transparent; border-left-color: var(--border-strong); }
 @media (max-width: 860px) {
   .route-map { grid-template-columns: 1fr; gap: 8px; }
