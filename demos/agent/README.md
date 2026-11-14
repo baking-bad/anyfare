@@ -127,4 +127,3 @@ All from `demos/agent`. Use this list to allow commands in your agent.
 - The agent never sends a top-up. You send it from your own wallet.
 - The agent waits for a top-up for at most 30 minutes.
 - Receipts link to the hosted demo's site, `https://anyfare.agents.bakingbad.dev`.
-- Not run yet from this folder: a whole run with an agent. Example output comes later.

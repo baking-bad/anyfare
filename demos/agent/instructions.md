@@ -145,5 +145,6 @@ After a call, run `balance` once, then answer:
 Short, plain text. Don't paste the apps' output. Show a 64-character account as
 its first 6 and last 6 characters.
 
-NEAR amounts come in yoctoNEAR: 1 NEAR = 10^24 yoctoNEAR. Show NEAR with 4
-decimals, and give the block height.
+The wallet app shows the API's answer, with NEAR in yoctoNEAR: 1 NEAR = 10^24
+yoctoNEAR. `cli-client` shows NEAR already. Show NEAR with 4 decimals, and give
+the block height.

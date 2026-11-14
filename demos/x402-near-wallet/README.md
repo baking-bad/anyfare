@@ -135,7 +135,7 @@ npm run demo -- --yes -X POST --json '{"accountId":"anyfare.near"}' https://pay.
 - See: the plan, then the signing, the call, the answer, the proof and the new balance.
 - The cost was 0.001 USDC on NEAR, paid to `pay.anyfare.near`. The answer is a NEAR account's balance at a final block.
 - `--yes` and `--dry-run` together are refused.
-- The same request sent straight to `https://merchant-near.mikedotexe.com/v1/evidence/account`, without Anyfare, asks 0.001 USDC on NEAR to `count.mike.near`. The app can pay it, but no such payment has run yet: not verified.
+- The same request sent straight to `https://merchant-near.mikedotexe.com/v1/evidence/account`, without Anyfare, asks 0.001 USDC on NEAR to `count.mike.near`. The app pays it the same way.
 
 ### `--max`
 
@@ -279,8 +279,10 @@ npm run typecheck
 
 ## Not built, not run
 
-- Paid so far: CoinMarketCap through Anyfare, twice, 0.01 USDC on NEAR each, on 2026-11-11 at 23:45 and 23:48 UTC. Anyfare's receipts: `https://anyfare.agents.bakingbad.dev/calls/pay_5a608872-b728-412e-a709-342625686cc9` and `https://anyfare.agents.bakingbad.dev/calls/pay_4c5711c0-8f08-4a5f-8d2e-60dc3e6f6c29`.
-- Not run yet: the evidence API, through Anyfare or directly. Example output comes after the live run, with its date and time.
+- Paid so far:
+  - CoinMarketCap through Anyfare, twice, 0.01 USDC on NEAR each, on 2026-11-11 at 23:45 and 23:48 UTC. Anyfare's receipts: `https://anyfare.agents.bakingbad.dev/calls/pay_5a608872-b728-412e-a709-342625686cc9` and `https://anyfare.agents.bakingbad.dev/calls/pay_4c5711c0-8f08-4a5f-8d2e-60dc3e6f6c29`.
+  - The evidence API through Anyfare, 0.001 USDC on NEAR, on 2026-11-14 at 13:15 UTC. Anyfare's receipt: `https://anyfare.agents.bakingbad.dev/calls/pay_ac6f00f5-f47f-4dac-b9f1-7f3660a2bd2e`.
+  - The evidence API directly, 0.001 USDC on NEAR to `count.mike.near`, on 2026-11-14 at 13:16 UTC. The transaction: `https://nearblocks.io/txns/GTwzLVxhMcyryjmSFLbPBRDVVoLUc9j9dYhe9wCdhybs`.
 - It pays only USDC on NEAR. No Base, no Solana, no other network. No MPP.
 - It signs only the `exact` scheme and the `authorization` payment flow.
 - No agent part in this app: it is a console app. An agent can drive it: see [`demos/agent`](../agent).
