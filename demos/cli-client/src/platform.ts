@@ -129,11 +129,10 @@ export function noticeOf(answer: unknown): string | undefined {
   return isRecord(answer) ? textOf(answer['notice']) : undefined;
 }
 
-/** The free Credits of a sign-up answer as a US dollar string, as it gave it, when above zero. Never fails. */
-export function freeCreditsOf(answer: unknown): string | undefined {
-  const text = isRecord(answer) ? answer['freeCredits'] : undefined;
-  const given = usdOf(text);
-  return typeof text === 'string' && given !== undefined && given > 0n ? text : undefined;
+/** The free Credits of a sign-up answer in micro-USD, when above zero. Never fails. */
+export function freeCreditsOf(answer: unknown): bigint | undefined {
+  const given = usdOf(isRecord(answer) ? answer['freeCredits'] : undefined);
+  return given !== undefined && given > 0n ? given : undefined;
 }
 
 /** The limits of a key create answer, for display. Never fails: a field that can't be read is `undefined`. */

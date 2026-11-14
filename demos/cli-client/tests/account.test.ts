@@ -52,7 +52,8 @@ async function run(
 
 describe('signup', () => {
   it('says the free Credits of the answer, only when they are above zero', async () => {
-    fake.rewrite.signup = (body) => ({ ...body, freeCredits: '0.10' });
+    // The API writes the amount without trailing zeros
+    fake.rewrite.signup = (body) => ({ ...body, freeCredits: '0.1' });
     const given = await run(['signup', '--yes']);
     expect(given.code).toBe(0);
     expect(given.out).toContain('You got $0.10 of free Credits');
@@ -96,7 +97,7 @@ describe('signup', () => {
     fake.startingBalance = '0.5';
     const result = await run(['signup', '--yes']);
     expect(result.code).toBe(0);
-    expect(result.out).toContain('Your balance is $0.5.');
+    expect(result.out).toContain('Your balance is $0.50.');
     expect(result.out).toContain('That pays for 45 CoinMarketCap calls at $0.011, or 416 3Route quotes at $0.0012.');
   });
 

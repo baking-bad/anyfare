@@ -290,7 +290,7 @@ describe('the interactive mode: the list of ways to pay', () => {
     expect(result.out).toContain(
       [
         'How do you pay?',
-        '  1  Credits  needs ANYFARE_PAYMENT_KEY  ✔  $1.5',
+        '  1  Credits  needs ANYFARE_PAYMENT_KEY  ✔  $1.50',
         '  2  USDC on NEAR  needs NEAR_ACCOUNT_ID and NEAR_PRIVATE_KEY  ✔  0.979 USDC',
         '  3  USDC on Base  needs BASE_PRIVATE_KEY  ✔  0.005 USDC',
         '  4  USDC.e on Tempo  needs TEMPO_PRIVATE_KEY  ✔  0.2 USDC.e',

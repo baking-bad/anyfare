@@ -174,7 +174,7 @@ export async function signUp(ctx: Context, options: { readonly yes: boolean }): 
     style.field('Master key', short(account.masterKey), FIELD_WIDTH),
     `  Saved to ${ENV_LOCAL}`,
     ...(notice === undefined ? [] : [`  ${oneLine(notice)}`]),
-    ...(free === undefined ? [] : [`  You got $${free} of free Credits`]),
+    ...(free === undefined ? [] : [`  You got ${usd(free)} of free Credits`]),
   ]);
   await balanceAfterSignup(ctx, config);
 }

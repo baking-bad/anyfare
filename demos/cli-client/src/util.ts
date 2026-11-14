@@ -138,7 +138,8 @@ export function fromAtomic(atomic: bigint | string, decimals: number): string {
   return negative ? `-${text}` : text;
 }
 
-/** Micro-USD as a dollar amount, such as `$0.01`. */
+/** Micro-USD as a dollar amount, such as `$0.01`. Cents keep two digits: `$0.10`, not `$0.1`. */
 export function usd(microUsd: bigint): string {
-  return `$${fromAtomic(microUsd, 6)}`;
+  const text = fromAtomic(microUsd, 6);
+  return `$${/\.\d$/.test(text) ? `${text}0` : text}`;
 }

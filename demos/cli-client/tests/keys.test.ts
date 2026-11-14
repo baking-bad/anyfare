@@ -169,7 +169,7 @@ describe('the key flags', () => {
     const second = funded('7.5');
     const master = await run(['balance', '--master-key', second.account.masterKey], { ANYFARE_MASTER_KEY: first.account.masterKey });
     expect(master.code).toBe(0);
-    expect(master.out).toMatch(/Available\s+\$7\.5\n/);
+    expect(master.out).toMatch(/Available\s+\$7\.50\n/);
     expect(fake.requests.map((item) => item.headers['authorization'])).toEqual([`Bearer ${second.account.masterKey}`]);
 
     fake.requests.length = 0;

@@ -66,6 +66,13 @@ describe('usd', () => {
     expect(usd(1000n)).toBe('$0.001');
     expect(usd(1000000n)).toBe('$1');
   });
+
+  it('keeps two digits of cents', () => {
+    expect(usd(100000n)).toBe('$0.10');
+    expect(usd(1500000n)).toBe('$1.50');
+    expect(usd(90000n)).toBe('$0.09');
+    expect(usd(988000n)).toBe('$0.988');
+  });
 });
 
 describe('short', () => {
