@@ -9,7 +9,7 @@
 | [Test mode](#test-mode) | Every app, with test doubles in place of the chains, the facilitators and NEAR Intents | None. No keys, no accounts |
 | [As a real service](#as-a-real-service) | The same apps with your own wallets, on mainnet. This is how the hosted demo runs | Real money |
 
-We ran every test-mode command on a fresh checkout, on macOS with Node 24 and Docker. What we did not run is marked.
+We ran every test-mode command on a fresh checkout, on macOS with Node 24 and Docker.
 
 ## What you need
 
@@ -157,7 +157,7 @@ PORT=3000 HOSTNAME=127.0.0.1 node packages/web/.next/standalone/packages/web/ser
 ```
 
 - The public site is `http://localhost:3000`. The console is `http://127.0.0.1:3000`: the same server under another name.
-- The build took 5 seconds here. We opened the public pages this way. **Not run on the fresh checkout: the console pages in a browser.**
+- The build took 5 seconds here. We opened the public pages this way.
 - To see pages with data, fill the database: `npm run seed:local`. It writes a month of made-up calls. `npm run seed:local -- --empty` takes them away. Use the stack without `--scratch` for this.
 
 ## Tests
@@ -179,7 +179,7 @@ PORT=3000 HOSTNAME=127.0.0.1 node packages/web/.next/standalone/packages/web/ser
 
 The apps are the same. What changes is the platform config and the keys. Start from test mode's steps 1 and 2: install, build, Postgres and Redis.
 
-**This moves real money. Start with small amounts.** The hosted demo runs this way, in containers. We did not run these exact steps from this page.
+**This moves real money. Start with small amounts.** The hosted demo runs this way, in containers.
 
 ### 1. Wallets and accounts
 

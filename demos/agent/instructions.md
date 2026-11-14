@@ -64,7 +64,7 @@ I may have no NEAR wallet set up. You know it when the wallet app says
 ## Credits: what to offer
 
 Offer Credits when I ask how to pay without my wallet, or when I have no wallet.
-What to say, checked on 2026-11-13:
+What to say:
 
 - One balance, and a payment key with a daily budget: $1 a day, at most $0.02 a call.
 - A new account gets $0.10 of free Credits to try: about 10 calls at $0.01.

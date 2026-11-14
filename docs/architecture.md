@@ -49,7 +49,7 @@ flowchart LR
 | Platform API, [packages/api](../packages/api) | Accounts, keys, balances, top-ups. Public reads of calls and numbers. An internal listener for the operator, never public | None |
 | Signer, [packages/signer](../packages/signer) | Pays APIs from the hot wallets, within limits. Has its own Redis for the limits | The hot wallets' keys |
 | Facilitator, [packages/facilitator](../packages/facilitator) | Checks and settles x402 payments on NEAR. Pays the gas from a relayer account. Takes payments to our accounts only | The relayer's key. That account holds only NEAR for gas |
-| Workers, [packages/workers](../packages/workers) | Jobs: expired holds, settlement follow-up, routing losses, top-up status, wallet balances, reconciliation, public numbers | None |
+| Workers, [packages/workers](../packages/workers) | Jobs: expired holds, settlement follow-up, routing losses, top-up status, wallet balances, refills of the hot wallets, reconciliation, public numbers | None |
 | Website, [packages/web](../packages/web) | The public pages, the agent guide, the console | None |
 
 - Redis is not drawn. The proxy and the API use it for rate limits and used payments. The Signer has its own.
@@ -86,7 +86,7 @@ flowchart LR
 - The addresses are in [config/production.yaml](../config/production.yaml). Anyone can read the balances on chain.
 - A buyer's payment lands in the same wallet we pay APIs from on that chain. So a wallet partly refills itself.
 - The hot wallets are small on purpose. The Signer's limits cap what one bad day can cost.
-- **Not built:** a job that moves USDC from NEAR to the Base and Solana wallets through NEAR Intents. Today an operator does it by hand.
+- A job refills the Base and Solana wallets from `pay.anyfare.near`, through NEAR Intents. It is off on the hosted demo: today an operator does it by hand.
 
 ## The ledger
 

@@ -121,7 +121,7 @@ All from `demos/agent`. Use this list to allow commands in your agent.
 | `npm --prefix ../cli-client run -s demo -- topup --network <n> --token <t> --amount <a> --yes` | Free. You send the top-up yourself |
 | `npm --prefix ../cli-client run -s demo -- call --tool <tool> --pay credits … --yes` | The price, from your Credits |
 
-## Not built, not run
+## Limits
 
 - No settings for any one agent. Your agent's own permissions apply.
 - The agent never sends a top-up. You send it from your own wallet.
